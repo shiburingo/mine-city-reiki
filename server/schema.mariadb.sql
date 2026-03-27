@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS law_documents (
   external_id VARCHAR(128) NOT NULL,
   title VARCHAR(255) NOT NULL,
   normalized_title VARCHAR(255) NOT NULL DEFAULT '',
+  search_tokens LONGTEXT NOT NULL,
   law_type VARCHAR(64) NOT NULL DEFAULT '',
   law_number VARCHAR(128) NOT NULL DEFAULT '',
   category_path VARCHAR(255) NOT NULL DEFAULT '',
@@ -21,6 +22,9 @@ CREATE TABLE IF NOT EXISTS law_documents (
   KEY idx_law_documents_type (law_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+ALTER TABLE law_documents
+  ADD COLUMN IF NOT EXISTS search_tokens LONGTEXT NOT NULL AFTER normalized_title;
+
 CREATE TABLE IF NOT EXISTS law_articles (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   document_id BIGINT UNSIGNED NOT NULL,
@@ -36,6 +40,23 @@ CREATE TABLE IF NOT EXISTS law_articles (
   KEY idx_law_articles_document (document_id, sort_key),
   KEY idx_law_articles_number (article_number),
   CONSTRAINT fk_law_articles_document FOREIGN KEY (document_id) REFERENCES law_documents(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS law_search_terms (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  target_type ENUM('document','article') NOT NULL,
+  target_id BIGINT UNSIGNED NOT NULL,
+  document_id BIGINT UNSIGNED NOT NULL,
+  article_id BIGINT UNSIGNED NULL,
+  term VARCHAR(191) NOT NULL,
+  weight TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_law_search_terms_target_term (target_type, target_id, term),
+  KEY idx_law_search_terms_term_target (term, target_type),
+  KEY idx_law_search_terms_document (document_id),
+  KEY idx_law_search_terms_article (article_id),
+  CONSTRAINT fk_law_search_terms_document FOREIGN KEY (document_id) REFERENCES law_documents(id) ON DELETE CASCADE,
+  CONSTRAINT fk_law_search_terms_article FOREIGN KEY (article_id) REFERENCES law_articles(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS sync_settings (

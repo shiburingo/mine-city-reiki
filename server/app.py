@@ -21,6 +21,11 @@ from flask import Flask, g, jsonify, request
 from pymysql.cursors import DictCursor
 from werkzeug.exceptions import HTTPException
 
+try:
+    from janome.tokenizer import Tokenizer as JanomeTokenizer
+except Exception:
+    JanomeTokenizer = None
+
 APP_VERSION = "0.1.0"
 APP_SLUG = "mine-city-reiki"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -81,6 +86,23 @@ def load_config() -> AppConfig:
 CFG = load_config()
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
+JANOME_TOKENIZER = None
+STOP_TERMS = {
+    "する",
+    "こと",
+    "もの",
+    "ため",
+    "について",
+    "より",
+    "また",
+    "その",
+    "この",
+    "及び",
+    "ならびに",
+    "その他",
+    "各",
+    "第",
+}
 
 
 def db_connect(with_database: bool = True):
@@ -129,6 +151,29 @@ def ensure_schema() -> None:
     with db_connect(with_database=True) as conn:
         with conn.cursor() as cur:
             execute_sql_script(cur, sql_text)
+            ensure_column(cur, "law_documents", "search_tokens", "search_tokens LONGTEXT NOT NULL DEFAULT '' AFTER normalized_title")
+            ensure_table(
+                cur,
+                "law_search_terms",
+                """
+                CREATE TABLE law_search_terms (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  target_type ENUM('document','article') NOT NULL,
+                  target_id BIGINT UNSIGNED NOT NULL,
+                  document_id BIGINT UNSIGNED NOT NULL,
+                  article_id BIGINT UNSIGNED NULL,
+                  term VARCHAR(191) NOT NULL,
+                  weight TINYINT UNSIGNED NOT NULL DEFAULT 1,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_law_search_terms_target_term (target_type, target_id, term),
+                  KEY idx_law_search_terms_term_target (term, target_type),
+                  KEY idx_law_search_terms_document (document_id),
+                  KEY idx_law_search_terms_article (article_id),
+                  CONSTRAINT fk_law_search_terms_document FOREIGN KEY (document_id) REFERENCES law_documents(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_law_search_terms_article FOREIGN KEY (article_id) REFERENCES law_articles(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
         conn.commit()
 
 
@@ -195,6 +240,120 @@ def normalize_text(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "")
     value = re.sub(r"\s+", " ", value)
     return value.strip()
+
+
+def contains_japanese(text: str) -> bool:
+    return any(
+        ("\u3040" <= ch <= "\u30ff")
+        or ("\u3400" <= ch <= "\u9fff")
+        or ch == "々"
+        for ch in text
+    )
+
+
+def get_janome_tokenizer():
+    global JANOME_TOKENIZER
+    if JANOME_TOKENIZER is None and JanomeTokenizer is not None:
+        JANOME_TOKENIZER = JanomeTokenizer()
+    return JANOME_TOKENIZER
+
+
+def janome_terms(text: str) -> list[str]:
+    tokenizer = get_janome_tokenizer()
+    if tokenizer is None:
+        return []
+    terms: list[str] = []
+    try:
+        for token in tokenizer.tokenize(text):
+            pos = (token.part_of_speech or "").split(",")[0]
+            if pos not in {"名詞", "動詞", "形容詞"}:
+                continue
+            raw = normalize_text(token.surface).lower()
+            base = normalize_text(token.base_form if token.base_form != "*" else raw).lower()
+            for candidate in (base, raw):
+                if not candidate or candidate in STOP_TERMS:
+                    continue
+                if len(candidate) <= 1 and not candidate.isdigit():
+                    continue
+                terms.append(candidate)
+    except Exception:
+        return []
+    return terms
+
+
+def chunk_terms(text: str) -> list[str]:
+    normalized = normalize_text(text).lower()
+    if not normalized:
+        return []
+    terms: list[str] = []
+    for chunk in re.findall(r"[0-9a-zA-Z一-龯ぁ-んァ-ヶー々]+", normalized):
+        if not chunk or chunk in STOP_TERMS:
+            continue
+        if len(chunk) > 1 or chunk.isdigit():
+            terms.append(chunk)
+        if contains_japanese(chunk):
+            compact = chunk.replace(" ", "")
+            if 2 <= len(compact) <= 20:
+                for size in (2, 3):
+                    if len(compact) < size:
+                        continue
+                    for idx in range(len(compact) - size + 1):
+                        terms.append(compact[idx : idx + size])
+    return terms
+
+
+def limited_weighted_terms(*groups: tuple[str, int, bool], max_terms: int = 160) -> dict[str, int]:
+    weights: dict[str, int] = {}
+    for text, weight, include_phrase in groups:
+        normalized = normalize_text(text).lower()
+        if not normalized:
+            continue
+        if include_phrase and 1 < len(normalized) <= 96:
+            weights[normalized] = max(weights.get(normalized, 0), weight)
+        for term in janome_terms(normalized):
+            weights[term] = max(weights.get(term, 0), weight)
+        for term in chunk_terms(normalized):
+            weights[term] = max(weights.get(term, 0), weight)
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
+    return dict(ranked[:max_terms])
+
+
+def query_terms(query: str) -> list[str]:
+    terms = list(
+        limited_weighted_terms(
+            (query, 10, True),
+            max_terms=24,
+        ).keys()
+    )
+    return terms
+
+
+def ensure_column(cur, table: str, column: str, definition: str) -> None:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+        """,
+        (CFG.db_name, table, column),
+    )
+    exists = int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    if not exists:
+        cur.execute(f"ALTER TABLE `{table}` ADD COLUMN {definition}")
+
+
+def ensure_table(cur, table: str, ddl: str) -> None:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s
+        """,
+        (CFG.db_name, table),
+    )
+    exists = int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    if not exists:
+        cur.execute(ddl)
 
 
 def make_content_hash(text: str) -> str:
@@ -445,7 +604,100 @@ def fetch_egov_document() -> dict[str, Any]:
     }
 
 
+def build_document_search_terms(document: dict[str, Any]) -> dict[str, int]:
+    return limited_weighted_terms(
+        (document.get("title", ""), 12, True),
+        (document.get("law_number", ""), 8, True),
+        (document.get("category_path", ""), 4, False),
+        (document.get("law_type", ""), 4, True),
+    )
+
+
+def build_article_search_terms(document: dict[str, Any], article: dict[str, Any]) -> dict[str, int]:
+    return limited_weighted_terms(
+        (document.get("title", ""), 6, True),
+        (article.get("article_number", ""), 12, True),
+        (article.get("article_title", ""), 8, True),
+        (article.get("text", ""), 2, False),
+    )
+
+
+def insert_search_terms(
+    cur,
+    target_type: str,
+    target_id: int,
+    document_id: int,
+    article_id: int | None,
+    terms: dict[str, int],
+) -> None:
+    if not terms:
+        return
+    for term, weight in terms.items():
+        cur.execute(
+            """
+            INSERT INTO law_search_terms (target_type, target_id, document_id, article_id, term, weight)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE weight=VALUES(weight)
+            """,
+            (target_type, target_id, document_id, article_id, term, weight),
+        )
+
+
+def rebuild_search_terms_for_document(cur, document_id: int) -> None:
+    cur.execute(
+        """
+        SELECT id, source, title, normalized_title, law_type, law_number, category_path, source_url, full_text
+        FROM law_documents
+        WHERE id=%s
+        """,
+        (document_id,),
+    )
+    doc = cur.fetchone()
+    if not doc:
+        return
+    cur.execute(
+        """
+        SELECT id, article_number, article_title, text
+        FROM law_articles
+        WHERE document_id=%s
+        ORDER BY sort_key ASC, id ASC
+        """,
+        (document_id,),
+    )
+    articles = cur.fetchall() or []
+    document = {
+        "title": doc.get("title") or "",
+        "law_type": doc.get("law_type") or "",
+        "law_number": doc.get("law_number") or "",
+        "category_path": doc.get("category_path") or "",
+    }
+    doc_terms = build_document_search_terms(document)
+    cur.execute(
+        "UPDATE law_documents SET search_tokens=%s WHERE id=%s",
+        (" ".join(doc_terms.keys()), document_id),
+    )
+    cur.execute("DELETE FROM law_search_terms WHERE document_id=%s", (document_id,))
+    insert_search_terms(cur, "document", document_id, document_id, None, doc_terms)
+    for article in articles:
+        article_terms = build_article_search_terms(document, article)
+        insert_search_terms(cur, "article", int(article["id"]), document_id, int(article["id"]), article_terms)
+
+
+def maybe_backfill_search_terms() -> None:
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute("SELECT COUNT(*) AS cnt FROM law_search_terms")
+        term_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        if term_count > 0:
+            return
+        cur.execute("SELECT id FROM law_documents ORDER BY id ASC")
+        doc_ids = [int(row["id"]) for row in (cur.fetchall() or [])]
+        for document_id in doc_ids:
+            rebuild_search_terms_for_document(cur, document_id)
+
+
 def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
+    document_terms = build_document_search_terms(document)
+    document["search_tokens"] = " ".join(document_terms.keys())
     cur.execute(
         """
         SELECT id, content_hash
@@ -462,14 +714,14 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
             """
             UPDATE law_documents
             SET title=%s, normalized_title=%s, law_type=%s, law_number=%s, category_path=%s,
-                source_url=%s, promulgated_at=%s, effective_at=%s, updated_at_source=%s,
+                source_url=%s, promulgated_at=%s, effective_at=%s, updated_at_source=%s, search_tokens=%s,
                 content_hash=%s, full_text=%s, metadata_json=%s, updated_at=CURRENT_TIMESTAMP
             WHERE id=%s
             """,
             (
                 document['title'], document['normalized_title'], document['law_type'], document['law_number'],
                 document['category_path'], document['source_url'], document['promulgated_at'], document['effective_at'],
-                document['updated_at_source'], document['content_hash'], document['full_text'], document['metadata_json'], document_id,
+                document['updated_at_source'], document['search_tokens'], document['content_hash'], document['full_text'], document['metadata_json'], document_id,
             ),
         )
     else:
@@ -478,13 +730,13 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
             """
             INSERT INTO law_documents (
               source, external_id, title, normalized_title, law_type, law_number, category_path,
-              source_url, promulgated_at, effective_at, updated_at_source, content_hash, full_text, metadata_json
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              source_url, promulgated_at, effective_at, updated_at_source, search_tokens, content_hash, full_text, metadata_json
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 document['source'], document['external_id'], document['title'], document['normalized_title'], document['law_type'],
                 document['law_number'], document['category_path'], document['source_url'], document['promulgated_at'], document['effective_at'],
-                document['updated_at_source'], document['content_hash'], document['full_text'], document['metadata_json'],
+                document['updated_at_source'], document['search_tokens'], document['content_hash'], document['full_text'], document['metadata_json'],
             ),
         )
         document_id = int(cur.lastrowid)
@@ -508,6 +760,7 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
                     normalize_text(f"{article['article_number']} {article.get('article_title', '')} {article['text']}").lower(),
                 ),
             )
+        rebuild_search_terms_for_document(cur, document_id)
     return {'document_id': document_id, 'changed': changed}
 
 
@@ -650,7 +903,7 @@ def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, 
     }
 
 
-def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[dict[str, Any]]:
+def search_documents_slow(query: str, source: str = 'all', limit: int = 20) -> list[dict[str, Any]]:
     keywords = split_keywords(query)
     if not keywords:
         return []
@@ -717,6 +970,170 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[d
             scored.append(row)
     scored.sort(key=lambda x: (-int(x['score']), x.get('document_id') or 0, x.get('article_id') or 0))
     return [serialize_search_row(row, keywords) for row in scored[:limit]]
+
+
+def fetch_search_detail_rows(
+    article_candidates: list[dict[str, Any]],
+    document_candidates: list[dict[str, Any]],
+    keywords: list[str],
+    normalized_query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    article_map = {
+        int(item["article_id"]): {"term_score": int(item["term_score"]), "matched_terms": int(item["matched_terms"])}
+        for item in article_candidates
+    }
+    document_map = {
+        int(item["document_id"]): {"term_score": int(item["term_score"]), "matched_terms": int(item["matched_terms"])}
+        for item in document_candidates
+    }
+    rows: list[dict[str, Any]] = []
+    with db_cursor() as (_, cur):
+        if article_map:
+            article_ids = list(article_map.keys())
+            placeholders = ",".join(["%s"] * len(article_ids))
+            cur.execute(
+                f"""
+                SELECT
+                  d.id AS document_id,
+                  d.source,
+                  d.title,
+                  d.law_type,
+                  d.law_number,
+                  d.source_url,
+                  d.category_path,
+                  d.full_text,
+                  a.id AS article_id,
+                  a.article_number,
+                  a.article_title,
+                  a.text AS article_text
+                FROM law_articles a
+                JOIN law_documents d ON d.id=a.document_id
+                WHERE a.id IN ({placeholders})
+                """,
+                tuple(article_ids),
+            )
+            rows.extend(cur.fetchall() or [])
+        if document_map:
+            document_ids = [doc_id for doc_id in document_map.keys() if doc_id not in {int(r["document_id"]) for r in rows}]
+            if document_ids:
+                placeholders = ",".join(["%s"] * len(document_ids))
+                cur.execute(
+                    f"""
+                    SELECT
+                      d.id AS document_id,
+                      d.source,
+                      d.title,
+                      d.law_type,
+                      d.law_number,
+                      d.source_url,
+                      d.category_path,
+                      d.full_text,
+                      NULL AS article_id,
+                      NULL AS article_number,
+                      NULL AS article_title,
+                      NULL AS article_text
+                    FROM law_documents d
+                    WHERE d.id IN ({placeholders})
+                    """,
+                    tuple(document_ids),
+                )
+                rows.extend(cur.fetchall() or [])
+    for row in rows:
+        article_id = row.get("article_id")
+        base = article_map.get(int(article_id)) if article_id else document_map.get(int(row["document_id"]))
+        term_score = int((base or {}).get("term_score") or 0)
+        matched_terms = int((base or {}).get("matched_terms") or 0)
+        title = (row.get("title") or "").lower()
+        article_no = (row.get("article_number") or "").lower()
+        article_title = (row.get("article_title") or "").lower()
+        article_text = (row.get("article_text") or "").lower()
+        doc_text = (row.get("full_text") or "").lower()
+        score = term_score * 10 + matched_terms * 12
+        if normalized_query and normalized_query in title:
+            score += 120
+        if normalized_query and normalized_query in article_no:
+            score += 90
+        if normalized_query and normalized_query in article_title:
+            score += 80
+        if normalized_query and normalized_query in article_text:
+            score += 50
+        for keyword in keywords:
+            kw = keyword.lower()
+            if kw in title:
+                score += 35
+            if kw in article_no:
+                score += 30
+            if kw in article_title:
+                score += 24
+            if kw in article_text:
+                score += 14
+            elif kw in doc_text:
+                score += 4
+        row["score"] = score
+    rows.sort(key=lambda item: (-int(item["score"]), -(item.get("article_id") is not None), int(item["document_id"]), int(item.get("article_id") or 0)))
+    return [serialize_search_row(row, keywords) for row in rows[:limit]]
+
+
+def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[dict[str, Any]]:
+    normalized_query = normalize_text(query).lower()
+    keywords = split_keywords(query)
+    terms = query_terms(query)
+    if not terms:
+        return []
+    article_candidates: list[dict[str, Any]] = []
+    document_candidates: list[dict[str, Any]] = []
+    with db_cursor() as (_, cur):
+        placeholders = ",".join(["%s"] * len(terms))
+        params: list[Any] = list(terms)
+        source_sql = ""
+        if source != "all":
+            source_sql = " AND d.source=%s"
+            params.append(source)
+        cur.execute(
+            f"""
+            SELECT
+              st.document_id,
+              st.article_id,
+              SUM(st.weight) AS term_score,
+              COUNT(*) AS matched_terms
+            FROM law_search_terms st
+            JOIN law_documents d ON d.id=st.document_id
+            WHERE st.target_type='article' AND st.term IN ({placeholders}){source_sql}
+            GROUP BY st.document_id, st.article_id
+            ORDER BY term_score DESC, matched_terms DESC, st.document_id ASC, st.article_id ASC
+            LIMIT 240
+            """,
+            tuple(params),
+        )
+        article_candidates = cur.fetchall() or []
+
+        params = list(terms)
+        if source != "all":
+            params.append(source)
+        cur.execute(
+            f"""
+            SELECT
+              st.document_id,
+              SUM(st.weight) AS term_score,
+              COUNT(*) AS matched_terms
+            FROM law_search_terms st
+            JOIN law_documents d ON d.id=st.document_id
+            WHERE st.target_type='document' AND st.term IN ({placeholders}){source_sql}
+            GROUP BY st.document_id
+            ORDER BY term_score DESC, matched_terms DESC, st.document_id ASC
+            LIMIT 120
+            """,
+            tuple(params),
+        )
+        document_candidates = cur.fetchall() or []
+
+    if not article_candidates and not document_candidates:
+        return search_documents_slow(query, source, limit)
+    results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit)
+    if not results:
+        return search_documents_slow(query, source, limit)
+    return results
 
 
 @app.before_request
@@ -914,6 +1331,7 @@ def api_reference_ask_get():
 
 
 ensure_schema()
+maybe_backfill_search_terms()
 
 
 if __name__ == '__main__':
