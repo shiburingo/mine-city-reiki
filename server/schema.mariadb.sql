@@ -77,12 +77,12 @@ CREATE TABLE IF NOT EXISTS sync_settings (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO sync_settings (id, enabled, day_of_month, hour, minute, timezone, source_scope, cache_generation)
-VALUES (1, 0, 1, 3, 0, '+09:00', 'all', 1)
-ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
-
 ALTER TABLE sync_settings
   ADD COLUMN IF NOT EXISTS cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER source_scope;
+
+INSERT INTO sync_settings (id, enabled, day_of_month, hour, minute, timezone, source_scope)
+VALUES (1, 0, 1, 3, 0, '+09:00', 'all')
+ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS sync_runs (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
