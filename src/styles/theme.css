@@ -1,0 +1,13 @@
+@import "@mine-troutfarm/ui/theme.css";
+
+:root {
+  --input-background: color-mix(in srgb, var(--card, #fff) 90%, #eef4ff 10%);
+}
+
+.dark {
+  --input-background: color-mix(in srgb, var(--card, #1f2937) 85%, #111827 15%);
+}
+
+.bg-input-background {
+  background-color: var(--input-background);
+}

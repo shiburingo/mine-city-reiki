@@ -1,0 +1,9 @@
+[Unit]
+Description=Mine City Reiki scheduled sync
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mine-city-reiki/server
+EnvironmentFile=/etc/mine-city-reiki-api.env
+ExecStart=/opt/mine-city-reiki/server/venv/bin/python /opt/mine-city-reiki/server/run_due_sync.py

@@ -1,0 +1,15 @@
+[Unit]
+Description=Mine City Reiki API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mine-city-reiki/server
+EnvironmentFile=/etc/mine-city-reiki-api.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/mine-city-reiki/server/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8795 --access-logfile - --error-logfile - wsgi:application
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
