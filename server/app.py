@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -103,6 +104,26 @@ STOP_TERMS = {
     "各",
     "第",
 }
+SEARCH_CACHE_TTL_SECONDS = 60 * 30
+ASK_CACHE_TTL_SECONDS = 60 * 60 * 6
+LOCAL_CACHE_TTL_SECONDS = 120
+LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
+BUILTIN_SYNONYM_GROUPS = [
+    ("地方自治法", ["自治法", "自治体法"]),
+    ("美祢市", ["本市"]),
+    ("条例", ["例規"]),
+    ("規則", ["例規"]),
+    ("要綱", ["例規"]),
+    ("職員", ["職員等"]),
+    ("休暇", ["休業", "休み"]),
+    ("手当", ["給与"]),
+    ("会計年度任用職員", ["会計年度職員", "任用職員"]),
+    ("議会", ["議員"]),
+    ("個人情報", ["個人情報保護"]),
+    ("情報公開", ["開示"]),
+]
 
 
 def db_connect(with_database: bool = True):
@@ -152,6 +173,7 @@ def ensure_schema() -> None:
         with conn.cursor() as cur:
             execute_sql_script(cur, sql_text)
             ensure_column(cur, "law_documents", "search_tokens", "search_tokens LONGTEXT NOT NULL DEFAULT '' AFTER normalized_title")
+            ensure_column(cur, "sync_settings", "cache_generation", "cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER source_scope")
             ensure_table(
                 cur,
                 "law_search_terms",
@@ -174,6 +196,67 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_table(
+                cur,
+                "law_synonyms",
+                """
+                CREATE TABLE law_synonyms (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  canonical_term VARCHAR(191) NOT NULL,
+                  synonym_term VARCHAR(191) NOT NULL,
+                  priority TINYINT UNSIGNED NOT NULL DEFAULT 10,
+                  is_active TINYINT(1) NOT NULL DEFAULT 1,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_law_synonyms_pair (canonical_term, synonym_term),
+                  KEY idx_law_synonyms_canonical (canonical_term, is_active),
+                  KEY idx_law_synonyms_synonym (synonym_term, is_active)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "search_query_cache",
+                """
+                CREATE TABLE search_query_cache (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  cache_key CHAR(64) NOT NULL,
+                  normalized_query VARCHAR(255) NOT NULL,
+                  source_scope ENUM('all','mine-city','egov') NOT NULL DEFAULT 'all',
+                  limit_n SMALLINT UNSIGNED NOT NULL DEFAULT 20,
+                  cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1,
+                  result_json LONGTEXT NOT NULL,
+                  hit_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  last_hit_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  expires_at TIMESTAMP NULL DEFAULT NULL,
+                  UNIQUE KEY uq_search_query_cache_key (cache_key),
+                  KEY idx_search_query_cache_lookup (cache_generation, source_scope, limit_n),
+                  KEY idx_search_query_cache_expires (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "ask_query_cache",
+                """
+                CREATE TABLE ask_query_cache (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  cache_key CHAR(64) NOT NULL,
+                  normalized_query VARCHAR(255) NOT NULL,
+                  cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1,
+                  response_json LONGTEXT NOT NULL,
+                  hit_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  last_hit_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  expires_at TIMESTAMP NULL DEFAULT NULL,
+                  UNIQUE KEY uq_ask_query_cache_key (cache_key),
+                  KEY idx_ask_query_cache_generation (cache_generation),
+                  KEY idx_ask_query_cache_expires (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            seed_law_synonyms(cur)
         conn.commit()
 
 
@@ -318,13 +401,13 @@ def limited_weighted_terms(*groups: tuple[str, int, bool], max_terms: int = 160)
     return dict(ranked[:max_terms])
 
 
-def query_terms(query: str) -> list[str]:
-    terms = list(
-        limited_weighted_terms(
-            (query, 10, True),
-            max_terms=24,
-        ).keys()
-    )
+def query_terms(query: str, cur=None) -> list[str]:
+    base_keywords = split_keywords(query)
+    expanded_keywords = expand_keywords_with_synonyms(base_keywords, cur=cur, max_keywords=20)
+    weighted_groups: list[tuple[str, int, bool]] = [(query, 12, True)]
+    for keyword in expanded_keywords:
+        weighted_groups.append((keyword, 10 if keyword in {normalize_text(query).lower()} else 7, True))
+    terms = list(limited_weighted_terms(*weighted_groups, max_terms=40).keys())
     return terms
 
 
@@ -356,6 +439,75 @@ def ensure_table(cur, table: str, ddl: str) -> None:
         cur.execute(ddl)
 
 
+def seed_law_synonyms(cur) -> None:
+    for canonical_term, synonyms in BUILTIN_SYNONYM_GROUPS:
+        for synonym_term in synonyms:
+            cur.execute(
+                """
+                INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority, is_active)
+                VALUES (%s,%s,%s,1)
+                """,
+                (canonical_term, synonym_term, 10),
+            )
+
+
+def prune_expired_caches(cur) -> None:
+    cur.execute("DELETE FROM search_query_cache WHERE expires_at IS NOT NULL AND expires_at < CURRENT_TIMESTAMP")
+    cur.execute("DELETE FROM ask_query_cache WHERE expires_at IS NOT NULL AND expires_at < CURRENT_TIMESTAMP")
+
+
+def clear_local_caches() -> None:
+    LOCAL_SEARCH_CACHE.clear()
+    LOCAL_ASK_CACHE.clear()
+    global LOCAL_SYNONYM_CACHE
+    LOCAL_SYNONYM_CACHE = None
+
+
+def get_cache_generation(cur) -> int:
+    settings = get_sync_settings(cur)
+    return int(settings.get("cache_generation") or 1)
+
+
+def bump_cache_generation(cur) -> int:
+    cur.execute("UPDATE sync_settings SET cache_generation = cache_generation + 1 WHERE id=1")
+    cur.execute("SELECT cache_generation FROM sync_settings WHERE id=1")
+    row = cur.fetchone() or {}
+    clear_local_caches()
+    return int(row.get("cache_generation") or 1)
+
+
+def synonyms_map(cur=None) -> dict[str, list[str]]:
+    global LOCAL_SYNONYM_CACHE
+    now = time.time()
+    if LOCAL_SYNONYM_CACHE and now - LOCAL_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS:
+        return LOCAL_SYNONYM_CACHE[1]
+    synonym_groups: list[tuple[str, str]] = []
+    if cur is not None:
+        cur.execute(
+            """
+            SELECT canonical_term, synonym_term
+            FROM law_synonyms
+            WHERE is_active=1
+            ORDER BY priority DESC, id ASC
+            """
+        )
+        synonym_groups = [
+            (normalize_text(row["canonical_term"]).lower(), normalize_text(row["synonym_term"]).lower())
+            for row in (cur.fetchall() or [])
+            if normalize_text(row.get("canonical_term") or "") and normalize_text(row.get("synonym_term") or "")
+        ]
+    else:
+        with db_cursor() as (_, inner_cur):
+            return synonyms_map(inner_cur)
+    graph: dict[str, set[str]] = {}
+    for canonical_term, synonym_term in synonym_groups:
+        graph.setdefault(canonical_term, set()).add(synonym_term)
+        graph.setdefault(synonym_term, set()).add(canonical_term)
+    result = {key: sorted(values) for key, values in graph.items()}
+    LOCAL_SYNONYM_CACHE = (now, result)
+    return result
+
+
 def make_content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
@@ -373,6 +525,29 @@ def split_keywords(query: str) -> list[str]:
     if not result and normalized:
         result = [normalized]
     return result[:8]
+
+
+def expand_keywords_with_synonyms(keywords: list[str], cur=None, max_keywords: int = 16) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+    synonym_lookup = synonyms_map(cur)
+    for keyword in keywords:
+        token = normalize_text(keyword).lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        expanded.append(token)
+        for synonym in synonym_lookup.get(token, []):
+            if synonym and synonym not in seen:
+                seen.add(synonym)
+                expanded.append(synonym)
+        for canonical, linked in synonym_lookup.items():
+            if token in linked and canonical not in seen:
+                seen.add(canonical)
+                expanded.append(canonical)
+        if len(expanded) >= max_keywords:
+            break
+    return expanded[:max_keywords]
 
 
 def source_label(source: str) -> str:
@@ -879,6 +1054,9 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                 summary['documents'] += 1
                 summary['updated'] += 1 if result['changed'] else 0
                 summary['articles'] += len(parsed.get('articles', []))
+            if int(summary.get("updated") or 0) > 0:
+                bump_cache_generation(cur)
+                prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
             cur.execute(
                 "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
@@ -893,6 +1071,114 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                 (now_iso(), str(exc)),
             )
         raise
+
+
+def make_cache_key(parts: list[str]) -> str:
+    payload = "\u241f".join(parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_local_cache(cache: dict[str, tuple[float, Any]], key: str):
+    entry = cache.get(key)
+    if not entry:
+        return None
+    cached_at, payload = entry
+    if time.time() - cached_at > LOCAL_CACHE_TTL_SECONDS:
+        cache.pop(key, None)
+        return None
+    return payload
+
+
+def put_local_cache(cache: dict[str, tuple[float, Any]], key: str, payload: Any) -> None:
+    cache[key] = (time.time(), payload)
+
+
+def get_search_cache(cur, cache_key: str):
+    payload = get_local_cache(LOCAL_SEARCH_CACHE, cache_key)
+    if payload is not None:
+        return payload
+    cur.execute(
+        """
+        SELECT result_json
+        FROM search_query_cache
+        WHERE cache_key=%s AND (expires_at IS NULL OR expires_at >= CURRENT_TIMESTAMP)
+        """,
+        (cache_key,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cur.execute(
+        "UPDATE search_query_cache SET hit_count=hit_count+1, last_hit_at=CURRENT_TIMESTAMP WHERE cache_key=%s",
+        (cache_key,),
+    )
+    payload = json.loads(row.get("result_json") or "[]")
+    put_local_cache(LOCAL_SEARCH_CACHE, cache_key, payload)
+    return payload
+
+
+def put_search_cache(cur, cache_key: str, normalized_query: str, source: str, limit: int, generation: int, payload: list[dict[str, Any]]) -> None:
+    result_json = json.dumps(payload, ensure_ascii=False)
+    cur.execute(
+        """
+        INSERT INTO search_query_cache
+          (cache_key, normalized_query, source_scope, limit_n, cache_generation, result_json, hit_count, last_hit_at, expires_at)
+        VALUES (%s,%s,%s,%s,%s,%s,0,CURRENT_TIMESTAMP,DATE_ADD(CURRENT_TIMESTAMP, INTERVAL %s SECOND))
+        ON DUPLICATE KEY UPDATE
+          normalized_query=VALUES(normalized_query),
+          source_scope=VALUES(source_scope),
+          limit_n=VALUES(limit_n),
+          cache_generation=VALUES(cache_generation),
+          result_json=VALUES(result_json),
+          last_hit_at=CURRENT_TIMESTAMP,
+          expires_at=VALUES(expires_at)
+        """,
+        (cache_key, normalized_query, source, limit, generation, result_json, SEARCH_CACHE_TTL_SECONDS),
+    )
+    put_local_cache(LOCAL_SEARCH_CACHE, cache_key, payload)
+
+
+def get_ask_cache(cur, cache_key: str):
+    payload = get_local_cache(LOCAL_ASK_CACHE, cache_key)
+    if payload is not None:
+        return payload
+    cur.execute(
+        """
+        SELECT response_json
+        FROM ask_query_cache
+        WHERE cache_key=%s AND (expires_at IS NULL OR expires_at >= CURRENT_TIMESTAMP)
+        """,
+        (cache_key,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cur.execute(
+        "UPDATE ask_query_cache SET hit_count=hit_count+1, last_hit_at=CURRENT_TIMESTAMP WHERE cache_key=%s",
+        (cache_key,),
+    )
+    payload = json.loads(row.get("response_json") or "{}")
+    put_local_cache(LOCAL_ASK_CACHE, cache_key, payload)
+    return payload
+
+
+def put_ask_cache(cur, cache_key: str, normalized_query: str, generation: int, payload: dict[str, Any]) -> None:
+    response_json = json.dumps(payload, ensure_ascii=False)
+    cur.execute(
+        """
+        INSERT INTO ask_query_cache
+          (cache_key, normalized_query, cache_generation, response_json, hit_count, last_hit_at, expires_at)
+        VALUES (%s,%s,%s,%s,0,CURRENT_TIMESTAMP,DATE_ADD(CURRENT_TIMESTAMP, INTERVAL %s SECOND))
+        ON DUPLICATE KEY UPDATE
+          normalized_query=VALUES(normalized_query),
+          cache_generation=VALUES(cache_generation),
+          response_json=VALUES(response_json),
+          last_hit_at=CURRENT_TIMESTAMP,
+          expires_at=VALUES(expires_at)
+        """,
+        (cache_key, normalized_query, generation, response_json, ASK_CACHE_TTL_SECONDS),
+    )
+    put_local_cache(LOCAL_ASK_CACHE, cache_key, payload)
 
 
 def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, Any]:
@@ -1088,13 +1374,20 @@ def fetch_search_detail_rows(
 
 def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[dict[str, Any]]:
     normalized_query = normalize_text(query).lower()
-    keywords = split_keywords(query)
-    terms = query_terms(query)
-    if not terms:
+    if not normalized_query:
         return []
     article_candidates: list[dict[str, Any]] = []
     document_candidates: list[dict[str, Any]] = []
     with db_cursor() as (_, cur):
+        generation = get_cache_generation(cur)
+        keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20)
+        terms = query_terms(query, cur=cur)
+        cache_key = make_cache_key(["search", normalized_query, source, str(limit), str(generation)])
+        cached = get_search_cache(cur, cache_key)
+        if cached is not None:
+            return cached
+        if not terms:
+            return []
         placeholders = ",".join(["%s"] * len(terms))
         params: list[Any] = list(terms)
         source_sql = ""
@@ -1140,10 +1433,15 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[d
         document_candidates = cur.fetchall() or []
 
     if not article_candidates and not document_candidates:
-        return search_documents_slow(query, source, limit)
+        results = search_documents_slow(query, source, limit)
+        with db_cursor(commit=True) as (_, cur):
+            put_search_cache(cur, cache_key, normalized_query, source, limit, generation, results)
+        return results
     results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit)
     if not results:
-        return search_documents_slow(query, source, limit)
+        results = search_documents_slow(query, source, limit)
+    with db_cursor(commit=True) as (_, cur):
+        put_search_cache(cur, cache_key, normalized_query, source, limit, generation, results)
     return results
 
 
@@ -1315,21 +1613,29 @@ def api_ask():
     query = (payload.get('query') or '').strip()
     if not query:
         raise ValueError('query が必要です。')
-    keywords = split_keywords(query)
+    normalized_query = normalize_text(query).lower()
+    with db_cursor(commit=True) as (_, cur):
+        generation = get_cache_generation(cur)
+        cache_key = make_cache_key(["ask", normalized_query, str(generation)])
+        cached = get_ask_cache(cur, cache_key)
+        if cached is not None:
+            return jsonify(cached)
+        keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20)
     candidates = search_documents(query, 'all', 10)
     lead = '関連性の高い条文候補を表示します。運用判断は必ず原文を確認してください。'
     if candidates:
         top = candidates[0]
         lead = f"{source_label(top['source'])}の「{top['title']}」が最も関連すると推定されます。候補条文を上から確認してください。"
-    return jsonify(
-        {
-            'query': query,
-            'normalizedQuery': normalize_text(query),
-            'keywords': keywords,
-            'answerLead': lead,
-            'candidates': candidates,
-        }
-    )
+    response_payload = {
+        'query': query,
+        'normalizedQuery': normalize_text(query),
+        'keywords': keywords,
+        'answerLead': lead,
+        'candidates': candidates,
+    }
+    with db_cursor(commit=True) as (_, cur):
+        put_ask_cache(cur, cache_key, normalized_query, generation, response_payload)
+    return jsonify(response_payload)
 
 
 @app.get('/api/reference/ask')
