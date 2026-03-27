@@ -689,10 +689,21 @@ def maybe_backfill_search_terms() -> None:
         term_count = int((cur.fetchone() or {}).get("cnt") or 0)
         if term_count > 0:
             return
-        cur.execute("SELECT id FROM law_documents ORDER BY id ASC")
-        doc_ids = [int(row["id"]) for row in (cur.fetchall() or [])]
-        for document_id in doc_ids:
-            rebuild_search_terms_for_document(cur, document_id)
+        cur.execute("SELECT GET_LOCK('mine_city_reiki_backfill_search_terms', 0) AS locked")
+        locked = int((cur.fetchone() or {}).get("locked") or 0)
+        if locked != 1:
+            return
+        try:
+            cur.execute("SELECT COUNT(*) AS cnt FROM law_search_terms")
+            term_count = int((cur.fetchone() or {}).get("cnt") or 0)
+            if term_count > 0:
+                return
+            cur.execute("SELECT id FROM law_documents ORDER BY id ASC")
+            doc_ids = [int(row["id"]) for row in (cur.fetchall() or [])]
+            for document_id in doc_ids:
+                rebuild_search_terms_for_document(cur, document_id)
+        finally:
+            cur.execute("DO RELEASE_LOCK('mine_city_reiki_backfill_search_terms')")
 
 
 def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
