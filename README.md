@@ -36,3 +36,11 @@ python3 app.py
 ## ソース
 - 美祢市例規: https://www2.city.mine.lg.jp/section/reiki/reiki_taikei/r_taikei_05.html
 - 地方自治法: https://laws.e-gov.go.jp/law/322AC0000000067
+
+## 他アプリ連携
+- 参照系エンドポイントは同一ホストの他アプリから利用する前提です。
+- 推奨利用先:
+  - `GET /mine-city-reiki-api/api/reference/search?q=...` 条文候補検索
+  - `GET /mine-city-reiki-api/api/reference/document/:id` 文書・条文参照
+  - `POST /mine-city-reiki-api/api/ask` 自然文から候補条文提示
+- 回答は法的判断の断定ではなく、原文確認用の候補提示として扱います。
