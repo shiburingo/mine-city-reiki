@@ -123,8 +123,8 @@
 
 ## 認証
 
-- `mine-troutfarm` 認証サービス（ポート 8787）に委譲。
-- `VITE_AUTH_ENABLED=true` の場合のみログイン UI を表示。
+- 共通認証 `mine-trout-cash-api`（ポート 8787）の `/api/auth/*` に委譲。
+- フロントエンドは `/api/auth/config` と `/api/auth/me` の応答を見てログイン UI の表示有無を判定する。
 - セッション Cookie を共有する同一ドメイン前提。
 
 ---

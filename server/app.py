@@ -1356,7 +1356,7 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                 else:
                     summary['unchanged'] += 1
                 summary['articles'] += len(parsed.get('articles', []))
-            if int(summary.get("updated") or 0) > 0:
+            if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
                 bump_cache_generation(cur)
                 prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
@@ -2256,7 +2256,7 @@ def api_ask():
             return jsonify(cached)
         base_keywords = extract_question_keywords(query)
         keywords = expand_keywords_with_synonyms(base_keywords, cur=cur, max_keywords=20)
-    candidates = search_documents(query, 'all', 10)
+    _total, candidates = search_documents(query, 'all', 10)
     enriched = enrich_candidates_with_text(candidates)
     candidate_groups = group_ask_candidates(enriched)
     # answerLead をタイプに応じて生成
