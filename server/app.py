@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -112,6 +113,7 @@ LOCAL_CACHE_TTL_SECONDS = 120
 LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
+SYNC_THREAD_LOCK = threading.Lock()
 BUILTIN_SYNONYM_GROUPS = [
     # ── 法令の種類・総称 ──────────────────────────────
     ("地方自治法", ["自治法", "自治体法"]),
@@ -538,6 +540,15 @@ def chunk_terms(text: str) -> list[str]:
                     for idx in range(len(compact) - size + 1):
                         terms.append(compact[idx : idx + size])
     return terms
+
+
+def trim_text_for_indexing(text: str, max_chars: int = 4000) -> str:
+    normalized = normalize_text(text)
+    if len(normalized) <= max_chars:
+        return normalized
+    head = max_chars // 2
+    tail = max_chars - head
+    return f"{normalized[:head]}\n{normalized[-tail:]}"
 
 
 def limited_weighted_terms(*groups: tuple[str, int, bool], max_terms: int = 160) -> dict[str, int]:
@@ -1005,12 +1016,14 @@ def fetch_egov_document() -> dict[str, Any]:
 
 
 def build_document_search_terms(document: dict[str, Any]) -> dict[str, int]:
+    # 文書全文は非常に長くなり得るため、索引生成時は先頭と末尾の抜粋に絞る。
+    full_text_excerpt = trim_text_for_indexing(document.get("full_text", ""), max_chars=4000)
     return limited_weighted_terms(
         (document.get("title", ""), 12, True),
         (document.get("law_number", ""), 8, True),
         (document.get("category_path", ""), 4, False),
         (document.get("law_type", ""), 4, True),
-        (document.get("full_text", ""), 1, False),
+        (full_text_excerpt, 1, False),
     )
 
 
@@ -1373,6 +1386,22 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                 (now_iso(), str(exc)),
             )
         raise
+
+
+def launch_sync_in_background(source_scope: str) -> None:
+    def _runner() -> None:
+        try:
+            execute_sync('manual', source_scope)
+        except Exception:
+            app.logger.exception('Background sync failed')
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"mine-city-reiki-sync-{source_scope}",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
 
 
 def make_cache_key(parts: list[str]) -> str:
@@ -2049,8 +2078,8 @@ def api_sync_run():
     scope = payload.get('sourceScope') or 'all'
     if scope not in {'all', 'mine-city', 'egov'}:
         raise ValueError('sourceScope が不正です。')
-    summary = execute_sync('manual', scope)
-    return jsonify({'ok': True, 'summary': summary})
+    launch_sync_in_background(scope)
+    return jsonify({'ok': True, 'started': True, 'sourceScope': scope, 'summary': {}}), 202
 
 
 @app.get('/api/search')
