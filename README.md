@@ -53,9 +53,9 @@
 |---|---|
 | フロントエンド | React 18 + TypeScript + Vite + Tailwind CSS 4 |
 | バックエンド | Python 3 / Flask 3 + Gunicorn（ポート 8795） |
-| データベース | MariaDB（11 テーブル） |
+| データベース | MariaDB（9 テーブル） |
 | 形態素解析 | Janome 0.5.0 |
-| 認証 | mine-troutfarm 認証サービス（ポート 8787）に委譲 |
+| 認証 | 共通認証 `mine-trout-cash-api`（ポート 8787, `/api/auth/*`）に委譲 |
 | 共有 UI | mine-troutfarm-ui（ローカル npm パッケージ） |
 | デプロイ | Raspberry Pi + Nginx リバースプロキシ |
 
