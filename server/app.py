@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -18,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import pymysql
 from bs4 import BeautifulSoup
-from flask import Flask, g, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 from pymysql.cursors import DictCursor
 from werkzeug.exceptions import HTTPException
 
@@ -111,18 +113,115 @@ LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
 BUILTIN_SYNONYM_GROUPS = [
+    # ── 法令の種類・総称 ──────────────────────────────
     ("地方自治法", ["自治法", "自治体法"]),
-    ("美祢市", ["本市"]),
-    ("条例", ["例規"]),
-    ("規則", ["例規"]),
-    ("要綱", ["例規"]),
-    ("職員", ["職員等"]),
-    ("休暇", ["休業", "休み"]),
-    ("手当", ["給与"]),
-    ("会計年度任用職員", ["会計年度職員", "任用職員"]),
-    ("議会", ["議員"]),
-    ("個人情報", ["個人情報保護"]),
-    ("情報公開", ["開示"]),
+    ("美祢市", ["本市", "市"]),
+    ("条例", ["例規", "市条例"]),
+    ("規則", ["例規", "市規則"]),
+    ("要綱", ["例規", "実施要綱", "運用要綱"]),
+    ("規程", ["例規", "内規", "規定"]),
+    ("告示", ["例規", "公示"]),
+    ("訓令", ["例規", "通達", "通知"]),
+    ("協定", ["協約", "取決め"]),
+    # ── 職員・人事 ───────────────────────────────────
+    ("職員", ["職員等", "従業員", "公務員", "市職員"]),
+    ("会計年度任用職員", ["会計年度職員", "任用職員", "非常勤職員", "パートタイム職員", "フルタイム職員"]),
+    ("正規職員", ["常勤職員", "一般職員", "正職員"]),
+    ("非常勤", ["パートタイム", "短時間勤務", "臨時職員"]),
+    ("任用", ["採用", "雇用", "登用"]),
+    ("分限", ["降格", "免職", "休職"]),
+    ("懲戒", ["戒告", "減給", "停職", "免職"]),
+    ("人事異動", ["異動", "転任", "配置換え", "転勤"]),
+    ("研修", ["講習", "教育訓練", "人材育成"]),
+    ("定年", ["定年退職", "停年", "退職年齢"]),
+    ("退職", ["離職", "辞職", "免職"]),
+    # ── 休暇・勤務時間 ───────────────────────────────
+    ("休暇", ["休業", "休み", "欠勤", "休日"]),
+    ("年次有給休暇", ["年休", "有給休暇", "有給", "年次休暇"]),
+    ("特別休暇", ["特休", "慶弔休暇"]),
+    ("育児休業", ["育休", "育児休暇", "子育て休業"]),
+    ("介護休業", ["介護休暇", "介護のための休業"]),
+    ("病気休暇", ["病休", "傷病休暇", "療養休暇"]),
+    ("産前産後休業", ["産休", "出産休暇", "産前休業", "産後休業"]),
+    ("勤務時間", ["就業時間", "労働時間", "業務時間", "勤務時間数"]),
+    ("時間外勤務", ["残業", "超過勤務", "時間外労働"]),
+    ("深夜勤務", ["夜間勤務", "深夜労働", "夜勤"]),
+    ("休日勤務", ["休日出勤", "休日労働"]),
+    ("代休", ["振替休日", "振休"]),
+    # ── 給与・手当 ───────────────────────────────────
+    ("給与", ["給料", "報酬", "賃金", "俸給", "手当"]),
+    ("給料", ["基本給", "本俸", "月給"]),
+    ("手当", ["給付", "支給", "補助"]),
+    ("扶養手当", ["家族手当", "扶養給付"]),
+    ("住居手当", ["住宅手当", "家賃補助"]),
+    ("通勤手当", ["交通費", "通勤費"]),
+    ("時間外手当", ["残業手当", "超過勤務手当", "割増賃金"]),
+    ("期末手当", ["賞与", "ボーナス", "一時金"]),
+    ("勤勉手当", ["成績手当", "業績手当"]),
+    ("管理職手当", ["管理職員手当", "管理監督者手当"]),
+    ("退職手当", ["退職金", "退職給付"]),
+    # ── 財政・会計 ───────────────────────────────────
+    ("予算", ["当初予算", "補正予算", "財政計画"]),
+    ("決算", ["歳入歳出決算", "年度決算"]),
+    ("歳入", ["収入", "税収", "財源"]),
+    ("歳出", ["支出", "経費", "財政支出"]),
+    ("一般会計", ["普通会計"]),
+    ("特別会計", ["企業会計", "事業会計"]),
+    ("補助金", ["交付金", "助成金", "補助", "給付金"]),
+    ("負担金", ["分担金", "拠出金"]),
+    ("使用料", ["利用料", "料金", "手数料"]),
+    ("財産", ["市有財産", "公有財産", "行政財産", "普通財産"]),
+    ("契約", ["請負契約", "委託契約", "売買契約", "協定"]),
+    ("入札", ["競争入札", "一般競争入札", "指名競争入札", "随意契約"]),
+    ("監査", ["会計検査", "内部監査", "外部監査"]),
+    # ── 行政・組織 ───────────────────────────────────
+    ("市長", ["首長", "長", "行政の長"]),
+    ("副市長", ["助役", "副長"]),
+    ("教育委員会", ["教委", "教育行政機関"]),
+    ("行政委員会", ["委員会", "附属機関"]),
+    ("審議会", ["諮問機関", "委員会", "審査会", "協議会"]),
+    ("議会", ["市議会", "議員", "議員会"]),
+    ("委員会", ["特別委員会", "常任委員会"]),
+    ("許可", ["認可", "承認", "許諾", "認定"]),
+    ("申請", ["届出", "申込", "請求", "申立"]),
+    ("届出", ["申請", "報告", "届"]),
+    ("処分", ["行政処分", "決定", "措置"]),
+    ("不服申立", ["異議申立", "審査請求", "行政不服申立"]),
+    # ── 福祉・社会保障 ───────────────────────────────
+    ("福祉", ["社会福祉", "厚生", "生活支援"]),
+    ("介護", ["介護保険", "介護サービス", "要介護"]),
+    ("障害", ["障がい", "障碍", "ハンディキャップ"]),
+    ("障害者", ["障がい者", "障碍者", "身体障害者", "知的障害者"]),
+    ("高齢者", ["老人", "シニア", "高齢市民"]),
+    ("児童", ["子ども", "子供", "未成年者", "少年"]),
+    ("生活保護", ["保護", "生活扶助", "公的扶助"]),
+    ("保育", ["保育所", "保育園", "子育て支援"]),
+    ("医療", ["診療", "医療機関", "病院", "医療サービス"]),
+    ("国民健康保険", ["国保", "健保", "医療保険"]),
+    # ── 土地・都市計画 ───────────────────────────────
+    ("土地", ["宅地", "農地", "山林", "用地"]),
+    ("道路", ["市道", "公道", "道路法"]),
+    ("河川", ["水路", "用水路", "準用河川"]),
+    ("公園", ["都市公園", "緑地", "広場"]),
+    ("開発", ["開発行為", "宅地開発", "土地開発"]),
+    ("建築", ["建物", "建設", "工事"]),
+    ("地区計画", ["都市計画", "まちづくり", "区域"]),
+    # ── 個人情報・情報管理 ──────────────────────────
+    ("個人情報", ["個人情報保護", "プライバシー", "個人データ"]),
+    ("情報公開", ["開示", "公開請求", "情報開示"]),
+    ("マイナンバー", ["個人番号", "社会保障番号", "番号制度"]),
+    # ── 環境・廃棄物 ─────────────────────────────────
+    ("廃棄物", ["ごみ", "廃棄", "産業廃棄物", "一般廃棄物"]),
+    ("環境", ["環境保全", "環境保護", "自然環境"]),
+    ("騒音", ["振動", "公害", "生活環境"]),
+    # ── 手続き・総則 ─────────────────────────────────
+    ("施行", ["実施", "施行日", "適用"]),
+    ("改正", ["改定", "修正", "改訂"]),
+    ("廃止", ["失効", "撤廃", "廃案"]),
+    ("附則", ["経過措置", "経過規定"]),
+    ("委任", ["専決", "権限委任", "委任規定"]),
+    ("罰則", ["罰金", "過料", "行政罰"]),
+    ("遵守", ["順守", "履行", "義務"]),
 ]
 
 
@@ -213,6 +312,31 @@ def ensure_schema() -> None:
                   KEY idx_law_synonyms_synonym (synonym_term, is_active)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
+            )
+            ensure_table(
+                cur,
+                "law_document_history",
+                """
+                CREATE TABLE law_document_history (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  document_id BIGINT UNSIGNED NOT NULL,
+                  content_hash CHAR(64) NOT NULL,
+                  title VARCHAR(255) NOT NULL,
+                  law_number VARCHAR(128) NOT NULL DEFAULT '',
+                  promulgated_at DATE NULL,
+                  updated_at_source VARCHAR(64) NOT NULL DEFAULT '',
+                  full_text LONGTEXT NULL,
+                  changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  KEY idx_law_document_history_document (document_id, changed_at),
+                  CONSTRAINT fk_law_document_history_document FOREIGN KEY (document_id) REFERENCES law_documents(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_column(
+                cur,
+                "law_document_history",
+                "full_text",
+                "full_text LONGTEXT NULL AFTER updated_at_source",
             )
             ensure_table(
                 cur,
@@ -341,6 +465,37 @@ def get_janome_tokenizer():
     return JANOME_TOKENIZER
 
 
+def katakana_to_hiragana(text: str) -> str:
+    """カタカナをひらがなに変換する。"""
+    return "".join(chr(ord(c) - 0x60) if "\u30a1" <= c <= "\u30f3" else c for c in text)
+
+
+def janome_reading_terms(text: str) -> list[str]:
+    """テキスト中の名詞・動詞・形容詞の読み（ひらがな）を返す。"""
+    tokenizer = get_janome_tokenizer()
+    if tokenizer is None:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+    try:
+        for token in tokenizer.tokenize(text):
+            pos = (token.part_of_speech or "").split(",")[0]
+            if pos not in {"名詞", "動詞", "形容詞"}:
+                continue
+            reading = getattr(token, "reading", "") or ""
+            if reading == "*":
+                reading = ""
+            hira = katakana_to_hiragana(normalize_text(reading)).lower()
+            if not hira or len(hira) < 2 or hira in STOP_TERMS or not contains_japanese(hira):
+                continue
+            if hira not in seen:
+                seen.add(hira)
+                terms.append(hira)
+    except Exception:
+        return []
+    return terms
+
+
 def janome_terms(text: str) -> list[str]:
     tokenizer = get_janome_tokenizer()
     if tokenizer is None:
@@ -397,6 +552,10 @@ def limited_weighted_terms(*groups: tuple[str, int, bool], max_terms: int = 160)
             weights[term] = max(weights.get(term, 0), weight)
         for term in chunk_terms(normalized):
             weights[term] = max(weights.get(term, 0), weight)
+        # 読み（ひらがな）を低ウェイトで追加（表記が漢字でも読みで検索できるようにする）
+        reading_weight = max(1, int(weight * 0.6))
+        for term in janome_reading_terms(normalized):
+            weights[term] = max(weights.get(term, 0), reading_weight)
     ranked = sorted(weights.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
     return dict(ranked[:max_terms])
 
@@ -512,6 +671,55 @@ def make_content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+QUESTION_TYPE_PATTERNS: list[tuple[str, list[str]]] = [
+    ("eligibility", ["できますか", "できるか", "できるでしょうか", "可能ですか", "権利があります", "資格があります", "受けられます", "対象になります"]),
+    ("procedure",   ["手続き", "申請", "どうすれば", "どのようにすれば", "どのように手続き", "方法を", "方法は", "どうしたら", "どこに申請"]),
+    ("definition",  ["とは何ですか", "とはなんですか", "とはどういう", "とは何か", "の定義", "の意味", "について教えて", "とはどのよう"]),
+    ("period",      ["いつから", "いつまで", "期間は", "何日間", "何ヶ月", "何年間", "いつ", "期限は"]),
+    ("amount",      ["いくら", "何円", "金額は", "額は", "いくつ", "何日", "何時間", "何割", "何パーセント"]),
+    ("location",    ["どこで", "どこに", "窓口は", "場所は", "どの部署", "どの課"]),
+]
+
+QUESTION_TYPE_LABELS: dict[str, str] = {
+    "eligibility": "権利・対象資格に関する質問",
+    "procedure":   "手続き・申請方法に関する質問",
+    "definition":  "定義・内容に関する質問",
+    "period":      "期間・時期に関する質問",
+    "amount":      "金額・日数・数量に関する質問",
+    "location":    "場所・窓口に関する質問",
+    "general":     "一般的な質問",
+}
+
+QUESTION_SUFFIXES = [
+    "ですか", "ますか", "でしょうか", "だろうか", "でしょう",
+    "を教えてください", "を教えて", "について教えてください", "について教えて",
+    "はどうすればいいですか", "はどうすれば", "はどのようにすれば", "はどのように",
+    "はどこに", "はいつ", "とはなんですか", "とは何ですか", "はどういうこと",
+]
+
+
+def detect_question_type(query: str) -> str:
+    normalized = normalize_text(query).lower()
+    for qtype, patterns in QUESTION_TYPE_PATTERNS:
+        for pattern in patterns:
+            if pattern in normalized:
+                return qtype
+    return "general"
+
+
+def extract_question_keywords(query: str) -> list[str]:
+    """質問語尾・助詞を除去して内容語キーワードを抽出する。"""
+    normalized = normalize_text(query)
+    cleaned = normalized
+    for suffix in QUESTION_SUFFIXES:
+        cleaned = re.sub(re.escape(suffix) + r"[？?。]*$", "", cleaned).strip()
+    keywords = split_keywords(cleaned) if cleaned else split_keywords(query)
+    # 元の質問からも分割して補完（短くなりすぎた場合の保険）
+    if len(keywords) < 2:
+        keywords = split_keywords(query)
+    return keywords
+
+
 def split_keywords(query: str) -> list[str]:
     normalized = normalize_text(query)
     parts = [p for p in re.split(r"[\s、,，。]+", normalized) if p]
@@ -603,6 +811,20 @@ def node_text(node: Any, separator: str = "") -> str:
     return normalize_text(node.get_text(separator, strip=True))
 
 
+def serialize_table_block(block: Any) -> str:
+    """table div ブロックをタブ区切り行形式のマーカーとしてシリアライズする。"""
+    table_elem = block.find("table")
+    if table_elem is None:
+        return node_text(block, "\n")
+    rows: list[str] = []
+    for tr in table_elem.find_all("tr"):
+        cells = [normalize_text(td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
+        rows.append("\t".join(cells))
+    if not rows:
+        return node_text(block, "\n")
+    return "__TABLE_START__\n" + "\n".join(rows) + "\n__TABLE_END__"
+
+
 def fetch_url_text(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": f"{APP_SLUG}/{APP_VERSION}"})
     with urllib.request.urlopen(req, timeout=60) as res:
@@ -679,7 +901,10 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
             block = eline.find("div", class_=block_class)
             if block is None:
                 continue
-            text = node_text(block)
+            if block_class == "table":
+                text = serialize_table_block(block)
+            else:
+                text = node_text(block, "")
             if text:
                 current["parts"].append(text)
             break
@@ -785,6 +1010,7 @@ def build_document_search_terms(document: dict[str, Any]) -> dict[str, int]:
         (document.get("law_number", ""), 8, True),
         (document.get("category_path", ""), 4, False),
         (document.get("law_type", ""), 4, True),
+        (document.get("full_text", ""), 1, False),
     )
 
 
@@ -845,6 +1071,7 @@ def rebuild_search_terms_for_document(cur, document_id: int) -> None:
         "law_type": doc.get("law_type") or "",
         "law_number": doc.get("law_number") or "",
         "category_path": doc.get("category_path") or "",
+        "full_text": doc.get("full_text") or "",
     }
     doc_terms = build_document_search_terms(document)
     cur.execute(
@@ -893,6 +1120,7 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
         (document['source'], document['external_id']),
     )
     existing = cur.fetchone()
+    is_new = existing is None
     if existing:
         document_id = int(existing['id'])
         changed = existing.get('content_hash') != document['content_hash']
@@ -927,6 +1155,21 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
         )
         document_id = int(cur.lastrowid)
     if changed:
+        cur.execute(
+            """
+            INSERT INTO law_document_history (document_id, content_hash, title, law_number, promulgated_at, updated_at_source, full_text)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                document_id,
+                document.get('content_hash', ''),
+                document.get('title', ''),
+                document.get('law_number', ''),
+                document.get('promulgated_at'),
+                document.get('updated_at_source', ''),
+                document.get('full_text', ''),
+            ),
+        )
         cur.execute("DELETE FROM law_articles WHERE document_id=%s", (document_id,))
         for idx, article in enumerate(document.get('articles', []), start=1):
             cur.execute(
@@ -947,7 +1190,7 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
                 ),
             )
         rebuild_search_terms_for_document(cur, document_id)
-    return {'document_id': document_id, 'changed': changed}
+    return {'document_id': document_id, 'changed': changed, 'is_new': is_new}
 
 
 def set_sync_run_status(cur, run_id: int, status: str, summary: dict[str, Any] | None = None, error_text: str | None = None):
@@ -982,6 +1225,44 @@ def sync_status_payload(cur) -> dict[str, Any]:
     article_count = int((cur.fetchone() or {}).get('cnt') or 0)
     cur.execute("SELECT COUNT(*) AS cnt FROM sync_runs")
     run_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    # ソース別カウント
+    cur.execute("SELECT COUNT(*) AS cnt FROM law_documents WHERE source='mine-city'")
+    mc_doc_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    cur.execute(
+        "SELECT COUNT(*) AS cnt FROM law_articles a JOIN law_documents d ON d.id=a.document_id WHERE d.source='mine-city'"
+    )
+    mc_article_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    cur.execute("SELECT COUNT(*) AS cnt FROM law_documents WHERE source='egov'")
+    egov_doc_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    cur.execute(
+        "SELECT COUNT(*) AS cnt FROM law_articles a JOIN law_documents d ON d.id=a.document_id WHERE d.source='egov'"
+    )
+    egov_article_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    # ソース別 最新改定ドキュメント (updated_at 降順 top5)
+    def _latest_revisions(source: str) -> list[dict[str, Any]]:
+        cur.execute(
+            """
+            SELECT id, title, law_type, law_number, promulgated_at, updated_at, source_url
+            FROM law_documents
+            WHERE source=%s
+            ORDER BY updated_at DESC
+            LIMIT 5
+            """,
+            (source,),
+        )
+        rows = cur.fetchall() or []
+        return [
+            {
+                'id': int(r['id']),
+                'title': r['title'],
+                'lawType': r['law_type'] or '',
+                'lawNumber': r['law_number'] or '',
+                'promulgatedAt': str(r['promulgated_at']) if r['promulgated_at'] else None,
+                'updatedAt': str(r['updated_at']) if r['updated_at'] else None,
+                'sourceUrl': r['source_url'],
+            }
+            for r in rows
+        ]
     return {
         'enabled': bool(settings.get('enabled')),
         'dayOfMonth': int(settings.get('day_of_month') or 1),
@@ -996,6 +1277,12 @@ def sync_status_payload(cur) -> dict[str, Any]:
         'documentCount': doc_count,
         'articleCount': article_count,
         'runCount': run_count,
+        'mineCityDocumentCount': mc_doc_count,
+        'mineCityArticleCount': mc_article_count,
+        'egovDocumentCount': egov_doc_count,
+        'egovArticleCount': egov_article_count,
+        'mineCityLatestRevisions': _latest_revisions('mine-city'),
+        'egovLatestRevisions': _latest_revisions('egov'),
     }
 
 
@@ -1036,7 +1323,10 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
             (now_iso(),),
         )
 
-    summary: dict[str, Any] = {'sourceScope': source_scope, 'documents': 0, 'updated': 0, 'articles': 0}
+    summary: dict[str, Any] = {
+        'sourceScope': source_scope,
+        'documents': 0, 'added': 0, 'updated': 0, 'unchanged': 0, 'articles': 0,
+    }
     try:
         with db_cursor(commit=True) as (_, cur):
             if source_scope in {'all', 'mine-city'}:
@@ -1046,13 +1336,25 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                     parsed = parse_mine_city_document(item)
                     result = upsert_document(cur, parsed)
                     summary['documents'] += 1
-                    summary['updated'] += 1 if result['changed'] else 0
+                    if result['changed']:
+                        if result.get('is_new'):
+                            summary['added'] += 1
+                        else:
+                            summary['updated'] += 1
+                    else:
+                        summary['unchanged'] += 1
                     summary['articles'] += len(parsed.get('articles', []))
             if source_scope in {'all', 'egov'}:
                 parsed = fetch_egov_document()
                 result = upsert_document(cur, parsed)
                 summary['documents'] += 1
-                summary['updated'] += 1 if result['changed'] else 0
+                if result['changed']:
+                    if result.get('is_new'):
+                        summary['added'] += 1
+                    else:
+                        summary['updated'] += 1
+                else:
+                    summary['unchanged'] += 1
                 summary['articles'] += len(parsed.get('articles', []))
             if int(summary.get("updated") or 0) > 0:
                 bump_cache_generation(cur)
@@ -1197,6 +1499,8 @@ def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, 
         'articleTitle': row.get('article_title') or None,
         'snippet': text_snippet(snippet_text, keywords),
         'categoryPath': row.get('category_path') or '',
+        'matchReasons': row.get('match_reasons') or [],
+        'promulgatedAt': str(row['promulgated_at']) if row.get('promulgated_at') else None,
     }
 
 
@@ -1275,7 +1579,8 @@ def fetch_search_detail_rows(
     keywords: list[str],
     normalized_query: str,
     limit: int,
-) -> list[dict[str, Any]]:
+    offset: int = 0,
+) -> tuple[int, list[dict[str, Any]]]:
     article_map = {
         int(item["article_id"]): {"term_score": int(item["term_score"]), "matched_terms": int(item["matched_terms"])}
         for item in article_candidates
@@ -1300,6 +1605,7 @@ def fetch_search_detail_rows(
                   d.source_url,
                   d.category_path,
                   d.full_text,
+                  d.promulgated_at,
                   a.id AS article_id,
                   a.article_number,
                   a.article_title,
@@ -1326,6 +1632,7 @@ def fetch_search_detail_rows(
                       d.source_url,
                       d.category_path,
                       d.full_text,
+                      d.promulgated_at,
                       NULL AS article_id,
                       NULL AS article_number,
                       NULL AS article_title,
@@ -1347,35 +1654,237 @@ def fetch_search_detail_rows(
         article_text = (row.get("article_text") or "").lower()
         doc_text = (row.get("full_text") or "").lower()
         score = term_score * 10 + matched_terms * 12
+        match_reasons: list[str] = []
         if normalized_query and normalized_query in title:
             score += 120
+            match_reasons.append("タイトル")
         if normalized_query and normalized_query in article_no:
             score += 90
+            match_reasons.append("条番号")
         if normalized_query and normalized_query in article_title:
             score += 80
+            if "条名" not in match_reasons:
+                match_reasons.append("条名")
         if normalized_query and normalized_query in article_text:
             score += 50
+            if "条文" not in match_reasons:
+                match_reasons.append("条文")
         for keyword in keywords:
             kw = keyword.lower()
+            if kw in title and "タイトル" not in match_reasons:
+                match_reasons.append("タイトル")
+            if kw in article_no and "条番号" not in match_reasons:
+                match_reasons.append("条番号")
+            if kw in article_title and "条名" not in match_reasons:
+                match_reasons.append("条名")
+            if kw in article_text:
+                score += 14
+                if "条文" not in match_reasons:
+                    match_reasons.append("条文")
+            elif kw in doc_text:
+                score += 4
+                if "本文" not in match_reasons:
+                    match_reasons.append("本文")
             if kw in title:
                 score += 35
             if kw in article_no:
                 score += 30
             if kw in article_title:
                 score += 24
-            if kw in article_text:
-                score += 14
-            elif kw in doc_text:
-                score += 4
         row["score"] = score
+        row["match_reasons"] = match_reasons
     rows.sort(key=lambda item: (-int(item["score"]), -(item.get("article_id") is not None), int(item["document_id"]), int(item.get("article_id") or 0)))
-    return [serialize_search_row(row, keywords) for row in rows[:limit]]
+    total = len(rows)
+    sliced = rows[offset:offset + limit]
+    return total, [serialize_search_row(row, keywords) for row in sliced]
 
 
-def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[dict[str, Any]]:
+def _filter_doc_ids_by_meta(
+    doc_ids: set[int],
+    cur,
+    law_type: str = '',
+    from_date: str = '',
+    to_date: str = '',
+) -> set[int]:
+    """doc_ids を法令種別・公布日でさらに絞り込む。"""
+    if not doc_ids or (not law_type and not from_date and not to_date):
+        return doc_ids
+    placeholders = ",".join(["%s"] * len(doc_ids))
+    conditions: list[str] = [f"id IN ({placeholders})"]
+    params: list[Any] = list(doc_ids)
+    if law_type:
+        conditions.append("law_type=%s")
+        params.append(law_type)
+    if from_date:
+        conditions.append("(promulgated_at IS NULL OR promulgated_at >= %s)")
+        params.append(from_date)
+    if to_date:
+        conditions.append("(promulgated_at IS NULL OR promulgated_at <= %s)")
+        params.append(to_date)
+    cur.execute(f"SELECT id FROM law_documents WHERE {' AND '.join(conditions)}", params)
+    return {int(r["id"]) for r in (cur.fetchall() or [])}
+
+
+def _doc_ids_for_keyword(keyword: str, source: str, cur) -> set[int]:
+    """転置インデックスから1キーワードにマッチする document_id の集合を返す。"""
+    norm = normalize_text(keyword).lower()
+    if not norm:
+        return set()
+    terms = list(limited_weighted_terms((norm, 10, True), max_terms=30).keys())
+    for syn in expand_keywords_with_synonyms([norm], cur=cur, max_keywords=6):
+        if syn != norm:
+            terms.extend(limited_weighted_terms((syn, 8, True), max_terms=10).keys())
+    terms = list(set(terms))
+    if not terms:
+        return set()
+    placeholders = ",".join(["%s"] * len(terms))
+    source_filter = " AND d.source=%s" if source != "all" else ""
+    params: list[Any] = terms + ([source] if source != "all" else [])
+    cur.execute(
+        f"SELECT DISTINCT st.document_id"
+        f" FROM law_search_terms st JOIN law_documents d ON d.id=st.document_id"
+        f" WHERE st.term IN ({placeholders}){source_filter}",
+        params,
+    )
+    return {int(r["document_id"]) for r in cur.fetchall()}
+
+
+def _doc_ids_for_field(field_q: str, source: str, cur) -> set[int] | None:
+    """フィールド内の全キーワード（スペース区切り）をAND結合した document_id 集合を返す。
+    フィールドが空なら None を返す（制約なし扱い）。"""
+    keywords = [k for k in normalize_text(field_q).lower().split() if k]
+    if not keywords:
+        return None
+    sets = [_doc_ids_for_keyword(k, source, cur) for k in keywords]
+    result = sets[0]
+    for s in sets[1:]:
+        result &= s
+    return result
+
+
+def search_documents_structured(
+    fields: list[dict[str, str]],
+    source: str = "all",
+    limit: int = 20,
+    offset: int = 0,
+    law_type: str = '',
+    from_date: str = '',
+    to_date: str = '',
+) -> tuple[int, list[dict[str, Any]]]:
+    """複数フィールドによる構造化検索。
+    fields = [{"q": "...", "op": "AND"}, ...] の形式。
+    フィールド内スペース区切り＝AND、フィールド間は op で AND/OR を切り替える。
+    戻り値: (total, items)
+    """
+    active = [f for f in fields if f.get("q", "").strip()]
+    if not active:
+        return 0, []
+
+    all_keywords: list[str] = []
+    for f in active:
+        all_keywords.extend(normalize_text(f["q"]).lower().split())
+
+    normalized_query = " ".join(all_keywords)
+    cache_key_parts = (
+        ["structured"]
+        + [f"{f['op']}:{normalize_text(f['q']).lower()}" for f in active]
+        + [source, str(limit), law_type, from_date, to_date]
+    )
+
+    with db_cursor() as (_, cur):
+        generation = get_cache_generation(cur)
+        cache_key = make_cache_key(cache_key_parts + [str(generation)])
+        if offset == 0 and not law_type and not from_date and not to_date:
+            cached = get_search_cache(cur, cache_key)
+            if cached is not None:
+                return len(cached), cached
+
+        # フィールドごとに document_id 集合を求めて AND/OR で合成
+        valid_ids: set[int] | None = None
+        for f in active:
+            ids = _doc_ids_for_field(f["q"], source, cur)
+            if ids is None:
+                continue
+            if valid_ids is None:
+                valid_ids = ids
+            elif f.get("op", "AND") == "OR":
+                valid_ids |= ids
+            else:
+                valid_ids &= ids
+
+        # 法令種別・公布日でさらに絞り込む
+        if valid_ids and (law_type or from_date or to_date):
+            valid_ids = _filter_doc_ids_by_meta(valid_ids, cur, law_type, from_date, to_date)
+
+        if not valid_ids:
+            if offset == 0 and not law_type and not from_date and not to_date:
+                with db_cursor(commit=True) as (_, cur2):
+                    put_search_cache(cur2, cache_key, normalized_query, source, limit, generation, [])
+            return 0, []
+
+        # 有効 ID に絞って term_score でスコアリング
+        all_terms = list(set(
+            t
+            for f in active
+            for keyword in normalize_text(f["q"]).lower().split()
+            for t in limited_weighted_terms((keyword, 10, True), max_terms=20).keys()
+        ))
+        if not all_terms:
+            return []
+        placeholders = ",".join(["%s"] * len(all_terms))
+        id_placeholders = ",".join(["%s"] * len(valid_ids))
+        params_a: list[Any] = all_terms + list(valid_ids)
+        cur.execute(
+            f"""
+            SELECT st.document_id, st.article_id,
+                   SUM(st.weight) AS term_score, COUNT(*) AS matched_terms
+            FROM law_search_terms st
+            WHERE st.target_type='article'
+              AND st.term IN ({placeholders})
+              AND st.document_id IN ({id_placeholders})
+            GROUP BY st.document_id, st.article_id
+            ORDER BY term_score DESC, matched_terms DESC
+            LIMIT 240
+            """,
+            tuple(params_a),
+        )
+        article_candidates = cur.fetchall() or []
+
+        params_d: list[Any] = all_terms + list(valid_ids)
+        cur.execute(
+            f"""
+            SELECT st.document_id,
+                   SUM(st.weight) AS term_score, COUNT(*) AS matched_terms
+            FROM law_search_terms st
+            WHERE st.target_type='document'
+              AND st.term IN ({placeholders})
+              AND st.document_id IN ({id_placeholders})
+            GROUP BY st.document_id
+            ORDER BY term_score DESC, matched_terms DESC
+            LIMIT 120
+            """,
+            tuple(params_d),
+        )
+        document_candidates = cur.fetchall() or []
+
+    # article / document 候補がなければ valid_ids の文書だけでスコア 0 で返す
+    if not article_candidates and not document_candidates:
+        # valid_ids はあるが term_score なし → タイトル一致等で最低限返す
+        document_candidates = [{"document_id": doc_id, "term_score": 1, "matched_terms": 1} for doc_id in list(valid_ids)[:120]]
+
+    keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20)
+    total, results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit, offset)
+
+    if offset == 0:
+        with db_cursor(commit=True) as (_, cur):
+            put_search_cache(cur, cache_key, normalized_query, source, limit, generation, results)
+    return total, results
+
+
+def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[int, list[dict[str, Any]]]:
     normalized_query = normalize_text(query).lower()
     if not normalized_query:
-        return []
+        return 0, []
     article_candidates: list[dict[str, Any]] = []
     document_candidates: list[dict[str, Any]] = []
     with db_cursor() as (_, cur):
@@ -1385,9 +1894,9 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[d
         cache_key = make_cache_key(["search", normalized_query, source, str(limit), str(generation)])
         cached = get_search_cache(cur, cache_key)
         if cached is not None:
-            return cached
+            return len(cached), cached
         if not terms:
-            return []
+            return 0, []
         placeholders = ",".join(["%s"] * len(terms))
         params: list[Any] = list(terms)
         source_sql = ""
@@ -1436,13 +1945,13 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> list[d
         results = search_documents_slow(query, source, limit)
         with db_cursor(commit=True) as (_, cur):
             put_search_cache(cur, cache_key, normalized_query, source, limit, generation, results)
-        return results
-    results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit)
+        return len(results), results
+    _total, results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit)
     if not results:
         results = search_documents_slow(query, source, limit)
     with db_cursor(commit=True) as (_, cur):
         put_search_cache(cur, cache_key, normalized_query, source, limit, generation, results)
-    return results
+    return len(results), results
 
 
 @app.before_request
@@ -1546,16 +2055,84 @@ def api_sync_run():
 
 @app.get('/api/search')
 def api_search():
-    query = (request.args.get('q') or '').strip()
     source = (request.args.get('source') or 'all').strip()
     limit = max(1, min(100, int(request.args.get('limit') or '20')))
-    items = search_documents(query, source, limit) if query else []
-    return jsonify({'items': items})
+    offset = max(0, int(request.args.get('offset') or '0'))
+    law_type = (request.args.get('lawType') or '').strip()
+    from_date = (request.args.get('fromDate') or '').strip()
+    to_date = (request.args.get('toDate') or '').strip()
+    # 構造化検索: q1..q4 + op2..op4 が渡された場合
+    fields: list[dict[str, str]] = []
+    for i in range(1, 5):
+        q = (request.args.get(f'q{i}') or '').strip()
+        op = (request.args.get(f'op{i}') or 'AND').strip().upper()
+        if op not in ('AND', 'OR'):
+            op = 'AND'
+        fields.append({'q': q, 'op': op})
+    if any(f['q'] for f in fields):
+        total, items = search_documents_structured(fields, source, limit, offset, law_type, from_date, to_date)
+        return jsonify({'items': items, 'total': total})
+    # 後方互換: q パラメータによる従来検索
+    query = (request.args.get('q') or '').strip()
+    if query:
+        total, items = search_documents(query, source, limit)
+    else:
+        total, items = 0, []
+    return jsonify({'items': items, 'total': total})
 
 
 @app.get('/api/reference/search')
 def api_reference_search():
     return api_search()
+
+
+@app.get('/api/documents')
+def api_document_list():
+    source = (request.args.get('source') or 'all').strip()
+    fmt = (request.args.get('format') or '').strip().lower()
+    with db_cursor() as (_, cur):
+        if source in ('mine-city', 'egov'):
+            cur.execute(
+                "SELECT id, source, title, law_type, law_number, category_path, promulgated_at"
+                " FROM law_documents WHERE source=%s ORDER BY law_type, title",
+                (source,),
+            )
+        else:
+            cur.execute(
+                "SELECT id, source, title, law_type, law_number, category_path, promulgated_at"
+                " FROM law_documents ORDER BY source, law_type, title"
+            )
+        docs = cur.fetchall() or []
+    if fmt == 'csv':
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(['ID', 'ソース', 'タイトル', '法令種別', '法令番号', '分類', '公布日'])
+        for doc in docs:
+            w.writerow([
+                int(doc['id']), doc['source'], doc['title'],
+                doc['law_type'] or '', doc['law_number'] or '',
+                doc['category_path'] or '',
+                str(doc['promulgated_at']) if doc['promulgated_at'] else '',
+            ])
+        return Response(
+            '\ufeff' + buf.getvalue(),
+            mimetype='text/csv; charset=utf-8-sig',
+            headers={'Content-Disposition': 'attachment; filename=documents.csv'},
+        )
+    return jsonify({
+        'items': [
+            {
+                'id': int(doc['id']),
+                'source': doc['source'],
+                'title': doc['title'],
+                'lawType': doc['law_type'] or '',
+                'lawNumber': doc['law_number'] or '',
+                'categoryPath': doc['category_path'] or '',
+                'promulgatedAt': str(doc['promulgated_at']) if doc['promulgated_at'] else None,
+            }
+            for doc in docs
+        ]
+    })
 
 
 @app.get('/api/documents/<int:document_id>')
@@ -1607,6 +2184,62 @@ def api_reference_document(document_id: int):
     return api_document_detail(document_id)
 
 
+def enrich_candidates_with_text(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """候補リストに条文テキストを付加する。"""
+    article_ids = [c["articleId"] for c in candidates if c.get("articleId")]
+    doc_ids_no_article = [c["documentId"] for c in candidates if not c.get("articleId")]
+    article_texts: dict[int, str] = {}
+    doc_texts: dict[int, str] = {}
+    with db_cursor() as (_, cur):
+        if article_ids:
+            ph = ",".join(["%s"] * len(article_ids))
+            cur.execute(f"SELECT id, text FROM law_articles WHERE id IN ({ph})", article_ids)
+            for row in cur.fetchall():
+                article_texts[int(row["id"])] = row["text"] or ""
+        if doc_ids_no_article:
+            ph = ",".join(["%s"] * len(doc_ids_no_article))
+            cur.execute(f"SELECT id, full_text FROM law_documents WHERE id IN ({ph})", doc_ids_no_article)
+            for row in cur.fetchall():
+                full = row["full_text"] or ""
+                doc_texts[int(row["id"])] = full[:600]
+    result = []
+    for c in candidates:
+        ec = dict(c)
+        if c.get("articleId"):
+            ec["articleText"] = article_texts.get(int(c["articleId"]), "")
+        else:
+            ec["articleText"] = doc_texts.get(int(c["documentId"]), "")
+        result.append(ec)
+    return result
+
+
+def group_ask_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """候補を文書単位でグルーピングしてスコア降順で返す。"""
+    groups: dict[int, dict[str, Any]] = {}
+    for c in candidates:
+        doc_id = int(c["documentId"])
+        if doc_id not in groups:
+            groups[doc_id] = {
+                "documentId": doc_id,
+                "source": c.get("source"),
+                "title": c.get("title", ""),
+                "lawType": c.get("lawType", ""),
+                "lawNumber": c.get("lawNumber", ""),
+                "sourceUrl": c.get("sourceUrl", ""),
+                "categoryPath": c.get("categoryPath", ""),
+                "topScore": int(c.get("score") or 0),
+                "articles": [],
+            }
+        groups[doc_id]["articles"].append({
+            "articleId": c.get("articleId"),
+            "articleNumber": c.get("articleNumber"),
+            "articleTitle": c.get("articleTitle"),
+            "articleText": c.get("articleText", ""),
+            "score": int(c.get("score") or 0),
+        })
+    return sorted(groups.values(), key=lambda g: -g["topScore"])
+
+
 @app.post('/api/ask')
 def api_ask():
     payload = request.get_json(silent=True) or {}
@@ -1614,24 +2247,39 @@ def api_ask():
     if not query:
         raise ValueError('query が必要です。')
     normalized_query = normalize_text(query).lower()
+    question_type = detect_question_type(query)
     with db_cursor(commit=True) as (_, cur):
         generation = get_cache_generation(cur)
-        cache_key = make_cache_key(["ask", normalized_query, str(generation)])
+        cache_key = make_cache_key(["ask2", normalized_query, str(generation)])
         cached = get_ask_cache(cur, cache_key)
         if cached is not None:
             return jsonify(cached)
-        keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20)
+        base_keywords = extract_question_keywords(query)
+        keywords = expand_keywords_with_synonyms(base_keywords, cur=cur, max_keywords=20)
     candidates = search_documents(query, 'all', 10)
-    lead = '関連性の高い条文候補を表示します。運用判断は必ず原文を確認してください。'
-    if candidates:
-        top = candidates[0]
-        lead = f"{source_label(top['source'])}の「{top['title']}」が最も関連すると推定されます。候補条文を上から確認してください。"
+    enriched = enrich_candidates_with_text(candidates)
+    candidate_groups = group_ask_candidates(enriched)
+    # answerLead をタイプに応じて生成
+    type_label = QUESTION_TYPE_LABELS.get(question_type, "一般的な質問")
+    if candidate_groups:
+        top = candidate_groups[0]
+        top_article = top["articles"][0] if top["articles"] else {}
+        article_part = f"（{top_article['articleNumber']}）" if top_article.get("articleNumber") else ""
+        lead = (
+            f"{source_label(top['source'])}の「{top['title']}」{article_part}が最も関連すると推定されます。"
+            f"以下の条文を確認のうえ、必ず原文で内容を確認してください。"
+        )
+    else:
+        lead = "関連する条文が見つかりませんでした。キーワードを変えて再度お試しください。"
     response_payload = {
         'query': query,
         'normalizedQuery': normalize_text(query),
         'keywords': keywords,
+        'questionType': question_type,
+        'questionTypeLabel': type_label,
         'answerLead': lead,
-        'candidates': candidates,
+        'candidateGroups': candidate_groups,
+        'candidates': candidates,  # 後方互換
     }
     with db_cursor(commit=True) as (_, cur):
         put_ask_cache(cur, cache_key, normalized_query, generation, response_payload)
@@ -1645,6 +2293,208 @@ def api_reference_ask_get():
         raise ValueError('q が必要です。')
     with app.test_request_context('/api/ask', method='POST', json={'query': query}):
         return api_ask()
+
+
+@app.get('/api/documents/<int:document_id>/history')
+def api_document_history(document_id: int):
+    with db_cursor() as (_, cur):
+        cur.execute("SELECT id FROM law_documents WHERE id=%s", (document_id,))
+        if not cur.fetchone():
+            raise ValueError('該当する例規が見つかりません。')
+        cur.execute(
+            "SELECT id, content_hash, title, law_number, promulgated_at, updated_at_source, changed_at"
+            " FROM law_document_history WHERE document_id=%s ORDER BY changed_at DESC LIMIT 30",
+            (document_id,),
+        )
+        rows = cur.fetchall() or []
+    return jsonify({
+        'items': [
+            {
+                'id': int(r['id']),
+                'contentHash': r['content_hash'],
+                'title': r['title'],
+                'lawNumber': r['law_number'] or '',
+                'promulgatedAt': str(r['promulgated_at']) if r['promulgated_at'] else None,
+                'updatedAtSource': r['updated_at_source'] or '',
+                'changedAt': str(r['changed_at']) if r['changed_at'] else None,
+            }
+            for r in rows
+        ]
+    })
+
+
+@app.get('/api/documents/<int:document_id>/history/<int:history_id>')
+def api_document_history_detail(document_id: int, history_id: int):
+    with db_cursor() as (_, cur):
+        cur.execute(
+            "SELECT id, content_hash, title, law_number, promulgated_at, updated_at_source, full_text, changed_at"
+            " FROM law_document_history WHERE id=%s AND document_id=%s",
+            (history_id, document_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError('履歴が見つかりません。')
+    return jsonify({
+        'id': int(row['id']),
+        'contentHash': row['content_hash'],
+        'title': row['title'],
+        'lawNumber': row['law_number'] or '',
+        'promulgatedAt': str(row['promulgated_at']) if row['promulgated_at'] else None,
+        'updatedAtSource': row['updated_at_source'] or '',
+        'fullText': row['full_text'] or '',
+        'changedAt': str(row['changed_at']) if row['changed_at'] else None,
+    })
+
+
+@app.get('/api/synonyms')
+def api_synonyms_list():
+    with db_cursor() as (_, cur):
+        cur.execute(
+            "SELECT id, canonical_term, synonym_term, priority, is_active"
+            " FROM law_synonyms ORDER BY canonical_term, synonym_term LIMIT 500"
+        )
+        rows = cur.fetchall() or []
+    return jsonify({
+        'items': [
+            {
+                'id': int(r['id']),
+                'canonicalTerm': r['canonical_term'],
+                'synonymTerm': r['synonym_term'],
+                'priority': int(r['priority']),
+                'isActive': bool(r['is_active']),
+            }
+            for r in rows
+        ]
+    })
+
+
+@app.post('/api/synonyms')
+def api_synonyms_create():
+    payload = request.get_json(silent=True) or {}
+    canonical = normalize_text(payload.get('canonicalTerm') or '').lower()
+    synonym = normalize_text(payload.get('synonymTerm') or '').lower()
+    priority = max(1, min(20, int(payload.get('priority') or 10)))
+    if not canonical or not synonym:
+        raise ValueError('canonicalTerm と synonymTerm は必須です。')
+    if canonical == synonym:
+        raise ValueError('canonicalTerm と synonymTerm は異なる必要があります。')
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            "INSERT INTO law_synonyms (canonical_term, synonym_term, priority, is_active)"
+            " VALUES (%s,%s,%s,1)"
+            " ON DUPLICATE KEY UPDATE priority=%s, is_active=1, updated_at=CURRENT_TIMESTAMP",
+            (canonical, synonym, priority, priority),
+        )
+        new_id = int(cur.lastrowid) if cur.lastrowid else 0
+        bump_cache_generation(cur)
+    global LOCAL_SYNONYM_CACHE
+    LOCAL_SYNONYM_CACHE = None
+    return jsonify({'id': new_id, 'canonicalTerm': canonical, 'synonymTerm': synonym, 'priority': priority, 'isActive': True})
+
+
+@app.delete('/api/synonyms/<int:synonym_id>')
+def api_synonyms_delete(synonym_id: int):
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute("DELETE FROM law_synonyms WHERE id=%s", (synonym_id,))
+        if cur.rowcount == 0:
+            raise ValueError('同義語が見つかりません。')
+        bump_cache_generation(cur)
+    global LOCAL_SYNONYM_CACHE
+    LOCAL_SYNONYM_CACHE = None
+    return jsonify({'ok': True})
+
+
+@app.get('/api/analytics')
+def api_analytics():
+    with db_cursor() as (_, cur):
+        cur.execute("SELECT COALESCE(SUM(hit_count),0) AS total_hits, COUNT(*) AS entries FROM search_query_cache")
+        sc = cur.fetchone() or {}
+        cur.execute("SELECT COALESCE(SUM(hit_count),0) AS total_hits, COUNT(*) AS entries FROM ask_query_cache")
+        ac = cur.fetchone() or {}
+        cur.execute(
+            "SELECT normalized_query, hit_count FROM search_query_cache"
+            " ORDER BY hit_count DESC LIMIT 10"
+        )
+        top_search = cur.fetchall() or []
+        cur.execute(
+            "SELECT normalized_query, hit_count FROM ask_query_cache"
+            " ORDER BY hit_count DESC LIMIT 10"
+        )
+        top_ask = cur.fetchall() or []
+    return jsonify({
+        'searchCacheHits': int(sc.get('total_hits') or 0),
+        'searchCacheEntries': int(sc.get('entries') or 0),
+        'askCacheHits': int(ac.get('total_hits') or 0),
+        'askCacheEntries': int(ac.get('entries') or 0),
+        'topSearchQueries': [{'query': r['normalized_query'], 'hits': int(r['hit_count'])} for r in top_search],
+        'topAskQueries': [{'query': r['normalized_query'], 'hits': int(r['hit_count'])} for r in top_ask],
+    })
+
+
+@app.post('/api/cache/clear')
+def api_cache_clear():
+    import csv as csv_mod  # noqa: F401 – reuse import below
+    payload = request.get_json(silent=True) or {}
+    scope = payload.get('scope', 'all')
+    if scope not in ('search', 'ask', 'all'):
+        raise ValueError('scope は search / ask / all のいずれかです。')
+    with db_cursor(commit=True) as (_, cur):
+        if scope in ('search', 'all'):
+            cur.execute("DELETE FROM search_query_cache")
+        if scope in ('ask', 'all'):
+            cur.execute("DELETE FROM ask_query_cache")
+        bump_cache_generation(cur)
+    LOCAL_SEARCH_CACHE.clear()
+    LOCAL_ASK_CACHE.clear()
+    return jsonify({'ok': True, 'scope': scope})
+
+
+@app.get('/api/law-types')
+def api_law_types():
+    """DBに存在する law_type の一覧を返す。"""
+    with db_cursor() as (_, cur):
+        cur.execute("SELECT DISTINCT law_type FROM law_documents WHERE law_type != '' ORDER BY law_type")
+        rows = cur.fetchall() or []
+    return jsonify({'items': [r['law_type'] for r in rows]})
+
+
+@app.get('/api/openapi')
+def api_openapi():
+    spec: dict[str, Any] = {
+        'openapi': '3.0.3',
+        'info': {
+            'title': 'mine-city-reiki API',
+            'version': APP_VERSION,
+            'description': '美祢市例規・地方自治法データベース API',
+        },
+        'servers': [{'url': '/mine-city-reiki-api/api', 'description': 'Production'}],
+        'paths': {
+            '/health': {'get': {'summary': 'ヘルスチェック', 'responses': {'200': {'description': 'OK'}}}},
+            '/search': {
+                'get': {
+                    'summary': '例規検索',
+                    'parameters': [
+                        {'name': 'q1', 'in': 'query', 'schema': {'type': 'string'}},
+                        {'name': 'op2', 'in': 'query', 'schema': {'type': 'string', 'enum': ['AND', 'OR']}},
+                        {'name': 'source', 'in': 'query', 'schema': {'type': 'string', 'enum': ['all', 'mine-city', 'egov']}},
+                        {'name': 'limit', 'in': 'query', 'schema': {'type': 'integer', 'default': 20}},
+                        {'name': 'offset', 'in': 'query', 'schema': {'type': 'integer', 'default': 0}},
+                    ],
+                    'responses': {'200': {'description': '検索結果リスト'}},
+                }
+            },
+            '/documents': {'get': {'summary': '例規一覧', 'responses': {'200': {'description': '例規一覧'}}}},
+            '/documents/{id}': {'get': {'summary': '例規詳細', 'parameters': [{'name': 'id', 'in': 'path', 'required': True, 'schema': {'type': 'integer'}}], 'responses': {'200': {'description': '例規詳細'}}}},
+            '/documents/{id}/history': {'get': {'summary': '例規変更履歴', 'parameters': [{'name': 'id', 'in': 'path', 'required': True, 'schema': {'type': 'integer'}}], 'responses': {'200': {'description': '変更履歴'}}}},
+            '/ask': {'post': {'summary': '条文照会', 'requestBody': {'content': {'application/json': {'schema': {'type': 'object', 'properties': {'query': {'type': 'string'}}}}}}, 'responses': {'200': {'description': '照会結果'}}}},
+            '/synonyms': {
+                'get': {'summary': '同義語一覧', 'responses': {'200': {'description': '同義語リスト'}}},
+                'post': {'summary': '同義語追加', 'responses': {'200': {'description': '追加結果'}}},
+            },
+            '/analytics': {'get': {'summary': '利用統計', 'responses': {'200': {'description': '統計データ'}}}},
+        },
+    }
+    return jsonify(spec)
 
 
 ensure_schema()

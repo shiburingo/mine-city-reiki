@@ -127,6 +127,20 @@ INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority) VALUES
   ('個人情報', '個人情報保護', 14),
   ('情報公開', '開示', 10);
 
+CREATE TABLE IF NOT EXISTS law_document_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  document_id BIGINT UNSIGNED NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  law_number VARCHAR(128) NOT NULL DEFAULT '',
+  promulgated_at DATE NULL,
+  updated_at_source VARCHAR(64) NOT NULL DEFAULT '',
+  full_text LONGTEXT NULL,
+  changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_law_document_history_document (document_id, changed_at),
+  CONSTRAINT fk_law_document_history_document FOREIGN KEY (document_id) REFERENCES law_documents(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS search_query_cache (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   cache_key CHAR(64) NOT NULL,
