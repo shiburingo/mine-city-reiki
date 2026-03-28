@@ -682,6 +682,23 @@ def make_content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def make_document_content_hash(full_text: str, articles: list[dict[str, Any]] | None = None) -> str:
+    payload = {
+        "full_text": full_text or "",
+        "articles": [
+            {
+                "article_key": article.get("article_key", ""),
+                "article_number": article.get("article_number", ""),
+                "article_title": article.get("article_title", ""),
+                "parent_path": article.get("parent_path", ""),
+                "text": article.get("text", ""),
+            }
+            for article in (articles or [])
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 QUESTION_TYPE_PATTERNS: list[tuple[str, list[str]]] = [
     ("eligibility", ["できますか", "できるか", "できるでしょうか", "可能ですか", "権利があります", "資格があります", "受けられます", "対象になります"]),
     ("procedure",   ["手続き", "申請", "どうすれば", "どのようにすれば", "どのように手続き", "方法を", "方法は", "どうしたら", "どこに申請"]),
@@ -961,7 +978,7 @@ def parse_mine_city_document(item: dict[str, str]) -> dict[str, Any]:
         'promulgated_at': promulgated_at,
         'effective_at': None,
         'updated_at_source': now_iso(),
-        'content_hash': make_content_hash(full_text),
+        'content_hash': make_document_content_hash(full_text, articles),
         'full_text': full_text,
         'metadata_json': json.dumps({'title_hint': item.get('title_hint', '')}, ensure_ascii=False),
         'articles': articles,
@@ -1014,7 +1031,7 @@ def fetch_egov_document() -> dict[str, Any]:
         'promulgated_at': promulgated_at,
         'effective_at': None,
         'updated_at_source': now_iso(),
-        'content_hash': make_content_hash(full_text),
+        'content_hash': make_document_content_hash(full_text, articles),
         'full_text': full_text,
         'metadata_json': json.dumps({'lawId': '322AC0000000067'}, ensure_ascii=False),
         'articles': iter_egov_articles(root),
