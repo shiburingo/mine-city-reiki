@@ -824,7 +824,7 @@ def node_text(node: Any, separator: str = "") -> str:
 
 def serialize_table_block(block: Any) -> str:
     """table div ブロックをタブ区切り行形式のマーカーとしてシリアライズする。"""
-    table_elem = block.find("table")
+    table_elem = block if getattr(block, "name", "") == "table" else block.find("table")
     if table_elem is None:
         return node_text(block, "\n")
     rows: list[str] = []
@@ -908,17 +908,23 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
         if current is None:
             continue
 
-        for block_class in ("clause", "item", "subitem1", "subitem2", "subitem3", "subitem4", "subitem5", "subitem6", "subitem7", "subitem8", "subitem9", "table"):
+        for block_class in ("clause", "item", "subitem1", "subitem2", "subitem3", "subitem4", "subitem5", "subitem6", "subitem7", "subitem8", "subitem9", "table", "table_frame", "table-wrapper"):
             block = eline.find("div", class_=block_class)
             if block is None:
                 continue
-            if block_class == "table":
+            if block_class in {"table", "table_frame", "table-wrapper"}:
                 text = serialize_table_block(block)
             else:
                 text = node_text(block, "")
             if text:
                 current["parts"].append(text)
             break
+        else:
+            table_elem = eline.find("table")
+            if table_elem is not None:
+                text = serialize_table_block(table_elem)
+                if text:
+                    current["parts"].append(text)
 
     return [
         {
