@@ -747,25 +747,6 @@ function AppShell() {
         authEnabled={Boolean(authEnabled)}
       />
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
-        {tab === 'dashboard' ? (
-          <div className="grid gap-4 md:grid-cols-3">
-            {statCards.map((card) => (
-              <section key={card.label} className="rounded-3xl border bg-card p-5 shadow-sm">
-                <p className="text-sm text-muted-foreground">{card.label}</p>
-                <p className="mt-1 text-3xl font-semibold">{card.total}</p>
-                <dl className="mt-3 space-y-1 border-t pt-3">
-                  {card.rows.map((row) => (
-                    <div key={row.label} className="flex items-center justify-between gap-2 text-sm">
-                      <dt className="text-muted-foreground">{row.label}</dt>
-                      <dd className="font-medium">{row.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
-            ))}
-          </div>
-        ) : null}
-
         <section className="rounded-3xl border bg-card p-3 shadow-sm">
           <div className="grid gap-2 md:grid-cols-4">
             {TABS.map((item) => {
@@ -787,6 +768,25 @@ function AppShell() {
             })}
           </div>
         </section>
+
+        {tab === 'dashboard' ? (
+          <div className="grid gap-4 md:grid-cols-3">
+            {statCards.map((card) => (
+              <section key={card.label} className="rounded-3xl border bg-card p-5 shadow-sm">
+                <p className="text-sm text-muted-foreground">{card.label}</p>
+                <p className="mt-1 text-3xl font-semibold">{card.total}</p>
+                <dl className="mt-3 space-y-1 border-t pt-3">
+                  {card.rows.map((row) => (
+                    <div key={row.label} className="flex items-center justify-between gap-2 text-sm">
+                      <dt className="text-muted-foreground">{row.label}</dt>
+                      <dd className="font-medium">{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            ))}
+          </div>
+        ) : null}
 
         {globalError ? <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{globalError}</div> : null}
 
