@@ -880,7 +880,7 @@ function AppShell() {
         ) : null}
 
         {tab === 'browse' ? (
-          <section className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
+          <section className="grid gap-6 lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.52fr)]">
             <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold">例規一覧</h2>
@@ -988,7 +988,7 @@ function AppShell() {
                       原文を開く
                     </a>
                   </div>
-                  <div className="mt-6 grid gap-4 xl:grid-cols-[16rem_1fr]">
+                  <div className="mt-6 grid gap-4 xl:grid-cols-[13rem_minmax(0,1fr)]">
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
                       <div className="space-y-1">
@@ -1021,7 +1021,7 @@ function AppShell() {
         ) : null}
 
         {tab === 'search' ? (
-          <section className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
+          <section className="grid gap-6 lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.66fr)]">
             <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">例規検索</h2>
               <div className="flex items-center justify-between gap-2">
@@ -1226,7 +1226,7 @@ function AppShell() {
                       原文を開く
                     </a>
                   </div>
-                  <div className="mt-6 grid gap-4 xl:grid-cols-[16rem_1fr]">
+                  <div className="mt-6 grid gap-4 xl:grid-cols-[12rem_minmax(0,1fr)]">
                     <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
                       <div className="space-y-2">
