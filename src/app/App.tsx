@@ -36,6 +36,14 @@ const TABS = [
 
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
 const BOOKMARKS_KEY = 'reiki_bookmarks';
+type BrowseSource = 'mine-city' | 'egov';
+type BrowseTreeNode = {
+  key: string;
+  label: string;
+  children: BrowseTreeNode[];
+  docs: DocumentSummary[];
+};
+const ORDER_COLLATOR = new Intl.Collator('ja-JP', { numeric: true, sensitivity: 'base' });
 
 function loadSearchHistory(): string[] {
   try {
@@ -110,6 +118,71 @@ function sourceLabel(source: string): string {
   if (source === 'mine-city') return '美祢市例規';
   if (source === 'egov') return '地方自治法';
   return '全ソース';
+}
+
+function normalizeOrderText(value: string | null | undefined): string {
+  return (value || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
+function compareOrderText(a: string | null | undefined, b: string | null | undefined): number {
+  return ORDER_COLLATOR.compare(normalizeOrderText(a), normalizeOrderText(b));
+}
+
+function compareDocumentSummary(a: DocumentSummary, b: DocumentSummary): number {
+  const byLawNumber = compareOrderText(a.lawNumber, b.lawNumber);
+  if (byLawNumber !== 0) return byLawNumber;
+  const byTitle = compareOrderText(a.title, b.title);
+  if (byTitle !== 0) return byTitle;
+  return a.id - b.id;
+}
+
+function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[]): BrowseTreeNode[] {
+  if (source === 'egov') {
+    return [
+      {
+        key: 'egov-root',
+        label: '地方自治法',
+        children: [],
+        docs: [...docs].sort(compareDocumentSummary),
+      },
+    ];
+  }
+
+  const root: BrowseTreeNode = { key: 'root', label: 'root', children: [], docs: [] };
+  const childIndex = new Map<string, BrowseTreeNode>();
+
+  for (const doc of docs) {
+    const parts = (doc.categoryPath || '未分類')
+      .split(/\s*\/\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    let current = root;
+    let currentPath = '';
+
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const key = `${current.key}>${part}`;
+      let next = childIndex.get(key);
+      if (!next) {
+        next = { key: currentPath, label: part, children: [], docs: [] };
+        current.children.push(next);
+        childIndex.set(key, next);
+      }
+      current = next;
+    }
+    current.docs.push(doc);
+  }
+
+  const sortTree = (nodes: BrowseTreeNode[]) => {
+    nodes.sort((a, b) => compareOrderText(a.label, b.label));
+    for (const node of nodes) {
+      node.docs.sort(compareDocumentSummary);
+      sortTree(node.children);
+    }
+  };
+
+  sortTree(root.children);
+  return root.children;
 }
 
 function toneForStatus(sync: SyncStatus): 'ok' | 'error' | 'neutral' {
@@ -301,7 +374,7 @@ function AppShell() {
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
 
-  const [browseSource, setBrowseSource] = useState<'all' | 'mine-city' | 'egov'>('all');
+  const [browseSource, setBrowseSource] = useState<BrowseSource>('mine-city');
   const [browseList, setBrowseList] = useState<DocumentSummary[]>([]);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseDocId, setBrowseDocId] = useState<number | null>(null);
@@ -322,7 +395,7 @@ function AppShell() {
     sourceScope: 'all',
   });
 
-  async function loadBrowseList(source: 'all' | 'mine-city' | 'egov') {
+  async function loadBrowseList(source: BrowseSource) {
     setBrowseLoading(true);
     setGlobalError(null);
     try {
@@ -717,15 +790,51 @@ function AppShell() {
     [syncStatus],
   );
 
-  const browseGroups = useMemo(() => {
-    const map = new Map<string, DocumentSummary[]>();
-    for (const doc of browseList) {
-      const key = doc.lawType || '（種別なし）';
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(doc);
-    }
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b, 'ja'));
-  }, [browseList]);
+  const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList), [browseList, browseSource]);
+  const renderBrowseTree = (nodes: BrowseTreeNode[], depth = 0): JSX.Element => (
+    <div className={depth === 0 ? 'space-y-3' : 'mt-2 space-y-2'}>
+      {nodes.map((node) => (
+        <details
+          key={node.key}
+          open
+          className={`rounded-2xl border bg-background ${depth > 0 ? 'border-dashed' : ''}`}
+        >
+          <summary className="cursor-pointer list-none rounded-2xl px-4 py-3 text-sm font-semibold marker:hidden hover:bg-accent">
+            <div className="flex items-center justify-between gap-3">
+              <span>{node.label}</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                {node.docs.length + node.children.reduce((sum, child) => sum + child.docs.length, 0)}件
+              </span>
+            </div>
+          </summary>
+          <div className="space-y-3 px-3 pb-3">
+            {node.docs.length > 0 ? (
+              <div className="space-y-1">
+                {node.docs.map((doc) => (
+                  <button
+                    key={doc.id}
+                    type="button"
+                    onClick={() => setBrowseDocId(doc.id)}
+                    className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                      browseDocId === doc.id ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+                    }`}
+                  >
+                    <span className="block font-medium leading-snug">{doc.title}</span>
+                    {doc.lawNumber ? <span className="block text-xs opacity-70">{doc.lawNumber}</span> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {node.children.length > 0 ? (
+              <div className={`rounded-2xl ${depth >= 0 ? 'border-l-2 border-border/70 pl-3' : ''}`}>
+                {renderBrowseTree(node.children, depth + 1)}
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
 
   if (loading) {
     return <div className="min-h-screen bg-background p-8 text-muted-foreground">読み込み中…</div>;
@@ -885,21 +994,30 @@ function AppShell() {
           <section className="grid gap-6 lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.52fr)]">
             <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
               <div className="flex items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold">例規一覧</h2>
+                <h2 className="text-xl font-semibold">体系別閲覧</h2>
                 <div className="flex items-center gap-2">
-                  <select
-                    className="h-9 rounded-xl border bg-input-background px-3 text-sm"
-                    value={browseSource}
-                    onChange={(e) => {
-                      const src = e.target.value as 'all' | 'mine-city' | 'egov';
-                      setBrowseSource(src);
-                      void loadBrowseList(src);
-                    }}
-                  >
-                    <option value="all">全ソース</option>
-                    <option value="mine-city">美祢市例規</option>
-                    <option value="egov">地方自治法</option>
-                  </select>
+                  <div className="inline-flex rounded-2xl border bg-background p-1">
+                    {([
+                      { value: 'mine-city', label: '美祢市例規集' },
+                      { value: 'egov', label: '地方自治法' },
+                    ] as const).map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          setBrowseSource(option.value);
+                          void loadBrowseList(option.value);
+                        }}
+                        className={`rounded-xl px-3 py-1.5 text-sm font-medium transition ${
+                          browseSource === option.value
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'text-muted-foreground hover:bg-accent'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
                   <a
                     href={buildDocumentsCsvUrl(browseSource)}
                     download
@@ -917,26 +1035,12 @@ function AppShell() {
                 <p className="text-sm text-muted-foreground">データがありません。同期設定からデータを取得してください。</p>
               ) : (
                 <div className="max-h-[70vh] overflow-auto space-y-4">
-                  {browseGroups.map(([lawType, docs]) => (
-                    <div key={lawType}>
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lawType}</p>
-                      <div className="space-y-1">
-                        {docs.map((doc) => (
-                          <button
-                            key={doc.id}
-                            type="button"
-                            onClick={() => setBrowseDocId(doc.id)}
-                            className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
-                              browseDocId === doc.id ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
-                            }`}
-                          >
-                            <span className="block font-medium leading-snug">{doc.title}</span>
-                            {doc.lawNumber ? <span className="block text-xs opacity-70">{doc.lawNumber}</span> : null}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+                  <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                    {browseSource === 'mine-city'
+                      ? '美祢市例規集の体系に沿って、分類ごとに番号順で閲覧できます。'
+                      : '地方自治法を条文番号順で閲覧できます。'}
+                  </div>
+                  {renderBrowseTree(browseTree)}
                 </div>
               )}
             </div>
