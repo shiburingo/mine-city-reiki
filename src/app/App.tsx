@@ -40,6 +40,7 @@ type BrowseSource = 'mine-city' | 'egov';
 type BrowseTreeNode = {
   key: string;
   label: string;
+  orderKey?: string;
   children: BrowseTreeNode[];
   docs: DocumentSummary[];
 };
@@ -136,19 +137,50 @@ function compareDocumentSummary(a: DocumentSummary, b: DocumentSummary): number 
   return a.id - b.id;
 }
 
+function compareCategoryKey(a: string | null | undefined, b: string | null | undefined): number {
+  const left = (a || '').split('.').filter(Boolean);
+  const right = (b || '').split('.').filter(Boolean);
+  const max = Math.max(left.length, right.length);
+  for (let index = 0; index < max; index += 1) {
+    const leftPart = left[index];
+    const rightPart = right[index];
+    if (leftPart == null) return -1;
+    if (rightPart == null) return 1;
+    const leftNumber = Number(leftPart);
+    const rightNumber = Number(rightPart);
+    const leftIsNumber = Number.isFinite(leftNumber);
+    const rightIsNumber = Number.isFinite(rightNumber);
+    if (leftIsNumber && rightIsNumber && leftNumber !== rightNumber) {
+      return leftNumber - rightNumber;
+    }
+    const byText = compareOrderText(leftPart, rightPart);
+    if (byText !== 0) return byText;
+  }
+  return 0;
+}
+
+function compareMineCityDocument(a: DocumentSummary, b: DocumentSummary): number {
+  const byCategory = compareCategoryKey(a.browseCategoryKey, b.browseCategoryKey);
+  if (byCategory !== 0) return byCategory;
+  const byOrder = (a.browseDocumentOrder || 0) - (b.browseDocumentOrder || 0);
+  if (byOrder !== 0) return byOrder;
+  return compareDocumentSummary(a, b);
+}
+
 function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[]): BrowseTreeNode[] {
   if (source === 'egov') {
     return [
       {
         key: 'egov-root',
         label: '地方自治法',
+        orderKey: '0',
         children: [],
         docs: [...docs].sort(compareDocumentSummary),
       },
     ];
   }
 
-  const root: BrowseTreeNode = { key: 'root', label: 'root', children: [], docs: [] };
+  const root: BrowseTreeNode = { key: 'root', label: 'root', orderKey: '', children: [], docs: [] };
   const childIndex = new Map<string, BrowseTreeNode>();
 
   for (const doc of docs) {
@@ -164,7 +196,17 @@ function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[]): BrowseT
       const key = `${current.key}>${part}`;
       let next = childIndex.get(key);
       if (!next) {
-        next = { key: currentPath, label: part, children: [], docs: [] };
+        const keyParts = (doc.browseCategoryKey || '')
+          .split('.')
+          .filter(Boolean)
+          .slice(0, currentPath.split('/').length);
+        next = {
+          key: currentPath,
+          label: part,
+          orderKey: keyParts.join('.'),
+          children: [],
+          docs: [],
+        };
         current.children.push(next);
         childIndex.set(key, next);
       }
@@ -174,9 +216,13 @@ function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[]): BrowseT
   }
 
   const sortTree = (nodes: BrowseTreeNode[]) => {
-    nodes.sort((a, b) => compareOrderText(a.label, b.label));
+    nodes.sort((a, b) => {
+      const byOrder = compareCategoryKey(a.orderKey, b.orderKey);
+      if (byOrder !== 0) return byOrder;
+      return compareOrderText(a.label, b.label);
+    });
     for (const node of nodes) {
-      node.docs.sort(compareDocumentSummary);
+      node.docs.sort(compareMineCityDocument);
       sortTree(node.children);
     }
   };

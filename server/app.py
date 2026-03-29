@@ -274,6 +274,8 @@ def ensure_schema() -> None:
         with conn.cursor() as cur:
             execute_sql_script(cur, sql_text)
             ensure_column(cur, "law_documents", "search_tokens", "search_tokens LONGTEXT NOT NULL DEFAULT '' AFTER normalized_title")
+            ensure_column(cur, "law_documents", "browse_category_key", "browse_category_key VARCHAR(128) NOT NULL DEFAULT '' AFTER category_path")
+            ensure_column(cur, "law_documents", "browse_document_order", "browse_document_order INT NOT NULL DEFAULT 0 AFTER browse_category_key")
             ensure_column(cur, "sync_settings", "cache_generation", "cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER source_scope")
             ensure_table(
                 cur,
@@ -865,17 +867,27 @@ def fetch_url_text(url: str) -> str:
     return raw.decode("utf-8", "ignore")
 
 
-def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> list[dict[str, str]]:
-    queue: list[tuple[str, list[str]]] = [(start_url, ["美祢市例規"])]
+def mine_city_category_key_from_url(url: str) -> str:
+    name = Path(urllib.parse.urlparse(url).path).stem
+    suffix = name.removeprefix("r_taikei_")
+    if not suffix or suffix == "r_taikei":
+        return ""
+    parts = [part for part in suffix.split("_") if part]
+    return ".".join(parts)
+
+
+def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> list[dict[str, str | int]]:
+    queue: list[tuple[str, list[str], str]] = [(start_url, [], mine_city_category_key_from_url(start_url))]
     seen_pages: set[str] = set()
-    documents: dict[str, dict[str, str]] = {}
+    documents: dict[str, dict[str, str | int]] = {}
     while queue:
-        url, trail = queue.pop(0)
+        url, trail, category_key = queue.pop(0)
         if url in seen_pages:
             continue
         seen_pages.add(url)
         html = fetch_url_text(url)
         soup = BeautifulSoup(html, "html.parser")
+        document_order = 0
         for link in soup.select('a[href]'):
             href = (link.get('href') or '').strip()
             if not href:
@@ -886,11 +898,22 @@ def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> list[dict[str
                 continue
             label = normalize_text(link.get_text(" ", strip=True))
             if '/reiki_honbun/' in parsed.path and parsed.path.endswith('.html'):
-                documents.setdefault(abs_url, {"url": abs_url, "category_path": " / ".join(trail), "title_hint": label})
+                document_order += 1
+                documents.setdefault(
+                    abs_url,
+                    {
+                        "url": abs_url,
+                        "category_path": " / ".join(trail),
+                        "title_hint": label,
+                        "browse_category_key": category_key,
+                        "browse_document_order": document_order,
+                    },
+                )
             elif '/reiki_taikei/' in parsed.path and parsed.path.endswith('.html'):
-                next_trail = trail + ([label] if label and label not in trail else [])
+                next_trail = trail + ([label] if label else [])
+                next_category_key = mine_city_category_key_from_url(abs_url) or category_key
                 if abs_url not in seen_pages:
-                    queue.append((abs_url, next_trail))
+                    queue.append((abs_url, next_trail, next_category_key))
         if len(seen_pages) > 500:
             break
     return list(documents.values())
@@ -955,7 +978,7 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
     ]
 
 
-def parse_mine_city_document(item: dict[str, str]) -> dict[str, Any]:
+def parse_mine_city_document(item: dict[str, str | int]) -> dict[str, Any]:
     html = fetch_url_text(item['url'])
     soup = BeautifulSoup(html, 'html.parser')
     title = normalize_text((soup.title.get_text(strip=True) if soup.title else item.get('title_hint') or ''))
@@ -974,13 +997,22 @@ def parse_mine_city_document(item: dict[str, str]) -> dict[str, Any]:
         'law_type': deduce_law_type(title),
         'law_number': law_number,
         'category_path': item.get('category_path', ''),
+        'browse_category_key': str(item.get('browse_category_key', '') or ''),
+        'browse_document_order': int(item.get('browse_document_order', 0) or 0),
         'source_url': item['url'],
         'promulgated_at': promulgated_at,
         'effective_at': None,
         'updated_at_source': now_iso(),
         'content_hash': make_document_content_hash(full_text, articles),
         'full_text': full_text,
-        'metadata_json': json.dumps({'title_hint': item.get('title_hint', '')}, ensure_ascii=False),
+        'metadata_json': json.dumps(
+            {
+                'title_hint': item.get('title_hint', ''),
+                'browseCategoryKey': item.get('browse_category_key', ''),
+                'browseDocumentOrder': int(item.get('browse_document_order', 0) or 0),
+            },
+            ensure_ascii=False,
+        ),
         'articles': articles,
     }
 
@@ -1165,13 +1197,14 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
             """
             UPDATE law_documents
             SET title=%s, normalized_title=%s, law_type=%s, law_number=%s, category_path=%s,
-                source_url=%s, promulgated_at=%s, effective_at=%s, updated_at_source=%s, search_tokens=%s,
+                browse_category_key=%s, browse_document_order=%s, source_url=%s, promulgated_at=%s, effective_at=%s, updated_at_source=%s, search_tokens=%s,
                 content_hash=%s, full_text=%s, metadata_json=%s, updated_at=CURRENT_TIMESTAMP
             WHERE id=%s
             """,
             (
                 document['title'], document['normalized_title'], document['law_type'], document['law_number'],
-                document['category_path'], document['source_url'], document['promulgated_at'], document['effective_at'],
+                document['category_path'], document.get('browse_category_key', ''), int(document.get('browse_document_order', 0) or 0),
+                document['source_url'], document['promulgated_at'], document['effective_at'],
                 document['updated_at_source'], document['search_tokens'], document['content_hash'], document['full_text'], document['metadata_json'], document_id,
             ),
         )
@@ -1181,12 +1214,13 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
             """
             INSERT INTO law_documents (
               source, external_id, title, normalized_title, law_type, law_number, category_path,
-              source_url, promulgated_at, effective_at, updated_at_source, search_tokens, content_hash, full_text, metadata_json
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              browse_category_key, browse_document_order, source_url, promulgated_at, effective_at, updated_at_source, search_tokens, content_hash, full_text, metadata_json
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 document['source'], document['external_id'], document['title'], document['normalized_title'], document['law_type'],
-                document['law_number'], document['category_path'], document['source_url'], document['promulgated_at'], document['effective_at'],
+                document['law_number'], document['category_path'], document.get('browse_category_key', ''), int(document.get('browse_document_order', 0) or 0),
+                document['source_url'], document['promulgated_at'], document['effective_at'],
                 document['updated_at_source'], document['search_tokens'], document['content_hash'], document['full_text'], document['metadata_json'],
             ),
         )
@@ -2145,15 +2179,47 @@ def api_document_list():
     fmt = (request.args.get('format') or '').strip().lower()
     with db_cursor() as (_, cur):
         if source in ('mine-city', 'egov'):
-            cur.execute(
-                "SELECT id, source, title, law_type, law_number, category_path, promulgated_at"
-                " FROM law_documents WHERE source=%s ORDER BY law_type, title",
-                (source,),
-            )
+            if source == 'mine-city':
+                cur.execute(
+                    """
+                    SELECT id, source, title, law_type, law_number, category_path,
+                           browse_category_key, browse_document_order, promulgated_at
+                    FROM law_documents
+                    WHERE source=%s
+                    ORDER BY
+                      CASE WHEN browse_category_key = '' THEN 1 ELSE 0 END,
+                      browse_category_key,
+                      browse_document_order,
+                      law_number,
+                      title
+                    """,
+                    (source,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, source, title, law_type, law_number, category_path,
+                           browse_category_key, browse_document_order, promulgated_at
+                    FROM law_documents
+                    WHERE source=%s
+                    ORDER BY law_number, title
+                    """,
+                    (source,),
+                )
         else:
             cur.execute(
-                "SELECT id, source, title, law_type, law_number, category_path, promulgated_at"
-                " FROM law_documents ORDER BY source, law_type, title"
+                """
+                SELECT id, source, title, law_type, law_number, category_path,
+                       browse_category_key, browse_document_order, promulgated_at
+                FROM law_documents
+                ORDER BY
+                  source,
+                  CASE WHEN browse_category_key = '' THEN 1 ELSE 0 END,
+                  browse_category_key,
+                  browse_document_order,
+                  law_number,
+                  title
+                """
             )
         docs = cur.fetchall() or []
     if fmt == 'csv':
@@ -2181,6 +2247,8 @@ def api_document_list():
                 'lawType': doc['law_type'] or '',
                 'lawNumber': doc['law_number'] or '',
                 'categoryPath': doc['category_path'] or '',
+                'browseCategoryKey': doc.get('browse_category_key') or '',
+                'browseDocumentOrder': int(doc.get('browse_document_order') or 0),
                 'promulgatedAt': str(doc['promulgated_at']) if doc['promulgated_at'] else None,
             }
             for doc in docs

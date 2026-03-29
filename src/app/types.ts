@@ -101,6 +101,8 @@ export type DocumentSummary = {
   lawType: string;
   lawNumber: string;
   categoryPath: string;
+  browseCategoryKey?: string;
+  browseDocumentOrder?: number;
   promulgatedAt: string | null;
 };
 

@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS law_documents (
   law_type VARCHAR(64) NOT NULL DEFAULT '',
   law_number VARCHAR(128) NOT NULL DEFAULT '',
   category_path VARCHAR(255) NOT NULL DEFAULT '',
+  browse_category_key VARCHAR(128) NOT NULL DEFAULT '',
+  browse_document_order INT NOT NULL DEFAULT 0,
   source_url VARCHAR(512) NOT NULL,
   promulgated_at DATE NULL,
   effective_at DATE NULL,
