@@ -1021,7 +1021,7 @@ function AppShell() {
         ) : null}
 
         {tab === 'search' ? (
-          <section className="grid gap-6 lg:grid-cols-[minmax(0,0.84fr)_minmax(0,1.66fr)]">
+          <section className="grid gap-6 lg:grid-cols-[minmax(0,0.58fr)_minmax(0,1.92fr)]">
             <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">例規検索</h2>
               <div className="flex items-center justify-between gap-2">
