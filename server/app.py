@@ -1013,6 +1013,7 @@ def fetch_egov_document() -> dict[str, Any]:
     law_title = normalize_text(''.join(law_body.findtext('LawTitle', default='')) if law_body is not None else '地方自治法')
     law_num = normalize_text(root.findtext('.//Law/LawNum', default=''))
     full_text = normalize_text(' '.join(''.join(root.find('.//LawFullText').itertext()).split()))
+    articles = iter_egov_articles(root)
     promulgated_at = None
     if law is not None:
         try:
@@ -1034,7 +1035,7 @@ def fetch_egov_document() -> dict[str, Any]:
         'content_hash': make_document_content_hash(full_text, articles),
         'full_text': full_text,
         'metadata_json': json.dumps({'lawId': '322AC0000000067'}, ensure_ascii=False),
-        'articles': iter_egov_articles(root),
+        'articles': articles,
     }
 
 
