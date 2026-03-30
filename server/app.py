@@ -2126,8 +2126,6 @@ def enforce_auth():
     if payload.get('enabled') is False:
         return None
     g.auth_user = payload.get('user') or {}
-    if bool(g.auth_user.get('isGuest')) and request.method not in SAFE_METHODS:
-        return jsonify({'ok': False, 'error': 'guest write blocked'}), 403
     return None
 
 
