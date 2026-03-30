@@ -844,12 +844,13 @@ function AppShell() {
   );
 
   const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
+  const isHenLabel = (label: string) => /^第[0-9一二三四五六七八九十百千]+編\b/.test(label);
   const renderBrowseTree = (nodes: BrowseTreeNode[], depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-3' : 'mt-2 space-y-2'}>
       {nodes.map((node) => (
         <details
           key={node.key}
-          open
+          defaultOpen={!isHenLabel(node.label)}
           className={`rounded-2xl border bg-background ${depth > 0 ? 'border-dashed' : ''}`}
         >
           <summary className="cursor-pointer list-none rounded-2xl px-4 py-3 text-sm font-semibold marker:hidden hover:bg-accent">
