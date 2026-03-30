@@ -169,3 +169,9 @@ export type SearchResponse = {
   items: SearchResult[];
   total: number;
 };
+
+export type BrowseCategory = {
+  key: string;
+  label: string;
+  trail: string;
+};

@@ -22,7 +22,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent } from './ArticleContent';
 
 const TABS = [
@@ -167,7 +167,7 @@ function compareMineCityDocument(a: DocumentSummary, b: DocumentSummary): number
   return compareDocumentSummary(a, b);
 }
 
-function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[]): BrowseTreeNode[] {
+function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[], categories: BrowseCategory[] = []): BrowseTreeNode[] {
   if (source === 'egov') {
     return [
       {
@@ -183,36 +183,41 @@ function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[]): BrowseT
   const root: BrowseTreeNode = { key: 'root', label: 'root', orderKey: '', children: [], docs: [] };
   const childIndex = new Map<string, BrowseTreeNode>();
 
-  for (const doc of docs) {
-    const parts = (doc.categoryPath || '未分類')
+  const ensurePath = (trail: string, catKey: string): BrowseTreeNode => {
+    const parts = trail
       .split(/\s*\/\s*/)
-      .map((part) => part.trim())
+      .map((p) => p.trim())
       .filter(Boolean);
     let current = root;
     let currentPath = '';
-
-    for (const part of parts) {
+    for (let depth = 0; depth < parts.length; depth++) {
+      const part = parts[depth];
       currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const key = `${current.key}>${part}`;
-      let next = childIndex.get(key);
+      const lookupKey = `${current.key}>${part}`;
+      let next = childIndex.get(lookupKey);
       if (!next) {
-        const keyParts = (doc.browseCategoryKey || '')
-          .split('.')
-          .filter(Boolean)
-          .slice(0, currentPath.split('/').length);
-        next = {
-          key: currentPath,
-          label: part,
-          orderKey: keyParts.join('.'),
-          children: [],
-          docs: [],
-        };
+        const keyParts = catKey.split('.').filter(Boolean).slice(0, depth + 1);
+        next = { key: currentPath, label: part, orderKey: keyParts.join('.'), children: [], docs: [] };
         current.children.push(next);
-        childIndex.set(key, next);
+        childIndex.set(lookupKey, next);
       }
       current = next;
     }
-    current.docs.push(doc);
+    return current;
+  };
+
+  // カテゴリツリーから空カテゴリも含めてノードを生成
+  for (const cat of categories) {
+    if (cat.trail) {
+      ensurePath(cat.trail, cat.key);
+    }
+  }
+
+  // ドキュメントをツリーに配置
+  for (const doc of docs) {
+    const trail = doc.categoryPath || '未分類';
+    const node = ensurePath(trail, doc.browseCategoryKey || '');
+    node.docs.push(doc);
   }
 
   const sortTree = (nodes: BrowseTreeNode[]) => {
@@ -422,6 +427,7 @@ function AppShell() {
 
   const [browseSource, setBrowseSource] = useState<BrowseSource>('mine-city');
   const [browseList, setBrowseList] = useState<DocumentSummary[]>([]);
+  const [browseCategories, setBrowseCategories] = useState<BrowseCategory[]>([]);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseDocId, setBrowseDocId] = useState<number | null>(null);
   const [browseDoc, setBrowseDoc] = useState<DocumentDetail | null>(null);
@@ -445,8 +451,9 @@ function AppShell() {
     setBrowseLoading(true);
     setGlobalError(null);
     try {
-      const items = await fetchDocumentList(source);
-      setBrowseList(items);
+      const data = await fetchDocumentList(source);
+      setBrowseList(data.items);
+      setBrowseCategories(data.browseCategories);
       setBrowseDocId(null);
       setBrowseDoc(null);
     } catch (err) {
@@ -836,7 +843,7 @@ function AppShell() {
     [syncStatus],
   );
 
-  const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList), [browseList, browseSource]);
+  const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
   const renderBrowseTree = (nodes: BrowseTreeNode[], depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-3' : 'mt-2 space-y-2'}>
       {nodes.map((node) => (

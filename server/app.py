@@ -876,17 +876,54 @@ def mine_city_category_key_from_url(url: str) -> str:
     return ".".join(parts)
 
 
-def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> list[dict[str, str | int]]:
-    queue: list[tuple[str, list[str], str]] = [(start_url, [], mine_city_category_key_from_url(start_url))]
+def parse_mine_city_nav_tree(soup: BeautifulSoup) -> dict[str, str]:
+    """ナビゲーションツリーから category_key → ラベル のマッピングを構築する。"""
+    nav = soup.select_one("ul#navigation")
+    if nav is None:
+        return {}
+    labels: dict[str, str] = {}
+    for link in nav.select("a[href]"):
+        href = (link.get("href") or "").strip()
+        if "r_taikei_" not in href:
+            continue
+        key = mine_city_category_key_from_url(href)
+        # tk-space span はレイアウト用スペーサーなので中身のテキストだけ残す
+        for tk_span in link.select("span.tk-space"):
+            tk_span.replace_with(tk_span.get_text())
+        raw_label = normalize_text(link.get_text("", strip=True))
+        # "第X編名前" → "第X編 名前", "第X章名前" → "第X章 名前", "第X節名前" → "第X節 名前"
+        label = re.sub(r"(第\d+(?:編|章|節))\s*(?![\s$])", r"\1 ", raw_label)
+        if key and label:
+            labels[key] = label
+    return labels
+
+
+def build_category_trail(key: str, nav_labels: dict[str, str]) -> str:
+    """category_key からフルパス文字列を組み立てる (例: '05.01' → '第5編 給与 / 第1章 報酬・費用弁償')。"""
+    parts = key.split(".")
+    trail: list[str] = []
+    for i in range(len(parts)):
+        prefix = ".".join(parts[: i + 1])
+        label = nav_labels.get(prefix)
+        if label:
+            trail.append(label)
+    return " / ".join(trail)
+
+
+def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> tuple[list[dict[str, str | int]], dict[str, str]]:
+    queue: list[tuple[str, str]] = [(start_url, mine_city_category_key_from_url(start_url))]
     seen_pages: set[str] = set()
     documents: dict[str, dict[str, str | int]] = {}
+    nav_labels: dict[str, str] = {}
     while queue:
-        url, trail, category_key = queue.pop(0)
+        url, category_key = queue.pop(0)
         if url in seen_pages:
             continue
         seen_pages.add(url)
         html = fetch_url_text(url)
         soup = BeautifulSoup(html, "html.parser")
+        if not nav_labels:
+            nav_labels = parse_mine_city_nav_tree(soup)
         document_order = 0
         for link in soup.select('a[href]'):
             href = (link.get('href') or '').strip()
@@ -899,24 +936,41 @@ def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> list[dict[str
             label = normalize_text(link.get_text(" ", strip=True))
             if '/reiki_honbun/' in parsed.path and parsed.path.endswith('.html'):
                 document_order += 1
-                documents.setdefault(
-                    abs_url,
-                    {
-                        "url": abs_url,
-                        "category_path": " / ".join(trail),
-                        "title_hint": label,
-                        "browse_category_key": category_key,
-                        "browse_document_order": document_order,
-                    },
-                )
+                new_doc = {
+                    "url": abs_url,
+                    "category_path": "",
+                    "title_hint": label,
+                    "browse_category_key": category_key,
+                    "browse_document_order": document_order,
+                }
+                existing = documents.get(abs_url)
+                if existing is None or len(category_key) > len(str(existing.get("browse_category_key", ""))):
+                    documents[abs_url] = new_doc
             elif '/reiki_taikei/' in parsed.path and parsed.path.endswith('.html'):
-                next_trail = trail + ([label] if label else [])
                 next_category_key = mine_city_category_key_from_url(abs_url) or category_key
                 if abs_url not in seen_pages:
-                    queue.append((abs_url, next_trail, next_category_key))
+                    queue.append((abs_url, next_category_key))
         if len(seen_pages) > 500:
             break
-    return list(documents.values())
+    for doc in documents.values():
+        doc["category_path"] = build_category_trail(str(doc["browse_category_key"]), nav_labels)
+    return list(documents.values()), nav_labels
+
+
+def _start_article(articles: list[dict[str, Any]], key: str, number: str, title: str, initial_text: str = "") -> dict[str, Any]:
+    current: dict[str, Any] = {
+        "article_key": key,
+        "article_number": number,
+        "article_title": title,
+        "parent_path": "",
+        "parts": [initial_text] if initial_text else [],
+    }
+    articles.append(current)
+    return current
+
+
+_FUSOKU_RE = re.compile(r"^附\s*則")
+_BEPPYO_RE = re.compile(r"^別表")
 
 
 def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
@@ -935,15 +989,27 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
             paragraph_text = node_text(num_p)
             if article_number and paragraph_text.startswith(article_number):
                 paragraph_text = paragraph_text[len(article_number) :].lstrip(" 　")
-            current = {
-                "article_key": article_number,
-                "article_number": article_number,
-                "article_title": article_title,
-                "parent_path": "",
-                "parts": [paragraph_text] if paragraph_text else [],
-            }
-            articles.append(current)
+            current = _start_article(articles, article_number, article_number, article_title, paragraph_text)
             continue
+
+        # 別表セクション (div.table_section) → 新しい擬似条文として分離
+        table_section = eline.find("div", class_="table_section")
+        if table_section is not None:
+            label = node_text(table_section)
+            if label:
+                current = _start_article(articles, label, label, "")
+                continue
+
+        # 附則ヘッダ (div 無しの eline で "附 則" を含む) → 新しい擬似条文
+        first_child_div = eline.find("div", recursive=False)
+        if first_child_div is None:
+            raw = node_text(eline)
+            if raw and _FUSOKU_RE.match(raw):
+                current = _start_article(articles, raw, raw, "")
+                continue
+            if current is not None and raw:
+                current["parts"].append(raw)
+                continue
 
         if current is None:
             continue
@@ -1401,7 +1467,12 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
     try:
         with db_cursor(commit=True) as (_, cur):
             if source_scope in {'all', 'mine-city'}:
-                items = crawl_mine_city_index()
+                items, nav_labels = crawl_mine_city_index()
+                if nav_labels:
+                    cur.execute(
+                        "UPDATE sync_settings SET browse_nav_json=%s WHERE id=1",
+                        (json.dumps(nav_labels, ensure_ascii=False),),
+                    )
                 summary['mineCityCandidates'] = len(items)
                 for item in items:
                     parsed = parse_mine_city_document(item)
@@ -2238,6 +2309,22 @@ def api_document_list():
             mimetype='text/csv; charset=utf-8-sig',
             headers={'Content-Disposition': 'attachment; filename=documents.csv'},
         )
+    browse_categories: list[dict[str, str]] = []
+    if source in ('mine-city', 'all'):
+        with db_cursor() as (_, cur2):
+            cur2.execute("SELECT browse_nav_json FROM sync_settings WHERE id=1")
+            row = cur2.fetchone()
+            raw_json = (row or {}).get("browse_nav_json") or "{}"
+            try:
+                nav_labels: dict[str, str] = json.loads(raw_json)
+            except Exception:
+                nav_labels = {}
+            for key in sorted(nav_labels, key=lambda k: [int(p) if p.isdigit() else p for p in k.split(".")]):
+                browse_categories.append({
+                    "key": key,
+                    "label": nav_labels[key],
+                    "trail": build_category_trail(key, nav_labels),
+                })
     return jsonify({
         'items': [
             {
@@ -2252,7 +2339,8 @@ def api_document_list():
                 'promulgatedAt': str(doc['promulgated_at']) if doc['promulgated_at'] else None,
             }
             for doc in docs
-        ]
+        ],
+        'browseCategories': browse_categories,
     })
 
 
