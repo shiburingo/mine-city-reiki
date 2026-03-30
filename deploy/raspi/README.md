@@ -11,3 +11,9 @@
 cd /opt/mine-city-reiki
 ./deploy/raspi/update.sh
 ```
+
+## Git 管理の前提
+
+- `/opt/mine-city-reiki` は Git clone 正本で運用する
+- `git remote -v` で `origin https://github.com/shiburingo/mine-city-reiki.git` が出ることを確認
+- `not-git` の場合は `docs/ops.md` の「前提: `/opt/mine-city-reiki` は Git clone 正本にする」の手順で正本化する

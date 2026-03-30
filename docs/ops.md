@@ -29,6 +29,47 @@ cd /opt/mine-city-reiki
 4. `pip install -r server/requirements.txt` でバックエンド依存を更新
 5. `systemctl restart mine-city-reiki-api` で API を再起動
 
+### 前提: `/opt/mine-city-reiki` は Git clone 正本にする
+
+`update.sh` は `git pull --ff-only` を前提にしているため、`/opt/mine-city-reiki` は
+必ず Git 管理下（origin 設定済み）で運用します。
+
+確認:
+
+```bash
+cd /opt/mine-city-reiki
+git rev-parse --is-inside-work-tree
+git remote -v
+```
+
+`not-git` や remote 未設定の場合は、以下で正本化します（ラズパイ上で実行）。
+
+```bash
+set -euo pipefail
+TS="$(date +%Y%m%d-%H%M%S)"
+OLD="/opt/mine-city-reiki"
+BAK="/opt/mine-city-reiki.pre-git-${TS}"
+
+sudo mv "${OLD}" "${BAK}"
+sudo git clone --branch main https://github.com/shiburingo/mine-city-reiki.git "${OLD}"
+
+# 既存の Python 仮想環境を引き継ぐ（存在する場合）
+if [ -d "${BAK}/server/venv" ]; then
+  sudo rsync -a "${BAK}/server/venv/" "${OLD}/server/venv/"
+fi
+
+sudo chown -R "$(id -un)":"$(id -gn)" "${OLD}"
+cd "${OLD}"
+./deploy/raspi/update.sh
+```
+
+反映確認:
+
+```bash
+curl -fsS http://127.0.0.1:8795/api/health
+curl -ksS https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-reiki-api/api/health
+```
+
 ---
 
 ## 初回セットアップ
