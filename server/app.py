@@ -2122,7 +2122,10 @@ def enforce_auth():
         return ('', 204)
     status, payload = auth_verify()
     if status >= 400:
-        return jsonify({'ok': False, 'error': 'login required'}), status
+        err = payload.get('error') if isinstance(payload, dict) else None
+        if not err:
+            err = 'access denied' if status == 403 else 'login required'
+        return jsonify({'ok': False, 'error': err}), status
     if payload.get('enabled') is False:
         return None
     g.auth_user = payload.get('user') or {}
