@@ -973,7 +973,7 @@ function AppShell() {
                   {syncRuns.length === 0 ? (
                     <p className="text-sm text-muted-foreground">まだ同期履歴はありません。</p>
                   ) : (
-                    syncRuns.slice(0, 5).map((run) => (
+                    syncRuns.slice(0, 3).map((run) => (
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium">{run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
