@@ -46,6 +46,13 @@ export async function runSync(sourceScope: 'all' | 'mine-city' | 'egov' = 'all')
   });
 }
 
+export async function runReindex(batchSize = 10): Promise<{ ok: boolean; summary: Record<string, any> }> {
+  return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/reindex/run', {
+    method: 'POST',
+    body: JSON.stringify({ batchSize }),
+  });
+}
+
 export async function searchLaws(params: { fields: SearchField[]; source?: string; limit?: number; offset?: number; lawType?: string; fromDate?: string; toDate?: string }): Promise<SearchResponse> {
   const qs = new URLSearchParams();
   params.fields.forEach((f, i) => {
