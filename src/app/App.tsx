@@ -435,6 +435,7 @@ function AppShell() {
   const [searchLawType, setSearchLawType] = useState('');
   const [searchFromDate, setSearchFromDate] = useState('');
   const [searchToDate, setSearchToDate] = useState('');
+  const [searchFuzzy, setSearchFuzzy] = useState(false);
   const [lawTypeOptions, setLawTypeOptions] = useState<string[]>([]);
   const [showAdvancedFilter, setShowAdvancedFilter] = useState(false);
 
@@ -797,6 +798,7 @@ function AppShell() {
         lawType: searchLawType || undefined,
         fromDate: searchFromDate || undefined,
         toDate: searchToDate || undefined,
+        fuzzy: searchFuzzy,
       });
       setResults(resp.items);
       setSearchTotal(resp.total);
@@ -1263,7 +1265,7 @@ function AppShell() {
             <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">例規検索</h2>
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-muted-foreground">スペース区切りで AND 検索。フィールド間は AND / OR で切り替え。</p>
+                <p className="text-xs text-muted-foreground">デフォルトは完全一致検索です。関連語を含める場合は詳細絞り込みで曖昧検索を有効にしてください。</p>
                 <button type="button" onClick={() => setShowAdvancedFilter((v) => !v)} className="text-xs text-primary underline">
                   {showAdvancedFilter ? '▲ 絞り込みを閉じる' : '▼ 詳細絞り込み'}
                 </button>
@@ -1291,8 +1293,12 @@ function AppShell() {
                       <input type="date" className="h-8 w-full rounded-lg border bg-input-background px-2 text-sm" value={searchToDate} onChange={(e) => setSearchToDate(e.target.value)} />
                     </label>
                   </div>
-                  {(searchLawType || searchFromDate || searchToDate) ? (
-                    <button type="button" onClick={() => { setSearchLawType(''); setSearchFromDate(''); setSearchToDate(''); }} className="text-xs text-muted-foreground underline">フィルタをクリア</button>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input type="checkbox" checked={searchFuzzy} onChange={(e) => setSearchFuzzy(e.target.checked)} />
+                    曖昧検索（関連語検索）を有効にする
+                  </label>
+                  {(searchLawType || searchFromDate || searchToDate || searchFuzzy) ? (
+                    <button type="button" onClick={() => { setSearchLawType(''); setSearchFromDate(''); setSearchToDate(''); setSearchFuzzy(false); }} className="text-xs text-muted-foreground underline">フィルタをクリア</button>
                   ) : null}
                 </div>
               ) : null}

@@ -53,7 +53,7 @@ export async function runReindex(batchSize = 10): Promise<{ ok: boolean; summary
   });
 }
 
-export async function searchLaws(params: { fields: SearchField[]; source?: string; limit?: number; offset?: number; lawType?: string; fromDate?: string; toDate?: string }): Promise<SearchResponse> {
+export async function searchLaws(params: { fields: SearchField[]; source?: string; limit?: number; offset?: number; lawType?: string; fromDate?: string; toDate?: string; fuzzy?: boolean }): Promise<SearchResponse> {
   const qs = new URLSearchParams();
   params.fields.forEach((f, i) => {
     if (f.q.trim()) {
@@ -67,6 +67,7 @@ export async function searchLaws(params: { fields: SearchField[]; source?: strin
   if (params.lawType) qs.set('lawType', params.lawType);
   if (params.fromDate) qs.set('fromDate', params.fromDate);
   if (params.toDate) qs.set('toDate', params.toDate);
+  if (params.fuzzy) qs.set('fuzzy', '1');
   const data = await apiFetch<{ items: SearchResult[]; total: number }>(`/search?${qs.toString()}`);
   return { items: data.items || [], total: data.total ?? data.items?.length ?? 0 };
 }
@@ -136,6 +137,6 @@ export function buildDocumentsCsvUrl(source?: string): string {
 }
 
 export async function searchLawsForRelated(fields: SearchField[], excludeDocId: number, source?: string): Promise<SearchResult[]> {
-  const resp = await searchLaws({ fields, source, limit: 6 });
+  const resp = await searchLaws({ fields, source, limit: 6, fuzzy: true });
   return resp.items.filter((r) => r.documentId !== excludeDocId).slice(0, 5);
 }

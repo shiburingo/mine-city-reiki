@@ -629,7 +629,20 @@ def title_weighted_terms(text: str, weight: int, include_phrase: bool = True) ->
     return dict(ranked[:96])
 
 
-def query_terms(query: str, cur=None) -> list[str]:
+def exact_query_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    normalized_query = normalize_text(query).lower()
+    for candidate in [normalized_query, *[normalize_text(k).lower() for k in split_keywords(query)]]:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            terms.append(candidate)
+    return terms[:12]
+
+
+def query_terms(query: str, cur=None, fuzzy: bool = False) -> list[str]:
+    if not fuzzy:
+        return exact_query_terms(query)
     base_keywords = split_keywords(query)
     expanded_keywords = expand_keywords_with_synonyms(base_keywords, cur=cur, max_keywords=20)
     weighted_groups: list[tuple[str, int, bool]] = [(query, 12, True)]
@@ -2127,16 +2140,19 @@ def _doc_ids_matching_all_terms(terms: list[str], source: str, cur, max_ids: int
     return {int(row["document_id"]) for row in (cur.fetchall() or [])}
 
 
-def _doc_ids_for_keyword(keyword: str, source: str, cur) -> set[int]:
+def _doc_ids_for_keyword(keyword: str, source: str, cur, fuzzy: bool = False) -> set[int]:
     """転置インデックスから1キーワードにマッチする document_id の集合を返す。"""
     norm = normalize_text(keyword).lower()
     if not norm:
         return set()
-    terms = list(limited_weighted_terms((norm, 10, True), max_terms=30).keys())
-    for syn in expand_keywords_with_synonyms([norm], cur=cur, max_keywords=6):
-        if syn != norm:
-            terms.extend(limited_weighted_terms((syn, 8, True), max_terms=10).keys())
-    terms = list(set(terms))
+    if fuzzy:
+        terms = list(limited_weighted_terms((norm, 10, True), max_terms=30).keys())
+        for syn in expand_keywords_with_synonyms([norm], cur=cur, max_keywords=6):
+            if syn != norm:
+                terms.extend(limited_weighted_terms((syn, 8, True), max_terms=10).keys())
+        terms = list(set(terms))
+    else:
+        terms = [norm]
     if not terms:
         return set()
     placeholders = ",".join(["%s"] * len(terms))
@@ -2151,13 +2167,13 @@ def _doc_ids_for_keyword(keyword: str, source: str, cur) -> set[int]:
     return {int(r["document_id"]) for r in cur.fetchall()}
 
 
-def _doc_ids_for_field(field_q: str, source: str, cur) -> set[int] | None:
+def _doc_ids_for_field(field_q: str, source: str, cur, fuzzy: bool = False) -> set[int] | None:
     """フィールド内の全キーワード（スペース区切り）をAND結合した document_id 集合を返す。
     フィールドが空なら None を返す（制約なし扱い）。"""
     keywords = [k for k in normalize_text(field_q).lower().split() if k]
     if not keywords:
         return None
-    sets = [_doc_ids_for_keyword(k, source, cur) for k in keywords]
+    sets = [_doc_ids_for_keyword(k, source, cur, fuzzy=fuzzy) for k in keywords]
     result = sets[0]
     for s in sets[1:]:
         result &= s
@@ -2172,6 +2188,7 @@ def search_documents_structured(
     law_type: str = '',
     from_date: str = '',
     to_date: str = '',
+    fuzzy: bool = False,
 ) -> tuple[int, list[dict[str, Any]]]:
     """複数フィールドによる構造化検索。
     fields = [{"q": "...", "op": "AND"}, ...] の形式。
@@ -2190,7 +2207,7 @@ def search_documents_structured(
     cache_key_parts = (
         ["structured"]
         + [f"{f['op']}:{normalize_text(f['q']).lower()}" for f in active]
-        + [source, str(limit), law_type, from_date, to_date]
+        + [source, str(limit), law_type, from_date, to_date, "fuzzy" if fuzzy else "exact"]
     )
 
     with db_cursor() as (_, cur):
@@ -2204,7 +2221,7 @@ def search_documents_structured(
         # フィールドごとに document_id 集合を求めて AND/OR で合成
         valid_ids: set[int] | None = None
         for f in active:
-            ids = _doc_ids_for_field(f["q"], source, cur)
+            ids = _doc_ids_for_field(f["q"], source, cur, fuzzy=fuzzy)
             if ids is None:
                 continue
             if valid_ids is None:
@@ -2225,14 +2242,22 @@ def search_documents_structured(
             return 0, []
 
         # 有効 ID に絞って term_score でスコアリング
-        all_terms = list(set(
-            t
-            for f in active
-            for keyword in normalize_text(f["q"]).lower().split()
-            for t in limited_weighted_terms((keyword, 10, True), max_terms=20).keys()
-        ))
+        if fuzzy:
+            all_terms = list(set(
+                t
+                for f in active
+                for keyword in normalize_text(f["q"]).lower().split()
+                for t in limited_weighted_terms((keyword, 10, True), max_terms=20).keys()
+            ))
+        else:
+            all_terms = list(set(
+                t
+                for f in active
+                for keyword in normalize_text(f["q"]).lower().split()
+                for t in exact_query_terms(keyword)
+            ))
         if not all_terms:
-            return []
+            return 0, []
         placeholders = ",".join(["%s"] * len(all_terms))
         id_placeholders = ",".join(["%s"] * len(valid_ids))
         params_a: list[Any] = all_terms + list(valid_ids)
@@ -2274,7 +2299,7 @@ def search_documents_structured(
         # valid_ids はあるが term_score なし → タイトル一致等で最低限返す
         document_candidates = [{"document_id": doc_id, "term_score": 1, "matched_terms": 1} for doc_id in list(valid_ids)[:120]]
 
-    keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20)
+    keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20) if fuzzy else all_keywords
     total, results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit, offset)
 
     if offset == 0:
@@ -2283,7 +2308,7 @@ def search_documents_structured(
     return total, results
 
 
-def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[int, list[dict[str, Any]]]:
+def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bool = False) -> tuple[int, list[dict[str, Any]]]:
     normalized_query = normalize_text(query).lower()
     if not normalized_query:
         return 0, []
@@ -2292,19 +2317,20 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[
     anchor_doc_ids: set[int] | None = None
     with db_cursor() as (_, cur):
         generation = get_cache_generation(cur)
-        keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20)
-        terms = query_terms(query, cur=cur)
-        cache_key = make_cache_key(["search", normalized_query, source, str(limit), str(generation)])
+        keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20) if fuzzy else split_keywords(query)
+        terms = query_terms(query, cur=cur, fuzzy=fuzzy)
+        cache_key = make_cache_key(["search", normalized_query, source, str(limit), str(generation), "fuzzy" if fuzzy else "exact"])
         cached = get_search_cache(cur, cache_key)
         if cached is not None:
             return len(cached), cached
         if not terms:
             return 0, []
-        anchor_terms = _select_anchor_terms(terms, source, cur, limit=3)
-        if anchor_terms:
-            anchor_doc_ids = _doc_ids_matching_all_terms(anchor_terms, source, cur, max_ids=400)
-            if not anchor_doc_ids and len(anchor_terms) > 1:
-                anchor_doc_ids = _doc_ids_matching_all_terms(anchor_terms[:2], source, cur, max_ids=400)
+        if fuzzy:
+            anchor_terms = _select_anchor_terms(terms, source, cur, limit=3)
+            if anchor_terms:
+                anchor_doc_ids = _doc_ids_matching_all_terms(anchor_terms, source, cur, max_ids=400)
+                if not anchor_doc_ids and len(anchor_terms) > 1:
+                    anchor_doc_ids = _doc_ids_matching_all_terms(anchor_terms[:2], source, cur, max_ids=400)
         placeholders = ",".join(["%s"] * len(terms))
         params: list[Any] = list(terms)
         source_sql = ""
@@ -2484,6 +2510,7 @@ def api_search():
     law_type = (request.args.get('lawType') or '').strip()
     from_date = (request.args.get('fromDate') or '').strip()
     to_date = (request.args.get('toDate') or '').strip()
+    fuzzy = (request.args.get('fuzzy') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
     # 構造化検索: q1..q4 + op2..op4 が渡された場合
     fields: list[dict[str, str]] = []
     for i in range(1, 5):
@@ -2493,12 +2520,12 @@ def api_search():
             op = 'AND'
         fields.append({'q': q, 'op': op})
     if any(f['q'] for f in fields):
-        total, items = search_documents_structured(fields, source, limit, offset, law_type, from_date, to_date)
+        total, items = search_documents_structured(fields, source, limit, offset, law_type, from_date, to_date, fuzzy=fuzzy)
         return jsonify({'items': items, 'total': total})
     # 後方互換: q パラメータによる従来検索
     query = (request.args.get('q') or '').strip()
     if query:
-        total, items = search_documents(query, source, limit)
+        total, items = search_documents(query, source, limit, fuzzy=fuzzy)
     else:
         total, items = 0, []
     return jsonify({'items': items, 'total': total})
