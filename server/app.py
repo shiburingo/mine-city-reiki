@@ -1423,6 +1423,13 @@ def set_sync_run_status(cur, run_id: int, status: str, summary: dict[str, Any] |
     )
 
 
+def update_sync_run_summary(cur, run_id: int, summary: dict[str, Any]) -> None:
+    cur.execute(
+        "UPDATE sync_runs SET summary_json=%s WHERE id=%s",
+        (json.dumps(summary or {}, ensure_ascii=False), run_id),
+    )
+
+
 def get_sync_settings(cur) -> dict[str, Any]:
     cur.execute("SELECT * FROM sync_settings WHERE id=1")
     row = cur.fetchone()
@@ -1531,7 +1538,7 @@ def should_run_monthly(settings: dict[str, Any], now_dt: datetime | None = None)
 
 def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[str, Any]:
     with db_cursor(commit=True) as (_, cur):
-        settings = get_sync_settings(cur)
+        get_sync_settings(cur)
         cur.execute(
             "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES (%s,'running',%s,%s)",
             (run_type, now_iso(), json.dumps({}, ensure_ascii=False)),
@@ -1543,20 +1550,31 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
         )
 
     summary: dict[str, Any] = {
+        'operation': 'sync',
         'sourceScope': source_scope,
         'documents': 0, 'added': 0, 'updated': 0, 'unchanged': 0, 'articles': 0,
+        'progressCurrent': 0,
+        'progressTotal': 0,
+        'progressLabel': '準備中',
     }
     try:
+        mine_city_items: list[dict[str, Any]] = []
+        nav_labels: list[dict[str, Any]] = []
+        if source_scope in {'all', 'mine-city'}:
+            mine_city_items, nav_labels = crawl_mine_city_index()
+            summary['mineCityCandidates'] = len(mine_city_items)
+        summary['progressTotal'] = len(mine_city_items) + (1 if source_scope in {'all', 'egov'} else 0)
         with db_cursor(commit=True) as (_, cur):
-            if source_scope in {'all', 'mine-city'}:
-                items, nav_labels = crawl_mine_city_index()
-                if nav_labels:
-                    cur.execute(
-                        "UPDATE sync_settings SET browse_nav_json=%s WHERE id=1",
-                        (json.dumps(nav_labels, ensure_ascii=False),),
-                    )
-                summary['mineCityCandidates'] = len(items)
-                for item in items:
+            update_sync_run_summary(cur, run_id, summary)
+            if nav_labels:
+                cur.execute(
+                    "UPDATE sync_settings SET browse_nav_json=%s WHERE id=1",
+                    (json.dumps(nav_labels, ensure_ascii=False),),
+                )
+        if mine_city_items:
+            with db_cursor(commit=True) as (_, cur):
+                for idx, item in enumerate(mine_city_items, 1):
+                    summary['progressLabel'] = f"美祢市例規 {idx}/{len(mine_city_items)}"
                     parsed = parse_mine_city_document(item)
                     result = upsert_document(cur, parsed)
                     summary['documents'] += 1
@@ -1568,7 +1586,13 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                     else:
                         summary['unchanged'] += 1
                     summary['articles'] += len(parsed.get('articles', []))
-            if source_scope in {'all', 'egov'}:
+                    summary['progressCurrent'] += 1
+                    if idx == 1 or idx == len(mine_city_items) or idx % 10 == 0:
+                        update_sync_run_summary(cur, run_id, summary)
+        if source_scope in {'all', 'egov'}:
+            with db_cursor(commit=True) as (_, cur):
+                summary['progressLabel'] = '地方自治法を同期中'
+                update_sync_run_summary(cur, run_id, summary)
                 parsed = fetch_egov_document()
                 result = upsert_document(cur, parsed)
                 summary['documents'] += 1
@@ -1580,14 +1604,27 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                 else:
                     summary['unchanged'] += 1
                 summary['articles'] += len(parsed.get('articles', []))
-            if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
-                bump_cache_generation(cur)
-                prune_expired_caches(cur)
-            set_sync_run_status(cur, run_id, 'success', summary, None)
-            cur.execute(
-                "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
-                (now_iso(), now_iso()),
-            )
+                summary['progressCurrent'] += 1
+                summary['progressLabel'] = '完了処理中'
+                if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
+                    bump_cache_generation(cur)
+                    prune_expired_caches(cur)
+                set_sync_run_status(cur, run_id, 'success', summary, None)
+                cur.execute(
+                    "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
+                    (now_iso(), now_iso()),
+                )
+        else:
+            with db_cursor(commit=True) as (_, cur):
+                summary['progressLabel'] = '完了処理中'
+                if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
+                    bump_cache_generation(cur)
+                    prune_expired_caches(cur)
+                set_sync_run_status(cur, run_id, 'success', summary, None)
+                cur.execute(
+                    "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
+                    (now_iso(), now_iso()),
+                )
         return summary
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
@@ -1632,15 +1669,23 @@ def execute_reindex(batch_size: int = 10) -> dict[str, Any]:
         'documents': len(doc_ids),
         'reindexed': 0,
         'batchSize': batch_size,
+        'progressCurrent': 0,
+        'progressTotal': len(doc_ids),
+        'progressLabel': '再索引を開始します',
     }
     try:
         for start in range(0, len(doc_ids), batch_size):
             batch = doc_ids[start:start + batch_size]
             with db_cursor(commit=True) as (_, cur):
+                summary['progressLabel'] = f"再索引 {start + 1}-{start + len(batch)} / {len(doc_ids)}"
+                update_sync_run_summary(cur, run_id, summary)
                 for document_id in batch:
                     rebuild_search_terms_for_document(cur, document_id)
                 summary['reindexed'] += len(batch)
+                summary['progressCurrent'] += len(batch)
+                update_sync_run_summary(cur, run_id, summary)
         with db_cursor(commit=True) as (_, cur):
+            summary['progressLabel'] = '完了処理中'
             bump_cache_generation(cur)
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)

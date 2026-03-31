@@ -71,6 +71,41 @@ function saveBookmarks(ids: number[]): void {
   localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(ids));
 }
 
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function runProgress(run: SyncRun | null): { current: number; total: number; percent: number; label: string } | null {
+  if (!run || run.status !== 'running') return null;
+  const current = asNumber(run.summary?.progressCurrent);
+  const total = asNumber(run.summary?.progressTotal);
+  if (current == null || total == null || total <= 0) return null;
+  const percent = Math.max(0, Math.min(100, (current / total) * 100));
+  return {
+    current,
+    total,
+    percent,
+    label: typeof run.summary?.progressLabel === 'string' ? run.summary.progressLabel : '',
+  };
+}
+
+function ProgressMeter({ title, run }: { title: string; run: SyncRun | null }) {
+  const progress = runProgress(run);
+  if (!progress) return null;
+  return (
+    <div className="mt-4 rounded-2xl border bg-background px-4 py-3">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">{title}</span>
+        <span className="text-muted-foreground">{progress.current}/{progress.total}</span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress.percent}%` }} />
+      </div>
+      {progress.label ? <p className="mt-2 text-xs text-muted-foreground">{progress.label}</p> : null}
+    </div>
+  );
+}
+
 type TabId = (typeof TABS)[number]['id'];
 
 type SyncForm = {
@@ -537,6 +572,24 @@ function AppShell() {
   }, [tab]);
 
   useEffect(() => {
+    if (tab !== 'settings') return;
+    const hasRunning = syncRuns.some((run) => run.status === 'running');
+    if (!hasRunning) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const [status, runs] = await Promise.all([fetchSyncStatus(), fetchSyncRuns()]);
+          setSyncStatus(status);
+          setSyncRuns(runs);
+        } catch {
+          // keep the existing screen state when polling fails
+        }
+      })();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [tab, syncRuns]);
+
+  useEffect(() => {
     if (selectedDocId == null) return;
     let cancelled = false;
     void (async () => {
@@ -830,6 +883,16 @@ function AppShell() {
       setBusy(false);
     }
   }
+
+  const runningSyncRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation !== 'reindex') ?? null,
+    [syncRuns],
+  );
+
+  const runningReindexRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'reindex') ?? null,
+    [syncRuns],
+  );
 
   const statCards = useMemo(
     () => [
@@ -1652,6 +1715,7 @@ function AppShell() {
                   <div className="flex justify-between gap-4"><dt>最終成功</dt><dd>{formatDateTime(syncStatus.lastSuccessAt)}</dd></div>
                   <div className="flex justify-between gap-4"><dt>タイムゾーン</dt><dd>{syncStatus.timezone}</dd></div>
                 </dl>
+                <ProgressMeter title="手動同期の進捗" run={runningSyncRun} />
                 {syncStatus.lastError ? <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{syncStatus.lastError}</p> : null}
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
@@ -1665,6 +1729,7 @@ function AppShell() {
                     全件再索引を実行
                   </button>
                 </div>
+                <ProgressMeter title="検索再構築の進捗" run={runningReindexRun} />
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
                 <h2 className="text-xl font-semibold">同期履歴</h2>
