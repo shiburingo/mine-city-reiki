@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS law_search_terms (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_law_search_terms_target_term (target_type, target_id, term),
   KEY idx_law_search_terms_term_target (term, target_type),
+  KEY idx_law_search_terms_target_term_doc (target_type, term, document_id),
+  KEY idx_law_search_terms_target_term_doc_article (target_type, term, document_id, article_id),
   KEY idx_law_search_terms_document (document_id),
   KEY idx_law_search_terms_article (article_id),
   CONSTRAINT fk_law_search_terms_document FOREIGN KEY (document_id) REFERENCES law_documents(id) ON DELETE CASCADE,

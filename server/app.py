@@ -256,6 +256,20 @@ def execute_sql_script(cur, sql_text: str) -> None:
                 cur.execute(statement)
 
 
+def ensure_index(cur, table: str, index_name: str, definition: str) -> None:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND INDEX_NAME=%s
+        """,
+        (CFG.db_name, table, index_name),
+    )
+    exists = int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    if not exists:
+        cur.execute(f"ALTER TABLE `{table}` ADD INDEX `{index_name}` {definition}")
+
+
 def ensure_schema() -> None:
     if not CFG.auto_init:
         return
@@ -298,6 +312,13 @@ def ensure_schema() -> None:
                   CONSTRAINT fk_law_search_terms_article FOREIGN KEY (article_id) REFERENCES law_articles(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
+            )
+            ensure_index(cur, "law_search_terms", "idx_law_search_terms_target_term_doc", "(target_type, term, document_id)")
+            ensure_index(
+                cur,
+                "law_search_terms",
+                "idx_law_search_terms_target_term_doc_article",
+                "(target_type, term, document_id, article_id)",
             )
             ensure_table(
                 cur,
@@ -523,7 +544,16 @@ def janome_terms(text: str) -> list[str]:
     return terms
 
 
-def chunk_terms(text: str) -> list[str]:
+def is_hiragana_only(text: str) -> bool:
+    return bool(text) and all("\u3040" <= ch <= "\u309f" for ch in text)
+
+
+def chunk_terms(
+    text: str,
+    max_compact_len: int = 20,
+    ngram_sizes: tuple[int, ...] = (2, 3),
+    prefix_lengths: tuple[int, ...] = (),
+) -> list[str]:
     normalized = normalize_text(text).lower()
     if not normalized:
         return []
@@ -535,8 +565,11 @@ def chunk_terms(text: str) -> list[str]:
             terms.append(chunk)
         if contains_japanese(chunk):
             compact = chunk.replace(" ", "")
-            if 2 <= len(compact) <= 20:
-                for size in (2, 3):
+            for prefix_len in prefix_lengths:
+                if prefix_len <= len(compact):
+                    terms.append(compact[:prefix_len])
+            if 2 <= len(compact) <= max_compact_len:
+                for size in ngram_sizes:
                     if len(compact) < size:
                         continue
                     for idx in range(len(compact) - size + 1):
@@ -573,6 +606,29 @@ def limited_weighted_terms(*groups: tuple[str, int, bool], max_terms: int = 160)
     return dict(ranked[:max_terms])
 
 
+def title_weighted_terms(text: str, weight: int, include_phrase: bool = True) -> dict[str, int]:
+    normalized = normalize_text(text).lower()
+    if not normalized:
+        return {}
+    weights: dict[str, int] = {}
+    if include_phrase and 1 < len(normalized) <= 191:
+        weights[normalized] = weight
+    for term in janome_terms(normalized):
+        weights[term] = max(weights.get(term, 0), weight)
+    for term in chunk_terms(
+        normalized,
+        max_compact_len=80,
+        ngram_sizes=(2, 3),
+        prefix_lengths=(4, 5, 6, 7, 8, 9, 10, 11, 12),
+    ):
+        weights[term] = max(weights.get(term, 0), weight)
+    reading_weight = max(1, int(weight * 0.6))
+    for term in janome_reading_terms(normalized):
+        weights[term] = max(weights.get(term, 0), reading_weight)
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
+    return dict(ranked[:96])
+
+
 def query_terms(query: str, cur=None) -> list[str]:
     base_keywords = split_keywords(query)
     expanded_keywords = expand_keywords_with_synonyms(base_keywords, cur=cur, max_keywords=20)
@@ -580,7 +636,20 @@ def query_terms(query: str, cur=None) -> list[str]:
     for keyword in expanded_keywords:
         weighted_groups.append((keyword, 10 if keyword in {normalize_text(query).lower()} else 7, True))
     terms = list(limited_weighted_terms(*weighted_groups, max_terms=40).keys())
-    return terms
+    normalized_query = normalize_text(query).lower()
+    if contains_japanese(normalized_query) and re.search(r"[一-龯]", normalized_query):
+        terms = [term for term in terms if not is_hiragana_only(term)]
+    strong_terms = [term for term in terms if contains_japanese(term) and len(term) >= 3]
+    if strong_terms:
+        strong_set = set(strong_terms)
+        terms = strong_terms + [term for term in terms if term not in strong_set and (term.isdigit() or len(term) >= 4)]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if term and term not in seen:
+            seen.add(term)
+            deduped.append(term)
+    return deduped[:24]
 
 
 def ensure_column(cur, table: str, column: str, definition: str) -> None:
@@ -1140,22 +1209,35 @@ def fetch_egov_document() -> dict[str, Any]:
 def build_document_search_terms(document: dict[str, Any]) -> dict[str, int]:
     # 文書全文は非常に長くなり得るため、索引生成時は先頭と末尾の抜粋に絞る。
     full_text_excerpt = trim_text_for_indexing(document.get("full_text", ""), max_chars=4000)
-    return limited_weighted_terms(
-        (document.get("title", ""), 12, True),
-        (document.get("law_number", ""), 8, True),
-        (document.get("category_path", ""), 4, False),
+    weights: dict[str, int] = {}
+    for term, weight in title_weighted_terms(document.get("title", ""), 12).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    for term, weight in title_weighted_terms(document.get("law_number", ""), 8).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    for term, weight in title_weighted_terms(document.get("category_path", ""), 4, include_phrase=False).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    for term, weight in limited_weighted_terms(
         (document.get("law_type", ""), 4, True),
         (full_text_excerpt, 1, False),
-    )
+        max_terms=160,
+    ).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
+    return dict(ranked[:220])
 
 
 def build_article_search_terms(document: dict[str, Any], article: dict[str, Any]) -> dict[str, int]:
-    return limited_weighted_terms(
-        (document.get("title", ""), 6, True),
-        (article.get("article_number", ""), 12, True),
-        (article.get("article_title", ""), 8, True),
-        (article.get("text", ""), 2, False),
-    )
+    weights: dict[str, int] = {}
+    for term, weight in title_weighted_terms(document.get("title", ""), 6).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    for term, weight in title_weighted_terms(article.get("article_number", ""), 12).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    for term, weight in title_weighted_terms(article.get("article_title", ""), 8).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    for term, weight in limited_weighted_terms((article.get("text", ""), 2, False), max_terms=160).items():
+        weights[term] = max(weights.get(term, 0), weight)
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
+    return dict(ranked[:220])
 
 
 def insert_search_terms(
@@ -1883,6 +1965,71 @@ def _filter_doc_ids_by_meta(
     return {int(r["id"]) for r in (cur.fetchall() or [])}
 
 
+def _select_anchor_terms(terms: list[str], source: str, cur, limit: int = 3) -> list[str]:
+    candidates = [
+        term
+        for term in terms
+        if term
+        and contains_japanese(term)
+        and len(term) >= 3
+        and not is_hiragana_only(term)
+    ]
+    if not candidates:
+        return []
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in candidates:
+        if term not in seen:
+            seen.add(term)
+            deduped.append(term)
+    placeholders = ",".join(["%s"] * len(deduped))
+    source_sql = " AND d.source=%s" if source != "all" else ""
+    params: list[Any] = deduped + ([source] if source != "all" else [])
+    cur.execute(
+        f"""
+        SELECT st.term, COUNT(DISTINCT st.document_id) AS doc_count
+        FROM law_search_terms st
+        JOIN law_documents d ON d.id=st.document_id
+        WHERE st.target_type='document'
+          AND st.term IN ({placeholders}){source_sql}
+        GROUP BY st.term
+        """,
+        tuple(params),
+    )
+    counts = {str(row["term"]): int(row["doc_count"]) for row in (cur.fetchall() or [])}
+    ranked = sorted(
+        (
+            (term, counts.get(term, 10**9))
+            for term in deduped
+            if counts.get(term, 0) > 0
+        ),
+        key=lambda item: (item[1], -len(item[0]), item[0]),
+    )
+    return [term for term, _ in ranked[:limit]]
+
+
+def _doc_ids_matching_all_terms(terms: list[str], source: str, cur, max_ids: int = 400) -> set[int]:
+    if not terms:
+        return set()
+    placeholders = ",".join(["%s"] * len(terms))
+    source_sql = " AND d.source=%s" if source != "all" else ""
+    params: list[Any] = terms + ([source] if source != "all" else []) + [len(terms), max_ids]
+    cur.execute(
+        f"""
+        SELECT st.document_id
+        FROM law_search_terms st
+        JOIN law_documents d ON d.id=st.document_id
+        WHERE st.term IN ({placeholders}){source_sql}
+        GROUP BY st.document_id
+        HAVING COUNT(DISTINCT st.term) >= %s
+        ORDER BY MIN(st.document_id) ASC
+        LIMIT %s
+        """,
+        tuple(params),
+    )
+    return {int(row["document_id"]) for row in (cur.fetchall() or [])}
+
+
 def _doc_ids_for_keyword(keyword: str, source: str, cur) -> set[int]:
     """転置インデックスから1キーワードにマッチする document_id の集合を返す。"""
     norm = normalize_text(keyword).lower()
@@ -2045,6 +2192,7 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[
         return 0, []
     article_candidates: list[dict[str, Any]] = []
     document_candidates: list[dict[str, Any]] = []
+    anchor_doc_ids: set[int] | None = None
     with db_cursor() as (_, cur):
         generation = get_cache_generation(cur)
         keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20)
@@ -2055,12 +2203,22 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[
             return len(cached), cached
         if not terms:
             return 0, []
+        anchor_terms = _select_anchor_terms(terms, source, cur, limit=3)
+        if anchor_terms:
+            anchor_doc_ids = _doc_ids_matching_all_terms(anchor_terms, source, cur, max_ids=400)
+            if not anchor_doc_ids and len(anchor_terms) > 1:
+                anchor_doc_ids = _doc_ids_matching_all_terms(anchor_terms[:2], source, cur, max_ids=400)
         placeholders = ",".join(["%s"] * len(terms))
         params: list[Any] = list(terms)
         source_sql = ""
         if source != "all":
             source_sql = " AND d.source=%s"
             params.append(source)
+        doc_filter_sql = ""
+        if anchor_doc_ids:
+            id_placeholders = ",".join(["%s"] * len(anchor_doc_ids))
+            doc_filter_sql = f" AND st.document_id IN ({id_placeholders})"
+            params.extend(list(anchor_doc_ids))
         cur.execute(
             f"""
             SELECT
@@ -2070,7 +2228,7 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[
               COUNT(*) AS matched_terms
             FROM law_search_terms st
             JOIN law_documents d ON d.id=st.document_id
-            WHERE st.target_type='article' AND st.term IN ({placeholders}){source_sql}
+            WHERE st.target_type='article' AND st.term IN ({placeholders}){source_sql}{doc_filter_sql}
             GROUP BY st.document_id, st.article_id
             ORDER BY term_score DESC, matched_terms DESC, st.document_id ASC, st.article_id ASC
             LIMIT 240
@@ -2082,6 +2240,8 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[
         params = list(terms)
         if source != "all":
             params.append(source)
+        if anchor_doc_ids:
+            params.extend(list(anchor_doc_ids))
         cur.execute(
             f"""
             SELECT
@@ -2090,10 +2250,10 @@ def search_documents(query: str, source: str = 'all', limit: int = 20) -> tuple[
               COUNT(*) AS matched_terms
             FROM law_search_terms st
             JOIN law_documents d ON d.id=st.document_id
-            WHERE st.target_type='document' AND st.term IN ({placeholders}){source_sql}
+            WHERE st.target_type='document' AND st.term IN ({placeholders}){source_sql}{doc_filter_sql}
             GROUP BY st.document_id
             ORDER BY term_score DESC, matched_terms DESC, st.document_id ASC
-            LIMIT 120
+            LIMIT 180
             """,
             tuple(params),
         )
