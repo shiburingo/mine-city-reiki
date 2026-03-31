@@ -1615,6 +1615,58 @@ def launch_sync_in_background(source_scope: str) -> None:
         thread.start()
 
 
+def execute_reindex(batch_size: int = 10) -> dict[str, Any]:
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps({'operation': 'reindex'}, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+
+    with db_cursor() as (_, cur):
+        cur.execute("SELECT id FROM law_documents ORDER BY id ASC")
+        doc_ids = [int(row["id"]) for row in (cur.fetchall() or [])]
+
+    summary: dict[str, Any] = {
+        'operation': 'reindex',
+        'documents': len(doc_ids),
+        'reindexed': 0,
+        'batchSize': batch_size,
+    }
+    try:
+        for start in range(0, len(doc_ids), batch_size):
+            batch = doc_ids[start:start + batch_size]
+            with db_cursor(commit=True) as (_, cur):
+                for document_id in batch:
+                    rebuild_search_terms_for_document(cur, document_id)
+                summary['reindexed'] += len(batch)
+        with db_cursor(commit=True) as (_, cur):
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
+            set_sync_run_status(cur, run_id, 'success', summary, None)
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
+        raise
+
+
+def launch_reindex_in_background(batch_size: int = 10) -> None:
+    def _runner() -> None:
+        try:
+            execute_reindex(batch_size=batch_size)
+        except Exception:
+            app.logger.exception('Background reindex failed')
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-reindex",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
 def make_cache_key(parts: list[str]) -> str:
     payload = "\u241f".join(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -2370,6 +2422,13 @@ def api_sync_run():
         raise ValueError('sourceScope が不正です。')
     launch_sync_in_background(scope)
     return jsonify({'ok': True, 'started': True, 'sourceScope': scope, 'summary': {}}), 202
+
+
+@app.post('/api/reindex/run')
+def api_reindex_run():
+    batch_size = max(1, min(25, int((request.get_json(silent=True) or {}).get('batchSize') or 10)))
+    launch_reindex_in_background(batch_size=batch_size)
+    return jsonify({'ok': True, 'started': True, 'summary': {'operation': 'reindex', 'batchSize': batch_size}}), 202
 
 
 @app.get('/api/search')

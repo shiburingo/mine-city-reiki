@@ -16,6 +16,7 @@ import {
   fetchSyncRuns,
   fetchSyncStatus,
   fetchSynonyms,
+  runReindex,
   runSync,
   searchLaws,
   searchLawsForRelated,
@@ -31,7 +32,7 @@ const TABS = [
   { id: 'search', label: '例規検索', icon: Search },
   { id: 'ask', label: '質問', icon: FileSearch },
   { id: 'bookmarks', label: 'ブックマーク', icon: Bookmark },
-  { id: 'settings', label: '同期設定', icon: Settings2 },
+  { id: 'settings', label: '設定', icon: Settings2 },
 ] as const;
 
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
@@ -816,6 +817,20 @@ function AppShell() {
     }
   }
 
+  async function triggerReindex() {
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runReindex(10);
+      const runs = await fetchSyncRuns();
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '再索引の起動に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const statCards = useMemo(
     () => [
       {
@@ -1586,7 +1601,7 @@ function AppShell() {
         {tab === 'settings' ? (
           <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
             <div className="rounded-3xl border bg-card p-6 shadow-sm">
-              <h2 className="text-xl font-semibold">月次更新設定</h2>
+              <h2 className="text-xl font-semibold">月次同期設定</h2>
               <p className="mt-2 text-sm text-muted-foreground">毎月指定日時を過ぎたタイミングで更新確認を実行します。サーバー側では定期実行 CLI を 1 時間ごとに起動し、DB設定を見て実行可否を判断します。</p>
               <div className="mt-6 space-y-4">
                 <label className="flex items-center gap-3 text-sm font-medium">
@@ -1640,6 +1655,18 @@ function AppShell() {
                 {syncStatus.lastError ? <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{syncStatus.lastError}</p> : null}
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="size-5 text-primary" />
+                  <h2 className="text-xl font-semibold">検索再構築</h2>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">既存の全例規を対象に検索インデックスを張り直します。検索ロジック更新後の反映や、取りこぼし調整後の再構築に使用します。</p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60" disabled={busy} onClick={() => void triggerReindex()}>
+                    全件再索引を実行
+                  </button>
+                </div>
+              </div>
+              <div className="rounded-3xl border bg-card p-6 shadow-sm">
                 <h2 className="text-xl font-semibold">同期履歴</h2>
                 <div className="mt-4 space-y-3">
                   {syncRuns.length === 0 ? (
@@ -1648,13 +1675,14 @@ function AppShell() {
                     syncRuns.map((run) => (
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-3">
-                          <span className="font-medium">{run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
+                          <span className="font-medium">{run.summary?.operation === 'reindex' ? '再索引' : run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
                           <span className={run.status === 'failed' ? 'text-red-600' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status}</span>
                         </div>
                         <p className="mt-2 text-muted-foreground">開始: {formatDateTime(run.startedAt)}</p>
                         <p className="text-muted-foreground">終了: {formatDateTime(run.finishedAt)}</p>
                         {run.summary && Object.keys(run.summary).length > 0 ? (
                           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                            {run.summary.reindexed != null ? <span className="text-primary">再索引 {run.summary.reindexed}件</span> : null}
                             {run.summary.added != null ? <span className="text-emerald-700">追加 {run.summary.added}件</span> : null}
                             {run.summary.updated != null ? <span className="text-amber-700">更新 {run.summary.updated}件</span> : null}
                             {run.summary.unchanged != null ? <span>変更なし {run.summary.unchanged}件</span> : null}
