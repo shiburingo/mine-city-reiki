@@ -118,16 +118,6 @@ export function PortalHeader({
                 )}
               </div>
             )}
-            {authEnabled && user && onLogout && (
-              <button
-                type="button"
-                onClick={onLogout}
-                className="sm:hidden inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent"
-                aria-label="ログアウト"
-              >
-                <LogOut className="size-4" />
-              </button>
-            )}
             {mode !== "simple" ? (
               <button
                 type="button"
