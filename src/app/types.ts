@@ -15,13 +15,16 @@ export type RevisionItem = {
   sourceUrl: string;
 };
 
+export type SourceScope = 'all' | 'mine-city' | 'egov' | 'local-public-service';
+export type LawSource = Exclude<SourceScope, 'all'>;
+
 export type SyncStatus = {
   enabled: boolean;
   dayOfMonth: number;
   hour: number;
   minute: number;
   timezone: string;
-  sourceScope: 'all' | 'mine-city' | 'egov';
+  sourceScope: SourceScope;
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
   lastSuccessAt: string | null;
@@ -33,8 +36,11 @@ export type SyncStatus = {
   mineCityArticleCount: number;
   egovDocumentCount: number;
   egovArticleCount: number;
+  localPublicServiceDocumentCount: number;
+  localPublicServiceArticleCount: number;
   mineCityLatestRevisions: RevisionItem[];
   egovLatestRevisions: RevisionItem[];
+  localPublicServiceLatestRevisions: RevisionItem[];
 };
 
 export type SyncRun = {
@@ -51,7 +57,7 @@ export type SearchResult = {
   score: number;
   documentId: number;
   articleId: number | null;
-  source: 'mine-city' | 'egov';
+  source: LawSource;
   title: string;
   lawType: string;
   lawNumber: string;
@@ -75,7 +81,7 @@ export type ArticleItem = {
 
 export type DocumentDetail = {
   id: number;
-  source: 'mine-city' | 'egov';
+  source: LawSource;
   externalId: string;
   title: string;
   lawType: string;
@@ -96,7 +102,7 @@ export type SearchField = {
 
 export type DocumentSummary = {
   id: number;
-  source: 'mine-city' | 'egov';
+  source: LawSource;
   title: string;
   lawType: string;
   lawNumber: string;
@@ -116,7 +122,7 @@ export type AskArticleResult = {
 
 export type AskCandidateGroup = {
   documentId: number;
-  source: 'mine-city' | 'egov';
+  source: LawSource;
   title: string;
   lawType: string;
   lawNumber: string;

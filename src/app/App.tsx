@@ -23,7 +23,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent } from './ArticleContent';
 
 const TABS = [
@@ -37,7 +37,7 @@ const TABS = [
 
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
 const BOOKMARKS_KEY = 'reiki_bookmarks';
-type BrowseSource = 'mine-city' | 'egov';
+type BrowseSource = 'mine-city' | 'egov' | 'local-public-service';
 type BrowseTreeNode = {
   key: string;
   label: string;
@@ -113,7 +113,7 @@ type SyncForm = {
   dayOfMonth: number;
   hour: number;
   minute: number;
-  sourceScope: 'all' | 'mine-city' | 'egov';
+  sourceScope: SourceScope;
 };
 
 const EMPTY_SYNC_STATUS: SyncStatus = {
@@ -134,8 +134,11 @@ const EMPTY_SYNC_STATUS: SyncStatus = {
   mineCityArticleCount: 0,
   egovDocumentCount: 0,
   egovArticleCount: 0,
+  localPublicServiceDocumentCount: 0,
+  localPublicServiceArticleCount: 0,
   mineCityLatestRevisions: [],
   egovLatestRevisions: [],
+  localPublicServiceLatestRevisions: [],
 };
 
 function formatDateTime(value: string | null | undefined): string {
@@ -154,6 +157,7 @@ function formatDateTime(value: string | null | undefined): string {
 function sourceLabel(source: string): string {
   if (source === 'mine-city') return '美祢市例規';
   if (source === 'egov') return '地方自治法';
+  if (source === 'local-public-service') return '地方公務員法';
   return '全ソース';
 }
 
@@ -204,11 +208,12 @@ function compareMineCityDocument(a: DocumentSummary, b: DocumentSummary): number
 }
 
 function buildBrowseTree(source: BrowseSource, docs: DocumentSummary[], categories: BrowseCategory[] = []): BrowseTreeNode[] {
-  if (source === 'egov') {
+  if (source !== 'mine-city') {
+    const rootLabel = source === 'egov' ? '地方自治法' : '地方公務員法';
     return [
       {
-        key: 'egov-root',
-        label: '地方自治法',
+        key: `${source}-root`,
+        label: rootLabel,
         orderKey: '0',
         children: [],
         docs: [...docs].sort(compareDocumentSummary),
@@ -424,7 +429,7 @@ function AppShell() {
     { q: '', op: 'AND' },
     { q: '', op: 'AND' },
   ]);
-  const [searchSource, setSearchSource] = useState<'all' | 'mine-city' | 'egov'>('all');
+  const [searchSource, setSearchSource] = useState<SourceScope>('all');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
@@ -857,7 +862,7 @@ function AppShell() {
     }
   }
 
-  async function triggerSync(scope: 'all' | 'mine-city' | 'egov') {
+  async function triggerSync(scope: SourceScope) {
     setBusy(true);
     setGlobalError(null);
     try {
@@ -904,6 +909,7 @@ function AppShell() {
         rows: [
           { label: '美祢市例規', value: `${syncStatus.mineCityDocumentCount.toLocaleString()}件` },
           { label: '地方自治法', value: `${syncStatus.egovDocumentCount.toLocaleString()}件` },
+          { label: '地方公務員法', value: `${syncStatus.localPublicServiceDocumentCount.toLocaleString()}件` },
         ],
       },
       {
@@ -912,6 +918,7 @@ function AppShell() {
         rows: [
           { label: '美祢市例規', value: `${syncStatus.mineCityArticleCount.toLocaleString()}条` },
           { label: '地方自治法', value: `${syncStatus.egovArticleCount.toLocaleString()}条` },
+          { label: '地方公務員法', value: `${syncStatus.localPublicServiceArticleCount.toLocaleString()}条` },
         ],
       },
       {
@@ -980,8 +987,8 @@ function AppShell() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <PortalHeader
-        title="美祢市例規・自治法DB"
-        subtitle="地方自治法と美祢市例規を横断検索し、他システムから参照できるようにします。"
+        title="美祢市例規・法令DB"
+        subtitle="美祢市例規・地方自治法・地方公務員法を横断検索し、他システムから参照できるようにします。"
         syncStatusText={syncBadgeText(syncStatus)}
         syncStatusTone={toneForStatus(syncStatus)}
         onOpenSettings={() => setTab('settings')}
@@ -1042,7 +1049,7 @@ function AppShell() {
                   <h2 className="text-xl font-semibold">システム概要</h2>
                 </div>
                 <div className="mt-4 space-y-4 text-sm leading-7 text-muted-foreground">
-                  <p>このシステムは、地方自治法と美祢市例規を条文単位で保存し、全文検索と簡易質問応答で参照できるようにするモジュールです。</p>
+                  <p>このシステムは、地方自治法・地方公務員法・美祢市例規を条文単位で保存し、全文検索と簡易質問応答で参照できるようにするモジュールです。</p>
                   <p>他アプリからは API 経由で検索・条文参照が可能です。まずは候補条文を提示する方式で安全に運用し、その後に高度な要約や引用補助を追加できます。</p>
                   <p>更新は公開ページからの同期で行います。月次設定を有効化すると、設定した日時を過ぎた時点で定期チェックが走り、最新データを取り込みます。</p>
                 </div>
@@ -1068,9 +1075,10 @@ function AppShell() {
                 </div>
               </div>
             </section>
-            <section className="grid gap-6 lg:grid-cols-2">
+            <section className="grid gap-6 lg:grid-cols-3">
               <RevisionPanel title="美祢市例規 — 最近の改定" items={syncStatus.mineCityLatestRevisions} />
               <RevisionPanel title="地方自治法 — 最近の改定" items={syncStatus.egovLatestRevisions} />
+              <RevisionPanel title="地方公務員法 — 最近の改定" items={syncStatus.localPublicServiceLatestRevisions} />
             </section>
             {analyticsData ? (
               <section className="rounded-3xl border bg-card p-6 shadow-sm">
@@ -1134,6 +1142,7 @@ function AppShell() {
                     {([
                       { value: 'mine-city', label: '美祢市例規集' },
                       { value: 'egov', label: '地方自治法' },
+                      { value: 'local-public-service', label: '地方公務員法' },
                     ] as const).map((option) => (
                       <button
                         key={option.value}
@@ -1172,7 +1181,9 @@ function AppShell() {
                   <div className="rounded-2xl border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
                     {browseSource === 'mine-city'
                       ? '美祢市例規集の体系に沿って、分類ごとに番号順で閲覧できます。'
-                      : '地方自治法を条文番号順で閲覧できます。'}
+                      : browseSource === 'egov'
+                        ? '地方自治法を条文番号順で閲覧できます。'
+                        : '地方公務員法を条文番号順で閲覧できます。'}
                   </div>
                   {renderBrowseTree(browseTree)}
                 </div>
@@ -1377,6 +1388,7 @@ function AppShell() {
                   <option value="all">全ソース</option>
                   <option value="mine-city">美祢市例規</option>
                   <option value="egov">地方自治法</option>
+                  <option value="local-public-service">地方公務員法</option>
                 </select>
                 <button className="inline-flex h-10 flex-1 items-center justify-center rounded-xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60" disabled={searching} onClick={() => void submitSearch(0)}>
                   {searching ? '検索中…' : '検索'}
@@ -1697,6 +1709,7 @@ function AppShell() {
                     <option value="all">全ソース</option>
                     <option value="mine-city">美祢市例規</option>
                     <option value="egov">地方自治法</option>
+                    <option value="local-public-service">地方公務員法</option>
                   </select>
                 </label>
                 <button className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60" disabled={busy} onClick={() => void saveSyncSettings()}>
@@ -1710,9 +1723,10 @@ function AppShell() {
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">手動同期</h2>
                 </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="mt-4 grid gap-3 sm:grid-cols-4">
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('mine-city')}>美祢市例規のみ</button>
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('egov')}>地方自治法のみ</button>
+                  <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('local-public-service')}>地方公務員法のみ</button>
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('all')}>すべて同期</button>
                 </div>
                 <dl className="mt-5 space-y-2 text-sm text-muted-foreground">

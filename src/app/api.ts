@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, SearchField, SearchResult, SearchResponse, SynonymItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, SearchField, SearchResponse, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -39,7 +39,7 @@ export async function updateSyncSettings(payload: Partial<SyncStatus>): Promise<
   });
 }
 
-export async function runSync(sourceScope: 'all' | 'mine-city' | 'egov' = 'all'): Promise<{ ok: boolean; summary: Record<string, any> }> {
+export async function runSync(sourceScope: SourceScope = 'all'): Promise<{ ok: boolean; summary: Record<string, any> }> {
   return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/sync/run', {
     method: 'POST',
     body: JSON.stringify({ sourceScope }),
@@ -72,7 +72,7 @@ export async function searchLaws(params: { fields: SearchField[]; source?: strin
   return { items: data.items || [], total: data.total ?? data.items?.length ?? 0 };
 }
 
-export async function fetchDocumentList(source?: 'all' | 'mine-city' | 'egov'): Promise<{ items: DocumentSummary[]; browseCategories: BrowseCategory[] }> {
+export async function fetchDocumentList(source?: SourceScope): Promise<{ items: DocumentSummary[]; browseCategories: BrowseCategory[] }> {
   const qs = new URLSearchParams();
   if (source && source !== 'all') qs.set('source', source);
   const data = await apiFetch<{ items: DocumentSummary[]; browseCategories?: BrowseCategory[] }>(`/documents?${qs.toString()}`);

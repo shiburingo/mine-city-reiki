@@ -34,8 +34,22 @@ APP_VERSION = "0.1.0"
 APP_SLUG = "mine-city-reiki"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 MINE_CITY_INDEX_URL = "https://www2.city.mine.lg.jp/section/reiki/reiki_taikei/r_taikei_05.html"
-EGOV_LAWDATA_URL = "https://laws.e-gov.go.jp/api/1/lawdata/322AC0000000067"
 TOKYO_OFFSET = "+09:00"
+SOURCE_SCOPES = {"all", "mine-city", "egov", "local-public-service"}
+EGOV_LAWS: list[dict[str, str]] = [
+    {
+        "source": "egov",
+        "law_id": "322AC0000000067",
+        "fallback_title": "地方自治法",
+        "source_url": "https://laws.e-gov.go.jp/law/322AC0000000067",
+    },
+    {
+        "source": "local-public-service",
+        "law_id": "325AC0000000261",
+        "fallback_title": "地方公務員法",
+        "source_url": "https://laws.e-gov.go.jp/law/325AC0000000261",
+    },
+]
 
 
 @dataclass
@@ -270,6 +284,11 @@ def ensure_index(cur, table: str, index_name: str, definition: str) -> None:
         cur.execute(f"ALTER TABLE `{table}` ADD INDEX `{index_name}` {definition}")
 
 
+def ensure_enum_values(cur, table: str, column: str, values: list[str]) -> None:
+    enum_values = ",".join([f"'{v}'" for v in values])
+    cur.execute(f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` ENUM({enum_values}) NOT NULL")
+
+
 def ensure_schema() -> None:
     if not CFG.auto_init:
         return
@@ -291,6 +310,8 @@ def ensure_schema() -> None:
             ensure_column(cur, "law_documents", "browse_category_key", "browse_category_key VARCHAR(128) NOT NULL DEFAULT '' AFTER category_path")
             ensure_column(cur, "law_documents", "browse_document_order", "browse_document_order INT NOT NULL DEFAULT 0 AFTER browse_category_key")
             ensure_column(cur, "sync_settings", "cache_generation", "cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER source_scope")
+            ensure_enum_values(cur, "law_documents", "source", ["mine-city", "egov", "local-public-service"])
+            ensure_enum_values(cur, "sync_settings", "source_scope", ["all", "mine-city", "egov", "local-public-service"])
             ensure_table(
                 cur,
                 "law_search_terms",
@@ -371,7 +392,7 @@ def ensure_schema() -> None:
                   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
                   cache_key CHAR(64) NOT NULL,
                   normalized_query VARCHAR(255) NOT NULL,
-                  source_scope ENUM('all','mine-city','egov') NOT NULL DEFAULT 'all',
+                  source_scope ENUM('all','mine-city','egov','local-public-service') NOT NULL DEFAULT 'all',
                   limit_n SMALLINT UNSIGNED NOT NULL DEFAULT 20,
                   cache_generation BIGINT UNSIGNED NOT NULL DEFAULT 1,
                   result_json LONGTEXT NOT NULL,
@@ -385,6 +406,7 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_enum_values(cur, "search_query_cache", "source_scope", ["all", "mine-city", "egov", "local-public-service"])
             ensure_table(
                 cur,
                 "ask_query_cache",
@@ -871,7 +893,13 @@ def expand_keywords_with_synonyms(keywords: list[str], cur=None, max_keywords: i
 
 
 def source_label(source: str) -> str:
-    return "美祢市例規" if source == "mine-city" else "地方自治法"
+    if source == "mine-city":
+        return "美祢市例規"
+    if source == "egov":
+        return "地方自治法"
+    if source == "local-public-service":
+        return "地方公務員法"
+    return "全ソース"
 
 
 def text_snippet(text: str, keywords: list[str]) -> str:
@@ -1185,36 +1213,37 @@ def iter_egov_articles(root: ET.Element) -> list[dict[str, str]]:
     return articles
 
 
-def fetch_egov_document() -> dict[str, Any]:
-    xml_text = fetch_url_text(EGOV_LAWDATA_URL)
+def fetch_egov_document(law_def: dict[str, str]) -> dict[str, Any]:
+    law_id = law_def["law_id"]
+    xml_text = fetch_url_text(f"https://laws.e-gov.go.jp/api/1/lawdata/{law_id}")
     root = ET.fromstring(xml_text)
-    law = root.find('.//Law')
+    law_node = root.find('.//Law')
     law_body = root.find('.//LawBody')
-    law_title = normalize_text(''.join(law_body.findtext('LawTitle', default='')) if law_body is not None else '地方自治法')
+    law_title = normalize_text(''.join(law_body.findtext('LawTitle', default='')) if law_body is not None else str(law_def.get("fallback_title") or law_id))
     law_num = normalize_text(root.findtext('.//Law/LawNum', default=''))
     full_text = normalize_text(' '.join(''.join(root.find('.//LawFullText').itertext()).split()))
     articles = iter_egov_articles(root)
     promulgated_at = None
-    if law is not None:
+    if law_node is not None:
         try:
-            promulgated_at = f"{int(law.attrib.get('Year', '0')) + 1925:04d}-{int(law.attrib.get('PromulgateMonth', '1')):02d}-{int(law.attrib.get('PromulgateDay', '1')):02d}"
+            promulgated_at = f"{int(law_node.attrib.get('Year', '0')) + 1925:04d}-{int(law_node.attrib.get('PromulgateMonth', '1')):02d}-{int(law_node.attrib.get('PromulgateDay', '1')):02d}"
         except Exception:
             promulgated_at = None
     return {
-        'source': 'egov',
-        'external_id': '322AC0000000067',
+        'source': law_def.get("source") or 'egov',
+        'external_id': law_id,
         'title': law_title,
         'normalized_title': normalize_text(law_title).lower(),
         'law_type': '法律',
         'law_number': law_num,
         'category_path': 'e-Gov法令検索',
-        'source_url': 'https://laws.e-gov.go.jp/law/322AC0000000067',
+        'source_url': law_def.get("source_url") or f"https://laws.e-gov.go.jp/law/{law_id}",
         'promulgated_at': promulgated_at,
         'effective_at': None,
         'updated_at_source': now_iso(),
         'content_hash': make_document_content_hash(full_text, articles),
         'full_text': full_text,
-        'metadata_json': json.dumps({'lawId': '322AC0000000067'}, ensure_ascii=False),
+        'metadata_json': json.dumps({'lawId': law_id}, ensure_ascii=False),
         'articles': articles,
     }
 
@@ -1477,6 +1506,12 @@ def sync_status_payload(cur) -> dict[str, Any]:
         "SELECT COUNT(*) AS cnt FROM law_articles a JOIN law_documents d ON d.id=a.document_id WHERE d.source='egov'"
     )
     egov_article_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    cur.execute("SELECT COUNT(*) AS cnt FROM law_documents WHERE source='local-public-service'")
+    lps_doc_count = int((cur.fetchone() or {}).get('cnt') or 0)
+    cur.execute(
+        "SELECT COUNT(*) AS cnt FROM law_articles a JOIN law_documents d ON d.id=a.document_id WHERE d.source='local-public-service'"
+    )
+    lps_article_count = int((cur.fetchone() or {}).get('cnt') or 0)
     # ソース別 最新改定ドキュメント (updated_at 降順 top5)
     def _latest_revisions(source: str) -> list[dict[str, Any]]:
         cur.execute(
@@ -1520,8 +1555,11 @@ def sync_status_payload(cur) -> dict[str, Any]:
         'mineCityArticleCount': mc_article_count,
         'egovDocumentCount': egov_doc_count,
         'egovArticleCount': egov_article_count,
+        'localPublicServiceDocumentCount': lps_doc_count,
+        'localPublicServiceArticleCount': lps_article_count,
         'mineCityLatestRevisions': _latest_revisions('mine-city'),
         'egovLatestRevisions': _latest_revisions('egov'),
+        'localPublicServiceLatestRevisions': _latest_revisions('local-public-service'),
     }
 
 
@@ -1576,7 +1614,8 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
         if source_scope in {'all', 'mine-city'}:
             mine_city_items, nav_labels = crawl_mine_city_index()
             summary['mineCityCandidates'] = len(mine_city_items)
-        summary['progressTotal'] = len(mine_city_items) + (1 if source_scope in {'all', 'egov'} else 0)
+        egov_targets = [law for law in EGOV_LAWS if source_scope in {'all', law["source"]}]
+        summary['progressTotal'] = len(mine_city_items) + len(egov_targets)
         with db_cursor(commit=True) as (_, cur):
             update_sync_run_summary(cur, run_id, summary)
             if nav_labels:
@@ -1602,22 +1641,23 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                     summary['progressCurrent'] += 1
                     if idx == 1 or idx == len(mine_city_items) or idx % 10 == 0:
                         update_sync_run_summary(cur, run_id, summary)
-        if source_scope in {'all', 'egov'}:
+        if egov_targets:
             with db_cursor(commit=True) as (_, cur):
-                summary['progressLabel'] = '地方自治法を同期中'
-                update_sync_run_summary(cur, run_id, summary)
-                parsed = fetch_egov_document()
-                result = upsert_document(cur, parsed)
-                summary['documents'] += 1
-                if result['changed']:
-                    if result.get('is_new'):
-                        summary['added'] += 1
+                for law_def in egov_targets:
+                    summary['progressLabel'] = f"{source_label(law_def['source'])}を同期中"
+                    update_sync_run_summary(cur, run_id, summary)
+                    parsed = fetch_egov_document(law_def)
+                    result = upsert_document(cur, parsed)
+                    summary['documents'] += 1
+                    if result['changed']:
+                        if result.get('is_new'):
+                            summary['added'] += 1
+                        else:
+                            summary['updated'] += 1
                     else:
-                        summary['updated'] += 1
-                else:
-                    summary['unchanged'] += 1
-                summary['articles'] += len(parsed.get('articles', []))
-                summary['progressCurrent'] += 1
+                        summary['unchanged'] += 1
+                    summary['articles'] += len(parsed.get('articles', []))
+                    summary['progressCurrent'] += 1
                 summary['progressLabel'] = '完了処理中'
                 if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
                     bump_cache_generation(cur)
@@ -2470,7 +2510,7 @@ def api_sync_settings_update():
     hour = max(0, min(23, int(payload.get('hour') or 0)))
     minute = max(0, min(59, int(payload.get('minute') or 0)))
     source_scope = payload.get('sourceScope') or 'all'
-    if source_scope not in {'all', 'mine-city', 'egov'}:
+    if source_scope not in SOURCE_SCOPES:
         raise ValueError('sourceScope が不正です。')
     with db_cursor(commit=True) as (_, cur):
         get_sync_settings(cur)
@@ -2489,7 +2529,7 @@ def api_sync_settings_update():
 def api_sync_run():
     payload = request.get_json(silent=True) or {}
     scope = payload.get('sourceScope') or 'all'
-    if scope not in {'all', 'mine-city', 'egov'}:
+    if scope not in SOURCE_SCOPES:
         raise ValueError('sourceScope が不正です。')
     launch_sync_in_background(scope)
     return jsonify({'ok': True, 'started': True, 'sourceScope': scope, 'summary': {}}), 202
@@ -2505,6 +2545,8 @@ def api_reindex_run():
 @app.get('/api/search')
 def api_search():
     source = (request.args.get('source') or 'all').strip()
+    if source not in SOURCE_SCOPES:
+        raise ValueError('source が不正です。')
     limit = max(1, min(100, int(request.args.get('limit') or '20')))
     offset = max(0, int(request.args.get('offset') or '0'))
     law_type = (request.args.get('lawType') or '').strip()
@@ -2539,9 +2581,11 @@ def api_reference_search():
 @app.get('/api/documents')
 def api_document_list():
     source = (request.args.get('source') or 'all').strip()
+    if source not in SOURCE_SCOPES:
+        raise ValueError('source が不正です。')
     fmt = (request.args.get('format') or '').strip().lower()
     with db_cursor() as (_, cur):
-        if source in ('mine-city', 'egov'):
+        if source in ('mine-city', 'egov', 'local-public-service'):
             if source == 'mine-city':
                 cur.execute(
                     """
@@ -2966,7 +3010,7 @@ def api_openapi():
         'info': {
             'title': 'mine-city-reiki API',
             'version': APP_VERSION,
-            'description': '美祢市例規・地方自治法データベース API',
+            'description': '美祢市例規・地方自治法・地方公務員法データベース API',
         },
         'servers': [{'url': '/mine-city-reiki-api/api', 'description': 'Production'}],
         'paths': {
@@ -2977,7 +3021,7 @@ def api_openapi():
                     'parameters': [
                         {'name': 'q1', 'in': 'query', 'schema': {'type': 'string'}},
                         {'name': 'op2', 'in': 'query', 'schema': {'type': 'string', 'enum': ['AND', 'OR']}},
-                        {'name': 'source', 'in': 'query', 'schema': {'type': 'string', 'enum': ['all', 'mine-city', 'egov']}},
+                        {'name': 'source', 'in': 'query', 'schema': {'type': 'string', 'enum': ['all', 'mine-city', 'egov', 'local-public-service']}},
                         {'name': 'limit', 'in': 'query', 'schema': {'type': 'integer', 'default': 20}},
                         {'name': 'offset', 'in': 'query', 'schema': {'type': 'integer', 'default': 0}},
                     ],
