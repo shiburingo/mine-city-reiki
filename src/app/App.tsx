@@ -45,9 +45,10 @@ type BrowseTreeNode = {
   children: BrowseTreeNode[];
   docs: DocumentSummary[];
 };
-type ArticleGroup = {
+type ArticleGroupNode = {
   key: string;
   label: string;
+  children: ArticleGroupNode[];
   articles: DocumentDetail['articles'];
 };
 const ORDER_COLLATOR = new Intl.Collator('ja-JP', { numeric: true, sensitivity: 'base' });
@@ -300,26 +301,57 @@ function snippet(text: string): string {
   return `${compact.slice(0, 180)}…`;
 }
 
-function articleGroups(articles: DocumentDetail['articles']): ArticleGroup[] {
-  const groups: ArticleGroup[] = [];
-  const map = new Map<string, ArticleGroup>();
+function buildArticleGroupTree(articles: DocumentDetail['articles']): ArticleGroupNode[] {
+  const roots: ArticleGroupNode[] = [];
+  const nodeIndex = new Map<string, ArticleGroupNode>();
+  const ensureNode = (segments: string[]): ArticleGroupNode => {
+    let path = '';
+    let siblings = roots;
+    let current: ArticleGroupNode | null = null;
+    for (const segment of segments) {
+      path = path ? `${path} / ${segment}` : segment;
+      let node = nodeIndex.get(path);
+      if (!node) {
+        node = { key: path, label: segment, children: [], articles: [] };
+        nodeIndex.set(path, node);
+        siblings.push(node);
+      }
+      current = node;
+      siblings = node.children;
+    }
+    if (!current) {
+      const fallback = '本則';
+      let node = nodeIndex.get(fallback);
+      if (!node) {
+        node = { key: fallback, label: fallback, children: [], articles: [] };
+        nodeIndex.set(fallback, node);
+        roots.push(node);
+      }
+      return node;
+    }
+    return current;
+  };
   for (const article of articles) {
-    const normalizedPath = (article.parentPath || '')
+    const segments = (article.parentPath || '')
       .split(/\s*\/\s*/)
       .map((part) => part.trim())
-      .filter(Boolean)
-      .join(' / ');
-    const label = normalizedPath || '本則';
-    const key = label;
-    let group = map.get(key);
-    if (!group) {
-      group = { key, label, articles: [] };
-      map.set(key, group);
-      groups.push(group);
-    }
-    group.articles.push(article);
+      .filter(Boolean);
+    const target = ensureNode(segments.length > 0 ? segments : ['本則']);
+    target.articles.push(article);
   }
-  return groups;
+  return roots;
+}
+
+function countNodeArticles(node: ArticleGroupNode): number {
+  const childCount = node.children.reduce((sum, child) => sum + countNodeArticles(child), 0);
+  return node.articles.length + childCount;
+}
+
+function headingClass(depth: number): string {
+  if (depth <= 0) return 'text-xl';
+  if (depth === 1) return 'text-lg';
+  if (depth === 2) return 'text-base';
+  return 'text-sm';
 }
 
 type DiffLine = { type: 'same' | 'del' | 'add'; text: string };
@@ -958,8 +990,56 @@ function AppShell() {
   );
 
   const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
-  const browseDocArticleGroups = useMemo(() => articleGroups(browseDoc?.articles || []), [browseDoc]);
-  const selectedDocArticleGroups = useMemo(() => articleGroups(selectedDoc?.articles || []), [selectedDoc]);
+  const browseDocArticleTree = useMemo(() => buildArticleGroupTree(browseDoc?.articles || []), [browseDoc]);
+  const selectedDocArticleTree = useMemo(() => buildArticleGroupTree(selectedDoc?.articles || []), [selectedDoc]);
+
+  const renderArticleNavTree = (nodes: ArticleGroupNode[], anchorPrefix: string, depth = 0): JSX.Element => (
+    <div className={depth === 0 ? 'space-y-2' : 'mt-2 space-y-2'}>
+      {nodes.map((node) => (
+        <details key={`${anchorPrefix}-nav-${node.key}`} className="rounded-xl border bg-background/50" open={depth <= 1}>
+          <summary className="cursor-pointer list-none rounded-xl px-3 py-2 text-sm font-semibold marker:hidden hover:bg-accent">
+            <div className="flex items-center justify-between gap-2">
+              <span>{node.label}</span>
+              <span className="text-xs text-muted-foreground">{countNodeArticles(node)}条</span>
+            </div>
+          </summary>
+          <div className="space-y-2 px-2 pb-2">
+            {node.articles.length > 0 ? (
+              <div className="space-y-1">
+                {node.articles.map((article) => (
+                  <a key={`${anchorPrefix}-nav-article-${article.id}`} className="block rounded-lg px-2 py-1.5 text-sm hover:bg-accent" href={`#${anchorPrefix}-${article.id}`}>
+                    {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
+                  </a>
+                ))}
+              </div>
+            ) : null}
+            {node.children.length > 0 ? renderArticleNavTree(node.children, anchorPrefix, depth + 1) : null}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+
+  const renderArticleBodyTree = (nodes: ArticleGroupNode[], anchorPrefix: string, keywords: string[], depth = 0): JSX.Element => (
+    <div className={depth === 0 ? 'space-y-6' : 'space-y-5'}>
+      {nodes.map((node) => (
+        <section key={`${anchorPrefix}-body-${node.key}`} className="space-y-4 border-b pb-6 last:border-b-0">
+          <h3 className={`${headingClass(depth)} font-semibold`}>{node.label}</h3>
+          {node.articles.length > 0 ? (
+            <div className="space-y-6">
+              {node.articles.map((article) => (
+                <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="border-b pb-5 last:border-b-0">
+                  <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
+                  <div className="mt-3"><ArticleContent text={article.text} keywords={keywords} /></div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, depth + 1) : null}
+        </section>
+      ))}
+    </div>
+  );
   const isHenLabel = (label: string) => /^第[0-9一二三四五六七八九十百千]+編\b/.test(label);
   const renderBrowseTree = (nodes: BrowseTreeNode[], depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-3' : 'mt-2 space-y-2'}>
@@ -1271,37 +1351,12 @@ function AppShell() {
                   <div className="mt-6 grid gap-4 xl:grid-cols-[13rem_minmax(0,1fr)]">
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
-                      <div className="space-y-3">
-                        {browseDocArticleGroups.map((group) => (
-                          <div key={`browse-group-${group.key}`}>
-                            <p className="px-2 text-xs font-semibold text-muted-foreground">{group.label}</p>
-                            <div className="mt-1 space-y-1">
-                              {group.articles.map((article) => (
-                                <a key={article.id} className="block rounded-xl px-3 py-2 text-sm hover:bg-accent" href={`#barticle-${article.id}`}>
-                                  {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                      {renderArticleNavTree(browseDocArticleTree, 'barticle')}
                     </div>
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
                       <div className="space-y-6">
                         {browseDoc.articles.length > 0 ? (
-                          browseDocArticleGroups.map((group) => (
-                            <section key={`browse-body-${group.key}`} className="space-y-4 border-b pb-6 last:border-b-0">
-                              <h3 className="text-xl font-semibold">{group.label}</h3>
-                              <div className="space-y-6">
-                                {group.articles.map((article) => (
-                                  <article key={article.id} id={`barticle-${article.id}`} className="border-b pb-5 last:border-b-0">
-                                    <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
-                                    <div className="mt-3"><ArticleContent text={article.text} /></div>
-                                  </article>
-                                ))}
-                              </div>
-                            </section>
-                          ))
+                          renderArticleBodyTree(browseDocArticleTree, 'barticle', [])
                         ) : (
                           <ArticleContent text={browseDoc.fullText} />
                         )}
@@ -1528,37 +1583,16 @@ function AppShell() {
                   <div className="mt-6 grid gap-4 xl:grid-cols-[12rem_minmax(0,1fr)]">
                     <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
-                      <div className="space-y-3">
-                        {selectedDocArticleGroups.map((group) => (
-                          <div key={`selected-group-${group.key}`}>
-                            <p className="px-2 text-xs font-semibold text-muted-foreground">{group.label}</p>
-                            <div className="mt-1 space-y-1">
-                              {group.articles.map((article) => (
-                                <a key={article.id} className="block rounded-xl px-3 py-2 text-sm hover:bg-accent" href={`#article-${article.id}`}>
-                                  {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                      {renderArticleNavTree(selectedDocArticleTree, 'article')}
                     </div>
                     <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-5">
                       <div className="space-y-6">
                         {selectedDoc.articles.length > 0 ? (
-                          selectedDocArticleGroups.map((group) => (
-                            <section key={`selected-body-${group.key}`} className="space-y-4 border-b pb-6 last:border-b-0">
-                              <h3 className="text-xl font-semibold">{group.label}</h3>
-                              <div className="space-y-6">
-                                {group.articles.map((article) => (
-                                  <article key={article.id} id={`article-${article.id}`} className="border-b pb-5 last:border-b-0">
-                                    <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? ` ${article.articleTitle}` : ''}</h4>
-                                    <div className="mt-3"><ArticleContent text={article.text} keywords={searchFields.flatMap((f) => f.q.trim() ? f.q.trim().split(/\s+/) : [])} /></div>
-                                  </article>
-                                ))}
-                              </div>
-                            </section>
-                          ))
+                          renderArticleBodyTree(
+                            selectedDocArticleTree,
+                            'article',
+                            searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : [])),
+                          )
                         ) : (
                           <ArticleContent text={selectedDoc.fullText} />
                         )}
