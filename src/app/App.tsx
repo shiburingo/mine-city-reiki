@@ -45,6 +45,11 @@ type BrowseTreeNode = {
   children: BrowseTreeNode[];
   docs: DocumentSummary[];
 };
+type ArticleGroup = {
+  key: string;
+  label: string;
+  articles: DocumentDetail['articles'];
+};
 const ORDER_COLLATOR = new Intl.Collator('ja-JP', { numeric: true, sensitivity: 'base' });
 
 function loadSearchHistory(): string[] {
@@ -293,6 +298,28 @@ function snippet(text: string): string {
   const compact = (text || '').replace(/\s+/g, ' ').trim();
   if (compact.length <= 180) return compact;
   return `${compact.slice(0, 180)}…`;
+}
+
+function articleGroups(articles: DocumentDetail['articles']): ArticleGroup[] {
+  const groups: ArticleGroup[] = [];
+  const map = new Map<string, ArticleGroup>();
+  for (const article of articles) {
+    const normalizedPath = (article.parentPath || '')
+      .split(/\s*\/\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(' / ');
+    const label = normalizedPath || '本則';
+    const key = label;
+    let group = map.get(key);
+    if (!group) {
+      group = { key, label, articles: [] };
+      map.set(key, group);
+      groups.push(group);
+    }
+    group.articles.push(article);
+  }
+  return groups;
 }
 
 type DiffLine = { type: 'same' | 'del' | 'add'; text: string };
@@ -931,6 +958,8 @@ function AppShell() {
   );
 
   const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
+  const browseDocArticleGroups = useMemo(() => articleGroups(browseDoc?.articles || []), [browseDoc]);
+  const selectedDocArticleGroups = useMemo(() => articleGroups(selectedDoc?.articles || []), [selectedDoc]);
   const isHenLabel = (label: string) => /^第[0-9一二三四五六七八九十百千]+編\b/.test(label);
   const renderBrowseTree = (nodes: BrowseTreeNode[], depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-3' : 'mt-2 space-y-2'}>
@@ -1242,22 +1271,36 @@ function AppShell() {
                   <div className="mt-6 grid gap-4 xl:grid-cols-[13rem_minmax(0,1fr)]">
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
-                      <div className="space-y-1">
-                        {browseDoc.articles.map((article) => (
-                          <a key={article.id} className="block rounded-xl px-3 py-2 text-sm hover:bg-accent" href={`#barticle-${article.id}`}>
-                            {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
-                          </a>
+                      <div className="space-y-3">
+                        {browseDocArticleGroups.map((group) => (
+                          <div key={`browse-group-${group.key}`}>
+                            <p className="px-2 text-xs font-semibold text-muted-foreground">{group.label}</p>
+                            <div className="mt-1 space-y-1">
+                              {group.articles.map((article) => (
+                                <a key={article.id} className="block rounded-xl px-3 py-2 text-sm hover:bg-accent" href={`#barticle-${article.id}`}>
+                                  {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
                         ))}
                       </div>
                     </div>
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
                       <div className="space-y-6">
                         {browseDoc.articles.length > 0 ? (
-                          browseDoc.articles.map((article) => (
-                            <article key={article.id} id={`barticle-${article.id}`} className="border-b pb-5 last:border-b-0">
-                              <h3 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h3>
-                              <div className="mt-3"><ArticleContent text={article.text} /></div>
-                            </article>
+                          browseDocArticleGroups.map((group) => (
+                            <section key={`browse-body-${group.key}`} className="space-y-4 border-b pb-6 last:border-b-0">
+                              <h3 className="text-xl font-semibold">{group.label}</h3>
+                              <div className="space-y-6">
+                                {group.articles.map((article) => (
+                                  <article key={article.id} id={`barticle-${article.id}`} className="border-b pb-5 last:border-b-0">
+                                    <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
+                                    <div className="mt-3"><ArticleContent text={article.text} /></div>
+                                  </article>
+                                ))}
+                              </div>
+                            </section>
                           ))
                         ) : (
                           <ArticleContent text={browseDoc.fullText} />
@@ -1485,22 +1528,36 @@ function AppShell() {
                   <div className="mt-6 grid gap-4 xl:grid-cols-[12rem_minmax(0,1fr)]">
                     <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
-                      <div className="space-y-2">
-                        {selectedDoc.articles.map((article) => (
-                          <a key={article.id} className="block rounded-xl px-3 py-2 text-sm hover:bg-accent" href={`#article-${article.id}`}>
-                            {article.articleNumber}
-                          </a>
+                      <div className="space-y-3">
+                        {selectedDocArticleGroups.map((group) => (
+                          <div key={`selected-group-${group.key}`}>
+                            <p className="px-2 text-xs font-semibold text-muted-foreground">{group.label}</p>
+                            <div className="mt-1 space-y-1">
+                              {group.articles.map((article) => (
+                                <a key={article.id} className="block rounded-xl px-3 py-2 text-sm hover:bg-accent" href={`#article-${article.id}`}>
+                                  {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
                         ))}
                       </div>
                     </div>
                     <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-5">
                       <div className="space-y-6">
                         {selectedDoc.articles.length > 0 ? (
-                          selectedDoc.articles.map((article) => (
-                            <article key={article.id} id={`article-${article.id}`} className="border-b pb-5 last:border-b-0">
-                              <h3 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? ` ${article.articleTitle}` : ''}</h3>
-                              <div className="mt-3"><ArticleContent text={article.text} keywords={searchFields.flatMap((f) => f.q.trim() ? f.q.trim().split(/\s+/) : [])} /></div>
-                            </article>
+                          selectedDocArticleGroups.map((group) => (
+                            <section key={`selected-body-${group.key}`} className="space-y-4 border-b pb-6 last:border-b-0">
+                              <h3 className="text-xl font-semibold">{group.label}</h3>
+                              <div className="space-y-6">
+                                {group.articles.map((article) => (
+                                  <article key={article.id} id={`article-${article.id}`} className="border-b pb-5 last:border-b-0">
+                                    <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? ` ${article.articleTitle}` : ''}</h4>
+                                    <div className="mt-3"><ArticleContent text={article.text} keywords={searchFields.flatMap((f) => f.q.trim() ? f.q.trim().split(/\s+/) : [])} /></div>
+                                  </article>
+                                ))}
+                              </div>
+                            </section>
                           ))
                         ) : (
                           <ArticleContent text={selectedDoc.fullText} />

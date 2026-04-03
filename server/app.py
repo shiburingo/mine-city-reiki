@@ -1193,24 +1193,161 @@ def parse_mine_city_document(item: dict[str, str | int]) -> dict[str, Any]:
     }
 
 
+def xml_local_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.split("}", 1)[1]
+    return tag
+
+
+def xml_node_text(node: ET.Element | None) -> str:
+    if node is None:
+        return ""
+    return normalize_text(" ".join("".join(node.itertext()).split()))
+
+
+def xml_child(node: ET.Element, child_name: str) -> ET.Element | None:
+    for child in list(node):
+        if xml_local_name(child.tag) == child_name:
+            return child
+    return None
+
+
+def xml_child_text(node: ET.Element, child_name: str) -> str:
+    return xml_node_text(xml_child(node, child_name))
+
+
+def egov_structure_label(node: ET.Element, title_tag: str, suffix: str) -> str:
+    title = xml_child_text(node, title_tag)
+    if title:
+        return title
+    num = normalize_text(str(node.attrib.get("Num", "") or ""))
+    if num:
+        if num.startswith("第") and suffix in num:
+            return num
+        return f"第{num}{suffix}"
+    return suffix
+
+
+def compact_parent_path(parts: list[str]) -> str:
+    cleaned: list[str] = []
+    for part in parts:
+        label = normalize_text(part)
+        if not label:
+            continue
+        if cleaned and cleaned[-1] == label:
+            continue
+        cleaned.append(label)
+    return " / ".join(cleaned)
+
+
+def collect_egov_toc_lines(toc_node: ET.Element) -> list[str]:
+    target_tags = {
+        "TOCLabel",
+        "TOCPartTitle",
+        "TOCChapterTitle",
+        "TOCSectionTitle",
+        "TOCSubsectionTitle",
+        "TOCDivisionTitle",
+        "ArticleRange",
+        "SupplProvisionLabel",
+    }
+    lines: list[str] = []
+    for node in toc_node.iter():
+        if xml_local_name(node.tag) not in target_tags:
+            continue
+        text = xml_node_text(node)
+        if not text:
+            continue
+        if lines and lines[-1] == text:
+            continue
+        lines.append(text)
+    return lines
+
+
+def parse_egov_article(article_node: ET.Element, context: list[str]) -> dict[str, str]:
+    article_number = xml_child_text(article_node, "ArticleTitle")
+    article_title = xml_child_text(article_node, "ArticleCaption")
+    if not article_number:
+        num = normalize_text(str(article_node.attrib.get("Num", "") or ""))
+        article_number = f"第{num}条" if num else "条文"
+    paragraphs: list[str] = []
+    for paragraph in list(article_node):
+        if xml_local_name(paragraph.tag) != "Paragraph":
+            continue
+        text = xml_node_text(paragraph)
+        if text:
+            paragraphs.append(text)
+    article_text = "\n".join(paragraphs).strip() or xml_node_text(article_node)
+    parent_path = compact_parent_path(context)
+    return {
+        "article_key": f"{parent_path}:{article_number}",
+        "article_number": article_number,
+        "article_title": article_title,
+        "parent_path": parent_path,
+        "text": article_text,
+    }
+
+
+def walk_egov_articles(node: ET.Element, context: list[str], out: list[dict[str, str]]) -> None:
+    structure_tags: dict[str, tuple[str, str]] = {
+        "Part": ("PartTitle", "編"),
+        "Chapter": ("ChapterTitle", "章"),
+        "Section": ("SectionTitle", "節"),
+        "Subsection": ("SubsectionTitle", "款"),
+        "Division": ("DivisionTitle", "目"),
+    }
+    for child in list(node):
+        name = xml_local_name(child.tag)
+        if name in structure_tags:
+            title_tag, suffix = structure_tags[name]
+            label = egov_structure_label(child, title_tag, suffix)
+            walk_egov_articles(child, context + [label], out)
+            continue
+        if name == "Article":
+            out.append(parse_egov_article(child, context))
+            continue
+        walk_egov_articles(child, context, out)
+
+
 def iter_egov_articles(root: ET.Element) -> list[dict[str, str]]:
     articles: list[dict[str, str]] = []
-    for article in root.findall('.//Article'):
-        article_title = normalize_text(''.join(article.findtext('ArticleTitle', default='')))
-        article_number = article_title or f"第{article.attrib.get('Num', '')}条"
-        paragraphs: list[str] = []
-        for paragraph in article.findall('Paragraph'):
-            text = normalize_text(' '.join(''.join(paragraph.itertext()).split()))
-            if text:
-                paragraphs.append(text)
-        articles.append({
-            'article_key': article_number,
-            'article_number': article_number,
-            'article_title': '',
-            'parent_path': '',
-            'text': '\n'.join(paragraphs).strip() or normalize_text(' '.join(''.join(article.itertext()).split())),
-        })
-    return articles
+    law_body = root.find(".//LawBody")
+    if law_body is not None:
+        for child in list(law_body):
+            name = xml_local_name(child.tag)
+            if name == "TOC":
+                toc_lines = collect_egov_toc_lines(child)
+                toc_text = "\n".join(toc_lines).strip() or xml_node_text(child)
+                if toc_text:
+                    articles.append(
+                        {
+                            "article_key": "目次",
+                            "article_number": "目次",
+                            "article_title": "",
+                            "parent_path": "目次",
+                            "text": toc_text,
+                        }
+                    )
+                continue
+            if name == "MainProvision":
+                walk_egov_articles(child, ["本則"], articles)
+                continue
+            if name == "SupplProvision":
+                suppl_label = xml_child_text(child, "SupplProvisionLabel") or "附則"
+                amend_law_num = normalize_text(str(child.attrib.get("AmendLawNum", "") or ""))
+                suppl_kind = "改正附則" if amend_law_num else "制定附則"
+                context = [suppl_kind]
+                if suppl_label:
+                    context.append(suppl_label)
+                walk_egov_articles(child, context, articles)
+                continue
+    if articles:
+        return articles
+    # フォールバック: 構造パースに失敗した場合は全 Article を平坦化
+    fallback: list[dict[str, str]] = []
+    for article in root.findall(".//Article"):
+        fallback.append(parse_egov_article(article, []))
+    return fallback
 
 
 def fetch_egov_document(law_def: dict[str, str]) -> dict[str, Any]:
