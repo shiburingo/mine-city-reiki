@@ -1240,6 +1240,17 @@ def compact_parent_path(parts: list[str]) -> str:
     return " / ".join(cleaned)
 
 
+def safe_article_key(raw_key: str, max_len: int = 120) -> str:
+    key = normalize_text(raw_key)
+    if not key:
+        return "article"
+    if len(key) <= max_len:
+        return key
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    head = key[: max_len - 13]
+    return f"{head}-{digest}"
+
+
 def collect_egov_toc_lines(toc_node: ET.Element) -> list[str]:
     target_tags = {
         "TOCLabel",
@@ -1280,7 +1291,7 @@ def parse_egov_article(article_node: ET.Element, context: list[str]) -> dict[str
     article_text = "\n".join(paragraphs).strip() or xml_node_text(article_node)
     parent_path = compact_parent_path(context)
     return {
-        "article_key": f"{parent_path}:{article_number}",
+        "article_key": safe_article_key(f"{parent_path}:{article_number}"),
         "article_number": article_number,
         "article_title": article_title,
         "parent_path": parent_path,
@@ -1321,7 +1332,7 @@ def iter_egov_articles(root: ET.Element) -> list[dict[str, str]]:
                 if toc_text:
                     articles.append(
                         {
-                            "article_key": "目次",
+                            "article_key": safe_article_key("目次"),
                             "article_number": "目次",
                             "article_title": "",
                             "parent_path": "目次",
