@@ -24,7 +24,7 @@ import {
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
 import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
-import { ArticleContent, type ArticleLinkMap } from './ArticleContent';
+import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap } from './ArticleContent';
 
 const TABS = [
   { id: 'dashboard', label: 'ダッシュボード', icon: Database },
@@ -364,6 +364,17 @@ function buildArticleLinkMap(articles: DocumentDetail['articles'], anchorPrefix:
     const articleNumber = normalizeArticleRef(article.articleNumber || '');
     if (!articleNumber) continue;
     links[articleNumber] = `#${anchorPrefix}-${article.id}`;
+  }
+  return links;
+}
+
+function buildSourceAnchorLinkMap(doc: DocumentDetail, anchorPrefix: string): SourceAnchorLinkMap {
+  const links: SourceAnchorLinkMap = {};
+  const articleIds = new Set(doc.articles.map((article) => article.id));
+  for (const [sourceAnchorId, articleId] of Object.entries(doc.sourceAnchorMap || {})) {
+    if (articleIds.has(articleId)) {
+      links[sourceAnchorId] = `#${anchorPrefix}-${articleId}`;
+    }
   }
   return links;
 }
@@ -1064,7 +1075,15 @@ function AppShell() {
     </div>
   );
 
-  const renderArticleBodyTree = (nodes: ArticleGroupNode[], anchorPrefix: string, keywords: string[], articleLinks: ArticleLinkMap, depth = 0): JSX.Element => (
+  const renderArticleBodyTree = (
+    nodes: ArticleGroupNode[],
+    anchorPrefix: string,
+    keywords: string[],
+    articleLinks: ArticleLinkMap,
+    sourceAnchorLinks: SourceAnchorLinkMap,
+    sourceUrl: string,
+    depth = 0,
+  ): JSX.Element => (
     <div className={depth === 0 ? 'space-y-7' : 'mt-4 space-y-5'}>
       {nodes.map((node) => (
         <section key={`${anchorPrefix}-body-${node.key}`} className={depth === 0 ? 'space-y-4 border-b pb-7 last:border-b-0' : 'space-y-4'}>
@@ -1074,12 +1093,12 @@ function AppShell() {
               {node.articles.map((article) => (
                 <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="scroll-mt-24 border-b pb-5 target:bg-accent/30 last:border-b-0">
                   <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
-                  <div className="mt-3"><ArticleContent text={article.text} keywords={keywords} articleLinks={articleLinks} /></div>
+                  <div className="mt-3"><ArticleContent text={article.text} keywords={keywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceUrl={sourceUrl} /></div>
                 </article>
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceUrl, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -1418,7 +1437,14 @@ function AppShell() {
                       ) : null}
                       <div className="space-y-7">
                         {browseDoc.articles.length > 0 ? (
-                          renderArticleBodyTree(browseDocArticleTree, 'barticle', [], buildArticleLinkMap(browseDoc.articles, 'barticle'))
+                          renderArticleBodyTree(
+                            browseDocArticleTree,
+                            'barticle',
+                            [],
+                            buildArticleLinkMap(browseDoc.articles, 'barticle'),
+                            buildSourceAnchorLinkMap(browseDoc, 'barticle'),
+                            browseDoc.sourceUrl,
+                          )
                         ) : (
                           <ArticleContent text={browseDoc.fullText} />
                         )}
@@ -1655,6 +1681,8 @@ function AppShell() {
                             'article',
                             searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : [])),
                             buildArticleLinkMap(selectedDoc.articles, 'article'),
+                            buildSourceAnchorLinkMap(selectedDoc, 'article'),
+                            selectedDoc.sourceUrl,
                           )
                         ) : (
                           <ArticleContent text={selectedDoc.fullText} />

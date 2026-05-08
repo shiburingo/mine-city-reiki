@@ -951,17 +951,68 @@ def node_text(node: Any, separator: str = "") -> str:
     return normalize_text(node.get_text(separator, strip=True))
 
 
+LINK_START = "__REIKI_LINK_START__"
+LINK_TEXT = "__REIKI_LINK_TEXT__"
+LINK_END = "__REIKI_LINK_END__"
+LINK_MARKER_RE = re.compile(
+    re.escape(LINK_START) + r".*?" + re.escape(LINK_TEXT) + r"(.*?)" + re.escape(LINK_END)
+)
+
+
+def encode_link_marker(label: str, href: str) -> str:
+    return (
+        f"{LINK_START}{urllib.parse.quote(href, safe='')}"
+        f"{LINK_TEXT}{urllib.parse.quote(label, safe='')}{LINK_END}"
+    )
+
+
+def strip_link_markers(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        return urllib.parse.unquote(match.group(1))
+
+    return LINK_MARKER_RE.sub(repl, text or "")
+
+
+def linked_node_text(node: Any) -> str:
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if getattr(node, "name", None) == "a":
+        label = normalize_text(node.get_text("", strip=True))
+        href = normalize_text(str(node.get("href") or ""))
+        return encode_link_marker(label, href) if label and href else label
+    parts: list[str] = []
+    for child in getattr(node, "contents", []) or []:
+        parts.append(linked_node_text(child))
+    return normalize_text("".join(parts))
+
+
+def element_ids(node: Any) -> list[str]:
+    if node is None:
+        return []
+    ids: list[str] = []
+    node_id = getattr(node, "get", lambda *_: None)("id")
+    if node_id:
+        ids.append(str(node_id))
+    for child in getattr(node, "find_all", lambda *_args, **_kwargs: [])(id=True):
+        child_id = child.get("id")
+        if child_id:
+            ids.append(str(child_id))
+    return ids
+
+
 def serialize_table_block(block: Any) -> str:
     """table div ブロックをタブ区切り行形式のマーカーとしてシリアライズする。"""
     table_elem = block if getattr(block, "name", "") == "table" else block.find("table")
     if table_elem is None:
-        return node_text(block, "\n")
+        return linked_node_text(block)
     rows: list[str] = []
     for tr in table_elem.find_all("tr"):
-        cells = [normalize_text(td.get_text(" ", strip=True)) for td in tr.find_all(["td", "th"])]
+        cells = [linked_node_text(td) for td in tr.find_all(["td", "th"])]
         rows.append("\t".join(cells))
     if not rows:
-        return node_text(block, "\n")
+        return linked_node_text(block)
     return "__TABLE_START__\n" + "\n".join(rows) + "\n__TABLE_END__"
 
 
@@ -1067,13 +1118,21 @@ def crawl_mine_city_index(start_url: str = MINE_CITY_INDEX_URL) -> tuple[list[di
     return list(documents.values()), nav_labels
 
 
-def _start_article(articles: list[dict[str, Any]], key: str, number: str, title: str, initial_text: str = "") -> dict[str, Any]:
+def _start_article(
+    articles: list[dict[str, Any]],
+    key: str,
+    number: str,
+    title: str,
+    initial_text: str = "",
+    source_anchor_ids: list[str] | None = None,
+) -> dict[str, Any]:
     current: dict[str, Any] = {
         "article_key": key,
         "article_number": number,
         "article_title": title,
         "parent_path": "",
         "parts": [initial_text] if initial_text else [],
+        "source_anchor_ids": list(dict.fromkeys(source_anchor_ids or [])),
     }
     articles.append(current)
     return current
@@ -1096,10 +1155,12 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
             article_num_node = num_p.find("span", class_="num")
             article_number = node_text(article_num_node) or node_text(num_p)
             article_title = node_text(article_block.find("p", class_="title"))
-            paragraph_text = node_text(num_p)
+            paragraph_text = linked_node_text(num_p)
             if article_number and paragraph_text.startswith(article_number):
                 paragraph_text = paragraph_text[len(article_number) :].lstrip(" 　")
-            current = _start_article(articles, article_number, article_number, article_title, paragraph_text)
+            anchor_ids = element_ids(article_block)
+            article_key = anchor_ids[0] if anchor_ids else article_number
+            current = _start_article(articles, article_key, article_number, article_title, paragraph_text, anchor_ids)
             continue
 
         # 別表セクション (div.table_section) → 新しい擬似条文として分離
@@ -1107,7 +1168,9 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
         if table_section is not None:
             label = node_text(table_section)
             if label:
-                current = _start_article(articles, label, label, "")
+                anchor_ids = element_ids(table_section)
+                article_key = anchor_ids[0] if anchor_ids else label
+                current = _start_article(articles, article_key, label, label, "", anchor_ids)
                 continue
 
         # 附則ヘッダ (div 無しの eline で "附 則" を含む) → 新しい擬似条文
@@ -1115,9 +1178,12 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
         if first_child_div is None:
             raw = node_text(eline)
             if raw and _FUSOKU_RE.match(raw):
-                current = _start_article(articles, raw, raw, "")
+                anchor_ids = element_ids(eline)
+                article_key = anchor_ids[0] if anchor_ids else raw
+                current = _start_article(articles, article_key, raw, raw, "", anchor_ids)
                 continue
             if current is not None and raw:
+                current["source_anchor_ids"].extend(element_ids(eline))
                 current["parts"].append(raw)
                 continue
 
@@ -1128,16 +1194,18 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
             block = eline.find("div", class_=block_class)
             if block is None:
                 continue
+            current["source_anchor_ids"].extend(element_ids(block))
             if block_class in {"table", "table_frame", "table-wrapper"}:
                 text = serialize_table_block(block)
             else:
-                text = node_text(block, "")
+                text = linked_node_text(block)
             if text:
                 current["parts"].append(text)
             break
         else:
             table_elem = eline.find("table")
             if table_elem is not None:
+                current["source_anchor_ids"].extend(element_ids(table_elem))
                 text = serialize_table_block(table_elem)
                 if text:
                     current["parts"].append(text)
@@ -1149,6 +1217,7 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
             "article_title": str(article["article_title"]),
             "parent_path": str(article["parent_path"]),
             "text": "\n".join(part for part in article["parts"] if part).strip(),
+            "source_anchor_ids": list(dict.fromkeys(str(anchor) for anchor in article.get("source_anchor_ids", []) if anchor)),
         }
         for article in articles
     ]
@@ -1165,6 +1234,13 @@ def parse_mine_city_document(item: dict[str, str | int]) -> dict[str, Any]:
     parsed = urllib.parse.urlparse(item['url'])
     external_id = Path(parsed.path).stem
     articles = parse_mine_city_articles(content_root) if content_root is not None else []
+    source_anchor_map: dict[str, str] = {}
+    for article in articles:
+        article_key = str(article.get("article_key") or "")
+        if not article_key:
+            continue
+        for anchor_id in article.get("source_anchor_ids", []) or []:
+            source_anchor_map[str(anchor_id)] = article_key
     return {
         'source': 'mine-city',
         'external_id': external_id,
@@ -1186,6 +1262,7 @@ def parse_mine_city_document(item: dict[str, str | int]) -> dict[str, Any]:
                 'title_hint': item.get('title_hint', ''),
                 'browseCategoryKey': item.get('browse_category_key', ''),
                 'browseDocumentOrder': int(item.get('browse_document_order', 0) or 0),
+                'sourceAnchorMap': source_anchor_map,
             },
             ensure_ascii=False,
         ),
@@ -1595,7 +1672,7 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
                     article.get('parent_path', ''),
                     idx,
                     article['text'],
-                    normalize_text(f"{article['article_number']} {article.get('article_title', '')} {article['text']}").lower(),
+                    normalize_text(f"{article['article_number']} {article.get('article_title', '')} {strip_link_markers(article['text'])}").lower(),
                 ),
             )
         rebuild_search_terms_for_document(cur, document_id)
@@ -2832,7 +2909,7 @@ def api_document_list():
 def api_document_detail(document_id: int):
     with db_cursor() as (_, cur):
         cur.execute(
-            "SELECT id, source, external_id, title, law_type, law_number, category_path, source_url, promulgated_at, effective_at, updated_at_source, full_text FROM law_documents WHERE id=%s",
+            "SELECT id, source, external_id, title, law_type, law_number, category_path, source_url, promulgated_at, effective_at, updated_at_source, full_text, metadata_json FROM law_documents WHERE id=%s",
             (document_id,),
         )
         doc = cur.fetchone()
@@ -2843,6 +2920,17 @@ def api_document_detail(document_id: int):
             (document_id,),
         )
         articles = cur.fetchall() or []
+    key_to_article_id = {str(article["article_key"]): int(article["id"]) for article in articles}
+    metadata: dict[str, Any] = {}
+    try:
+        metadata = json.loads(doc.get("metadata_json") or "{}")
+    except Exception:
+        metadata = {}
+    source_anchor_map = {
+        str(anchor_id): key_to_article_id[str(article_key)]
+        for anchor_id, article_key in (metadata.get("sourceAnchorMap") or {}).items()
+        if str(article_key) in key_to_article_id
+    }
     return jsonify(
         {
             'id': int(doc['id']),
@@ -2857,6 +2945,7 @@ def api_document_detail(document_id: int):
             'effectiveAt': doc['effective_at'],
             'updatedAtSource': doc['updated_at_source'],
             'fullText': doc['full_text'],
+            'sourceAnchorMap': source_anchor_map,
             'articles': [
                 {
                     'id': int(article['id']),

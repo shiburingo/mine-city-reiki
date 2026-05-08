@@ -2,12 +2,16 @@ import React from 'react';
 
 const TABLE_START = '__TABLE_START__';
 const TABLE_END = '__TABLE_END__';
+const LINK_START = '__REIKI_LINK_START__';
+const LINK_TEXT = '__REIKI_LINK_TEXT__';
+const LINK_END = '__REIKI_LINK_END__';
 
 type Part =
   | { type: 'text'; text: string }
   | { type: 'table'; rows: string[][] };
 
 export type ArticleLinkMap = Record<string, string>;
+export type SourceAnchorLinkMap = Record<string, string>;
 
 function parseArticleParts(text: string): Part[] {
   const parts: Part[] = [];
@@ -41,29 +45,54 @@ function parseArticleParts(text: string): Part[] {
 
 // 第X条 / 第X項 / 第X号 形式の相互参照を検出してアンカーリンクにする
 const ARTICLE_REF_RE = /(第[〇一二三四五六七八九十百千万\d]+条(?:の[〇一二三四五六七八九十百千万\d]+)*)/g;
+const LINK_MARKER_RE = /__REIKI_LINK_START__(.*?)__REIKI_LINK_TEXT__(.*?)__REIKI_LINK_END__/g;
 
 function normalizeArticleRef(value: string): string {
   return value.replace(/\s+/g, '').trim();
 }
 
-function renderTextLine(line: string, keywords: string[], articleLinks: ArticleLinkMap): React.ReactNode[] {
-  // まず相互参照を分割
+function decodeMarkerValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function resolveSourceHref(href: string, sourceAnchorLinks: SourceAnchorLinkMap, sourceUrl?: string): string {
+  if (href.startsWith('#')) {
+    return sourceAnchorLinks[href.slice(1)] || href;
+  }
+  if (/^https?:\/\//i.test(href)) {
+    return href;
+  }
+  if (sourceUrl) {
+    try {
+      return new URL(href, sourceUrl).toString();
+    } catch {
+      return href;
+    }
+  }
+  return href;
+}
+
+function renderPlainText(part: string, keywords: string[], articleLinks: ArticleLinkMap, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const refParts = line.split(ARTICLE_REF_RE);
+  const refParts = part.split(ARTICLE_REF_RE);
   refParts.forEach((part, pi) => {
     if (ARTICLE_REF_RE.test(part)) {
       ARTICLE_REF_RE.lastIndex = 0;
       const href = articleLinks[normalizeArticleRef(part)];
       if (href) {
         nodes.push(
-          <a key={`ref-${pi}`} className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid" href={href} title={`${part}へ移動`}>
+          <a key={`${keyPrefix}-ref-${pi}`} className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid" href={href} title={`${part}へ移動`}>
             {part}
           </a>,
         );
         return;
       }
       nodes.push(
-        <span key={`ref-${pi}`} className="text-primary underline decoration-dotted" title={`${part}を参照`}>
+        <span key={`${keyPrefix}-ref-${pi}`} className="text-primary underline decoration-dotted" title={`${part}を参照`}>
           {part}
         </span>,
       );
@@ -82,7 +111,7 @@ function renderTextLine(line: string, keywords: string[], articleLinks: ArticleL
       if (hlRe.test(hp)) {
         hlRe.lastIndex = 0;
         nodes.push(
-          <mark key={`hl-${pi}-${hi}`} className="bg-yellow-200 text-yellow-900 rounded px-0.5">
+          <mark key={`${keyPrefix}-hl-${pi}-${hi}`} className="bg-yellow-200 text-yellow-900 rounded px-0.5">
             {hp}
           </mark>,
         );
@@ -95,7 +124,51 @@ function renderTextLine(line: string, keywords: string[], articleLinks: ArticleL
   return nodes;
 }
 
-function ArticleTable({ rows, keywords, articleLinks }: { rows: string[][]; keywords: string[]; articleLinks: ArticleLinkMap }) {
+function renderTextLine(line: string, keywords: string[], articleLinks: ArticleLinkMap, sourceAnchorLinks: SourceAnchorLinkMap, sourceUrl?: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const match of line.matchAll(LINK_MARKER_RE)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, articleLinks, `plain-${cursor}`));
+    }
+    const rawHref = decodeMarkerValue(match[1] || '');
+    const label = decodeMarkerValue(match[2] || '');
+    const href = resolveSourceHref(rawHref, sourceAnchorLinks, sourceUrl);
+    const isInternal = href.startsWith('#');
+    nodes.push(
+      <a
+        key={`link-${index}`}
+        className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+        href={href}
+        rel={isInternal ? undefined : 'noreferrer'}
+        target={isInternal ? undefined : '_blank'}
+        title={isInternal ? `${label}へ移動` : `${label}を原文で開く`}
+      >
+        {renderPlainText(label, keywords, {}, `link-label-${index}`)}
+      </a>,
+    );
+    cursor = index + match[0].length;
+  }
+  if (cursor < line.length) {
+    nodes.push(...renderPlainText(line.slice(cursor), keywords, articleLinks, `plain-${cursor}`));
+  }
+  return nodes;
+}
+
+function ArticleTable({
+  rows,
+  keywords,
+  articleLinks,
+  sourceAnchorLinks,
+  sourceUrl,
+}: {
+  rows: string[][];
+  keywords: string[];
+  articleLinks: ArticleLinkMap;
+  sourceAnchorLinks: SourceAnchorLinkMap;
+  sourceUrl?: string;
+}) {
   const hasHeader = rows.length > 1;
   const headerRow = hasHeader ? rows[0] : null;
   const bodyRows = hasHeader ? rows.slice(1) : rows;
@@ -107,7 +180,7 @@ function ArticleTable({ rows, keywords, articleLinks }: { rows: string[][]; keyw
             <tr>
               {headerRow.map((cell, ci) => (
                 <th key={ci} className="px-3 py-2 text-left font-semibold border-b whitespace-nowrap">
-                  {cell}
+                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceUrl)}
                 </th>
               ))}
             </tr>
@@ -118,7 +191,7 @@ function ArticleTable({ rows, keywords, articleLinks }: { rows: string[][]; keyw
             <tr key={ri} className="border-b last:border-b-0 hover:bg-muted/20">
               {row.map((cell, ci) => (
                 <td key={ci} className="px-3 py-2 align-top whitespace-pre-wrap">
-                  {renderTextLine(cell, keywords, articleLinks)}
+                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceUrl)}
                 </td>
               ))}
             </tr>
@@ -129,13 +202,25 @@ function ArticleTable({ rows, keywords, articleLinks }: { rows: string[][]; keyw
   );
 }
 
-export function ArticleContent({ text, keywords = [], articleLinks = {} }: { text: string; keywords?: string[]; articleLinks?: ArticleLinkMap }) {
+export function ArticleContent({
+  text,
+  keywords = [],
+  articleLinks = {},
+  sourceAnchorLinks = {},
+  sourceUrl,
+}: {
+  text: string;
+  keywords?: string[];
+  articleLinks?: ArticleLinkMap;
+  sourceAnchorLinks?: SourceAnchorLinkMap;
+  sourceUrl?: string;
+}) {
   const parts = parseArticleParts(text || '');
   return (
     <div className="space-y-1 text-sm leading-7">
       {parts.map((part, i) => {
         if (part.type === 'table') {
-          return <ArticleTable key={i} rows={part.rows} keywords={keywords} articleLinks={articleLinks} />;
+          return <ArticleTable key={i} rows={part.rows} keywords={keywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceUrl={sourceUrl} />;
         }
         const lines = part.text.split('\n');
         return (
@@ -143,7 +228,7 @@ export function ArticleContent({ text, keywords = [], articleLinks = {} }: { tex
             {lines.map((line, li) => (
               <React.Fragment key={li}>
                 {li > 0 ? '\n' : null}
-                {renderTextLine(line, keywords, articleLinks)}
+                {renderTextLine(line, keywords, articleLinks, sourceAnchorLinks, sourceUrl)}
               </React.Fragment>
             ))}
           </p>

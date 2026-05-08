@@ -93,6 +93,7 @@ export type DocumentDetail = {
   effectiveAt: string | null;
   updatedAtSource: string;
   fullText: string;
+  sourceAnchorMap?: Record<string, number>;
   articles: ArticleItem[];
 };
 
