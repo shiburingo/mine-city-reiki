@@ -354,6 +354,12 @@ function headingClass(depth: number): string {
   return 'text-sm';
 }
 
+function articleHeadingTone(depth: number): string {
+  if (depth <= 0) return 'border-l-4 border-primary bg-accent/35 px-3 py-2';
+  if (depth === 1) return 'border-l-2 border-border px-3 py-1.5';
+  return 'px-3 py-1 text-muted-foreground';
+}
+
 type DiffLine = { type: 'same' | 'del' | 'add'; text: string };
 
 function computeDiff(oldText: string, newText: string): DiffLine[] {
@@ -994,20 +1000,20 @@ function AppShell() {
   const selectedDocArticleTree = useMemo(() => buildArticleGroupTree(selectedDoc?.articles || []), [selectedDoc]);
 
   const renderArticleNavTree = (nodes: ArticleGroupNode[], anchorPrefix: string, depth = 0): JSX.Element => (
-    <div className={depth === 0 ? 'space-y-2' : 'mt-2 space-y-2'}>
+    <div className={depth === 0 ? 'space-y-2' : 'mt-1 space-y-1 border-l border-border/70 pl-3'}>
       {nodes.map((node) => (
-        <details key={`${anchorPrefix}-nav-${node.key}`} className="rounded-xl border bg-background/50" open={depth <= 1}>
-          <summary className="cursor-pointer list-none rounded-xl px-3 py-2 text-sm font-semibold marker:hidden hover:bg-accent">
+        <details key={`${anchorPrefix}-nav-${node.key}`} open={depth <= 1}>
+          <summary className="cursor-pointer list-none rounded-lg px-2 py-1.5 text-sm font-semibold marker:hidden hover:bg-accent">
             <div className="flex items-center justify-between gap-2">
-              <span>{node.label}</span>
-              <span className="text-xs text-muted-foreground">{countNodeArticles(node)}条</span>
+              <span className={depth === 0 ? 'text-foreground' : 'text-muted-foreground'}>{node.label}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">{countNodeArticles(node)}条</span>
             </div>
           </summary>
-          <div className="space-y-2 px-2 pb-2">
+          <div className="space-y-1 pb-1 pl-2">
             {node.articles.length > 0 ? (
               <div className="space-y-1">
                 {node.articles.map((article) => (
-                  <a key={`${anchorPrefix}-nav-article-${article.id}`} className="block rounded-lg px-2 py-1.5 text-sm hover:bg-accent" href={`#${anchorPrefix}-${article.id}`}>
+                  <a key={`${anchorPrefix}-nav-article-${article.id}`} className="block rounded-lg px-2 py-1.5 text-sm leading-snug hover:bg-accent" href={`#${anchorPrefix}-${article.id}`}>
                     {article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}
                   </a>
                 ))}
@@ -1021,12 +1027,12 @@ function AppShell() {
   );
 
   const renderArticleBodyTree = (nodes: ArticleGroupNode[], anchorPrefix: string, keywords: string[], depth = 0): JSX.Element => (
-    <div className={depth === 0 ? 'space-y-6' : 'space-y-5'}>
+    <div className={depth === 0 ? 'space-y-7' : 'mt-4 space-y-5'}>
       {nodes.map((node) => (
-        <section key={`${anchorPrefix}-body-${node.key}`} className="space-y-4 border-b pb-6 last:border-b-0">
-          <h3 className={`${headingClass(depth)} font-semibold`}>{node.label}</h3>
+        <section key={`${anchorPrefix}-body-${node.key}`} className={depth === 0 ? 'space-y-4 border-b pb-7 last:border-b-0' : 'space-y-4'}>
+          <h3 className={`${headingClass(depth)} ${articleHeadingTone(depth)} rounded-lg font-semibold`}>{node.label}</h3>
           {node.articles.length > 0 ? (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {node.articles.map((article) => (
                 <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="border-b pb-5 last:border-b-0">
                   <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
@@ -1348,13 +1354,13 @@ function AppShell() {
                       原文を開く
                     </a>
                   </div>
-                  <div className="mt-6 grid gap-4 xl:grid-cols-[13rem_minmax(0,1fr)]">
-                    <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-3">
+                  <div className="mt-6 grid gap-4 xl:grid-cols-[15rem_minmax(0,1fr)]">
+                    <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-muted/20 p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
                       {renderArticleNavTree(browseDocArticleTree, 'barticle')}
                     </div>
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
-                      <div className="space-y-6">
+                      <div className="space-y-7">
                         {browseDoc.articles.length > 0 ? (
                           renderArticleBodyTree(browseDocArticleTree, 'barticle', [])
                         ) : (
@@ -1580,8 +1586,8 @@ function AppShell() {
                       原文を開く
                     </a>
                   </div>
-                  <div className="mt-6 grid gap-4 xl:grid-cols-[12rem_minmax(0,1fr)]">
-                    <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-3">
+                  <div className="mt-6 grid gap-4 xl:grid-cols-[15rem_minmax(0,1fr)]">
+                    <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-muted/20 p-3">
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
                       {renderArticleNavTree(selectedDocArticleTree, 'article')}
                     </div>
