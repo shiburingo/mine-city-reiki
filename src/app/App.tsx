@@ -1332,6 +1332,15 @@ function AppShell() {
                         : '地方公務員法を条文番号順で閲覧できます。'}
                   </div>
                   {renderBrowseTree(browseTree)}
+                  {browseSource !== 'mine-city' && browseDoc ? (
+                    <div className="rounded-2xl border bg-muted/20 p-3">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold">章・条文一覧</p>
+                        <span className="text-xs text-muted-foreground">{browseDoc.articles.length.toLocaleString()}条</span>
+                      </div>
+                      {renderArticleNavTree(browseDocArticleTree, 'barticle')}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -1385,12 +1394,14 @@ function AppShell() {
                       原文を開く
                     </a>
                   </div>
-                  <div className="mt-6 grid gap-4 xl:grid-cols-[15rem_minmax(0,1fr)]">
-                    <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-muted/20 p-3">
-                      <p className="mb-3 text-sm font-semibold">条文一覧</p>
-                      {renderArticleNavTree(browseDocArticleTree, 'barticle')}
-                    </div>
+                  <div className="mt-6">
                     <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
+                      {browseSource === 'mine-city' ? (
+                        <div className="mb-5 rounded-2xl border bg-muted/20 p-3">
+                          <p className="mb-3 text-sm font-semibold">条文一覧</p>
+                          {renderArticleNavTree(browseDocArticleTree, 'barticle')}
+                        </div>
+                      ) : null}
                       <div className="space-y-7">
                         {browseDoc.articles.length > 0 ? (
                           renderArticleBodyTree(browseDocArticleTree, 'barticle', [])
