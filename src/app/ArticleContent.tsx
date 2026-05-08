@@ -7,6 +7,8 @@ type Part =
   | { type: 'text'; text: string }
   | { type: 'table'; rows: string[][] };
 
+export type ArticleLinkMap = Record<string, string>;
+
 function parseArticleParts(text: string): Part[] {
   const parts: Part[] = [];
   const segments = text.split(TABLE_START);
@@ -40,15 +42,28 @@ function parseArticleParts(text: string): Part[] {
 // 第X条 / 第X項 / 第X号 形式の相互参照を検出してアンカーリンクにする
 const ARTICLE_REF_RE = /(第[〇一二三四五六七八九十百千万\d]+条(?:の[〇一二三四五六七八九十百千万\d]+)*)/g;
 
-function renderTextLine(line: string, keywords: string[]): React.ReactNode[] {
+function normalizeArticleRef(value: string): string {
+  return value.replace(/\s+/g, '').trim();
+}
+
+function renderTextLine(line: string, keywords: string[], articleLinks: ArticleLinkMap): React.ReactNode[] {
   // まず相互参照を分割
   const nodes: React.ReactNode[] = [];
   const refParts = line.split(ARTICLE_REF_RE);
   refParts.forEach((part, pi) => {
     if (ARTICLE_REF_RE.test(part)) {
       ARTICLE_REF_RE.lastIndex = 0;
+      const href = articleLinks[normalizeArticleRef(part)];
+      if (href) {
+        nodes.push(
+          <a key={`ref-${pi}`} className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid" href={href} title={`${part}へ移動`}>
+            {part}
+          </a>,
+        );
+        return;
+      }
       nodes.push(
-        <span key={`ref-${pi}`} className="text-primary underline decoration-dotted cursor-pointer" title={`${part}を参照`}>
+        <span key={`ref-${pi}`} className="text-primary underline decoration-dotted" title={`${part}を参照`}>
           {part}
         </span>,
       );
@@ -80,7 +95,7 @@ function renderTextLine(line: string, keywords: string[]): React.ReactNode[] {
   return nodes;
 }
 
-function ArticleTable({ rows }: { rows: string[][] }) {
+function ArticleTable({ rows, keywords, articleLinks }: { rows: string[][]; keywords: string[]; articleLinks: ArticleLinkMap }) {
   const hasHeader = rows.length > 1;
   const headerRow = hasHeader ? rows[0] : null;
   const bodyRows = hasHeader ? rows.slice(1) : rows;
@@ -103,7 +118,7 @@ function ArticleTable({ rows }: { rows: string[][] }) {
             <tr key={ri} className="border-b last:border-b-0 hover:bg-muted/20">
               {row.map((cell, ci) => (
                 <td key={ci} className="px-3 py-2 align-top whitespace-pre-wrap">
-                  {cell}
+                  {renderTextLine(cell, keywords, articleLinks)}
                 </td>
               ))}
             </tr>
@@ -114,13 +129,13 @@ function ArticleTable({ rows }: { rows: string[][] }) {
   );
 }
 
-export function ArticleContent({ text, keywords = [] }: { text: string; keywords?: string[] }) {
+export function ArticleContent({ text, keywords = [], articleLinks = {} }: { text: string; keywords?: string[]; articleLinks?: ArticleLinkMap }) {
   const parts = parseArticleParts(text || '');
   return (
     <div className="space-y-1 text-sm leading-7">
       {parts.map((part, i) => {
         if (part.type === 'table') {
-          return <ArticleTable key={i} rows={part.rows} />;
+          return <ArticleTable key={i} rows={part.rows} keywords={keywords} articleLinks={articleLinks} />;
         }
         const lines = part.text.split('\n');
         return (
@@ -128,7 +143,7 @@ export function ArticleContent({ text, keywords = [] }: { text: string; keywords
             {lines.map((line, li) => (
               <React.Fragment key={li}>
                 {li > 0 ? '\n' : null}
-                {renderTextLine(line, keywords)}
+                {renderTextLine(line, keywords, articleLinks)}
               </React.Fragment>
             ))}
           </p>

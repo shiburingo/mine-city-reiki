@@ -24,7 +24,7 @@ import {
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
 import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
-import { ArticleContent } from './ArticleContent';
+import { ArticleContent, type ArticleLinkMap } from './ArticleContent';
 
 const TABS = [
   { id: 'dashboard', label: 'ダッシュボード', icon: Database },
@@ -352,6 +352,20 @@ function headingClass(depth: number): string {
   if (depth === 1) return 'text-lg';
   if (depth === 2) return 'text-base';
   return 'text-sm';
+}
+
+function normalizeArticleRef(value: string): string {
+  return value.replace(/\s+/g, '').trim();
+}
+
+function buildArticleLinkMap(articles: DocumentDetail['articles'], anchorPrefix: string): ArticleLinkMap {
+  const links: ArticleLinkMap = {};
+  for (const article of articles) {
+    const articleNumber = normalizeArticleRef(article.articleNumber || '');
+    if (!articleNumber) continue;
+    links[articleNumber] = `#${anchorPrefix}-${article.id}`;
+  }
+  return links;
 }
 
 function articleHeadingTone(depth: number): string {
@@ -1050,7 +1064,7 @@ function AppShell() {
     </div>
   );
 
-  const renderArticleBodyTree = (nodes: ArticleGroupNode[], anchorPrefix: string, keywords: string[], depth = 0): JSX.Element => (
+  const renderArticleBodyTree = (nodes: ArticleGroupNode[], anchorPrefix: string, keywords: string[], articleLinks: ArticleLinkMap, depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-7' : 'mt-4 space-y-5'}>
       {nodes.map((node) => (
         <section key={`${anchorPrefix}-body-${node.key}`} className={depth === 0 ? 'space-y-4 border-b pb-7 last:border-b-0' : 'space-y-4'}>
@@ -1058,14 +1072,14 @@ function AppShell() {
           {node.articles.length > 0 ? (
             <div className="space-y-5">
               {node.articles.map((article) => (
-                <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="border-b pb-5 last:border-b-0">
+                <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="scroll-mt-24 border-b pb-5 target:bg-accent/30 last:border-b-0">
                   <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
-                  <div className="mt-3"><ArticleContent text={article.text} keywords={keywords} /></div>
+                  <div className="mt-3"><ArticleContent text={article.text} keywords={keywords} articleLinks={articleLinks} /></div>
                 </article>
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -1404,7 +1418,7 @@ function AppShell() {
                       ) : null}
                       <div className="space-y-7">
                         {browseDoc.articles.length > 0 ? (
-                          renderArticleBodyTree(browseDocArticleTree, 'barticle', [])
+                          renderArticleBodyTree(browseDocArticleTree, 'barticle', [], buildArticleLinkMap(browseDoc.articles, 'barticle'))
                         ) : (
                           <ArticleContent text={browseDoc.fullText} />
                         )}
@@ -1640,6 +1654,7 @@ function AppShell() {
                             selectedDocArticleTree,
                             'article',
                             searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : [])),
+                            buildArticleLinkMap(selectedDoc.articles, 'article'),
                           )
                         ) : (
                           <ArticleContent text={selectedDoc.fullText} />
