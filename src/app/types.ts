@@ -3,6 +3,7 @@ export type AuthUser = {
   username: string;
   roles: string[];
   apps: string[];
+  isGuest?: boolean;
 };
 
 export type RevisionItem = {

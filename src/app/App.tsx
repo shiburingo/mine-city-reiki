@@ -735,6 +735,10 @@ function AppShell() {
   }
 
   async function handleAddSynonym() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では同義語を変更できません。');
+      return;
+    }
     if (!newSynonymCanonical.trim() || !newSynonymTerm.trim()) return;
     try {
       const item = await createSynonym(newSynonymCanonical.trim(), newSynonymTerm.trim());
@@ -747,6 +751,10 @@ function AppShell() {
   }
 
   async function handleDeleteSynonym(id: number) {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では同義語を削除できません。');
+      return;
+    }
     try {
       await deleteSynonym(id);
       setSynonymItems((prev) => prev.filter((s) => s.id !== id));
@@ -835,6 +843,10 @@ function AppShell() {
   }
 
   async function handleClearCache(scope: 'search' | 'ask' | 'all') {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限ではキャッシュを削除できません。');
+      return;
+    }
     setBusy(true);
     setGlobalError(null);
     try {
@@ -906,6 +918,10 @@ function AppShell() {
   }
 
   async function saveSyncSettings() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では同期設定を変更できません。');
+      return;
+    }
     setBusy(true);
     setGlobalError(null);
     try {
@@ -928,6 +944,10 @@ function AppShell() {
   }
 
   async function triggerSync(scope: SourceScope) {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では同期を実行できません。');
+      return;
+    }
     setBusy(true);
     setGlobalError(null);
     try {
@@ -943,6 +963,10 @@ function AppShell() {
   }
 
   async function triggerReindex() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では再索引を実行できません。');
+      return;
+    }
     setBusy(true);
     setGlobalError(null);
     try {
@@ -1111,6 +1135,13 @@ function AppShell() {
         onLogout={handleLogout}
         authEnabled={Boolean(authEnabled)}
       />
+      {user?.isGuest ? (
+        <div className="mx-auto mt-4 max-w-7xl px-4">
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            ゲストログイン中です。例規データの閲覧と印刷はできますが、同期設定や辞書更新はできません。
+          </div>
+        </div>
+      ) : null}
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <section className="rounded-3xl border bg-card p-3 shadow-sm">
           <div className="grid gap-2 md:grid-cols-4">
