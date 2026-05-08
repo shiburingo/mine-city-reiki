@@ -1495,13 +1495,14 @@ def build_document_search_terms(document: dict[str, Any]) -> dict[str, int]:
 
 def build_article_search_terms(document: dict[str, Any], article: dict[str, Any]) -> dict[str, int]:
     weights: dict[str, int] = {}
+    article_text = strip_link_markers(article.get("text", ""))
     for term, weight in title_weighted_terms(document.get("title", ""), 6).items():
         weights[term] = max(weights.get(term, 0), weight)
     for term, weight in title_weighted_terms(article.get("article_number", ""), 12).items():
         weights[term] = max(weights.get(term, 0), weight)
     for term, weight in title_weighted_terms(article.get("article_title", ""), 8).items():
         weights[term] = max(weights.get(term, 0), weight)
-    for term, weight in limited_weighted_terms((article.get("text", ""), 2, False), max_terms=160).items():
+    for term, weight in limited_weighted_terms((article_text, 2, False), max_terms=160).items():
         weights[term] = max(weights.get(term, 0), weight)
     ranked = sorted(weights.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
     return dict(ranked[:220])
