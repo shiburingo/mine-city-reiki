@@ -1850,10 +1850,10 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                     (json.dumps(nav_labels, ensure_ascii=False),),
                 )
         if mine_city_items:
-            with db_cursor(commit=True) as (_, cur):
-                for idx, item in enumerate(mine_city_items, 1):
-                    summary['progressLabel'] = f"美祢市例規 {idx}/{len(mine_city_items)}"
-                    parsed = parse_mine_city_document(item)
+            for idx, item in enumerate(mine_city_items, 1):
+                summary['progressLabel'] = f"美祢市例規 {idx}/{len(mine_city_items)}"
+                parsed = parse_mine_city_document(item)
+                with db_cursor(commit=True) as (_, cur):
                     result = upsert_document(cur, parsed)
                     summary['documents'] += 1
                     if result['changed']:
