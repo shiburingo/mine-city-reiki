@@ -334,7 +334,6 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
-            ensure_index(cur, "law_search_terms", "idx_law_search_terms_target_term_doc", "(target_type, term, document_id)")
             ensure_index(
                 cur,
                 "law_search_terms",
