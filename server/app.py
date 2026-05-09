@@ -1002,6 +1002,49 @@ def element_ids(node: Any) -> list[str]:
     return ids
 
 
+def mine_city_source_anchor_aliases(root: Any) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    if root is None:
+        return aliases
+    for alias_node in root.select("#num-ids > div[id]"):
+        alias = str(alias_node.get("id") or "").strip()
+        target = normalize_text(alias_node.get_text("", strip=True))
+        if alias and target:
+            aliases[alias] = target
+    return aliases
+
+
+def build_mine_city_source_anchor_map(root: Any, articles: list[dict[str, Any]]) -> dict[str, str]:
+    source_anchor_map: dict[str, str] = {}
+    id_to_article_key: dict[str, str] = {}
+    for article in articles:
+        article_key = str(article.get("article_key") or "")
+        if not article_key:
+            continue
+        for anchor_id in article.get("source_anchor_ids", []) or []:
+            anchor = str(anchor_id)
+            source_anchor_map[anchor] = article_key
+            id_to_article_key[anchor] = article_key
+
+    if root is not None and articles:
+        first_article_key = str(articles[0].get("article_key") or "")
+        current_key = first_article_key
+        for eline in root.select("div.eline"):
+            ids = element_ids(eline)
+            for anchor_id in ids:
+                if anchor_id in id_to_article_key:
+                    current_key = id_to_article_key[anchor_id]
+                    break
+            if current_key:
+                for anchor_id in ids:
+                    source_anchor_map.setdefault(anchor_id, current_key)
+
+    for alias, target in mine_city_source_anchor_aliases(root).items():
+        if target in source_anchor_map:
+            source_anchor_map[alias] = source_anchor_map[target]
+    return source_anchor_map
+
+
 def serialize_table_block(block: Any) -> str:
     """table div ブロックをタブ区切り行形式のマーカーとしてシリアライズする。"""
     table_elem = block if getattr(block, "name", "") == "table" else block.find("table")
@@ -1163,6 +1206,29 @@ def parse_mine_city_articles(root: BeautifulSoup) -> list[dict[str, str]]:
             current = _start_article(articles, article_key, article_number, article_title, paragraph_text, anchor_ids)
             continue
 
+        for section_class in ("form_section", "style", "format"):
+            section = eline.find("div", class_=section_class)
+            if section is None:
+                continue
+            label = node_text(section)
+            if label:
+                anchor_ids = element_ids(section)
+                article_key = anchor_ids[0] if anchor_ids else label
+                current = _start_article(articles, article_key, label, label, linked_node_text(section), anchor_ids)
+            break
+        else:
+            section = None
+        if section is not None:
+            continue
+
+        xref_frame = eline.find("div", class_="xref_frame")
+        if xref_frame is not None and current is not None:
+            current["source_anchor_ids"].extend(element_ids(xref_frame))
+            image_labels = [normalize_text(str(img.get("alt") or "")) or "画像" for img in xref_frame.find_all("img")]
+            if image_labels:
+                current["parts"].append(" / ".join(image_labels))
+            continue
+
         # 別表セクション (div.table_section) → 新しい擬似条文として分離
         table_section = eline.find("div", class_="table_section")
         if table_section is not None:
@@ -1234,13 +1300,7 @@ def parse_mine_city_document(item: dict[str, str | int]) -> dict[str, Any]:
     parsed = urllib.parse.urlparse(item['url'])
     external_id = Path(parsed.path).stem
     articles = parse_mine_city_articles(content_root) if content_root is not None else []
-    source_anchor_map: dict[str, str] = {}
-    for article in articles:
-        article_key = str(article.get("article_key") or "")
-        if not article_key:
-            continue
-        for anchor_id in article.get("source_anchor_ids", []) or []:
-            source_anchor_map[str(anchor_id)] = article_key
+    source_anchor_map = build_mine_city_source_anchor_map(content_root, articles)
     return {
         'source': 'mine-city',
         'external_id': external_id,
@@ -2921,6 +2981,14 @@ def api_document_detail(document_id: int):
             (document_id,),
         )
         articles = cur.fetchall() or []
+        source_document_map: dict[str, int] = {}
+        if doc["source"] == "mine-city":
+            cur.execute("SELECT id, external_id FROM law_documents WHERE source='mine-city'")
+            source_document_map = {
+                str(row["external_id"]): int(row["id"])
+                for row in (cur.fetchall() or [])
+                if row.get("external_id")
+            }
     key_to_article_id = {str(article["article_key"]): int(article["id"]) for article in articles}
     metadata: dict[str, Any] = {}
     try:
@@ -2947,6 +3015,7 @@ def api_document_detail(document_id: int):
             'updatedAtSource': doc['updated_at_source'],
             'fullText': doc['full_text'],
             'sourceAnchorMap': source_anchor_map,
+            'sourceDocumentMap': source_document_map,
             'articles': [
                 {
                     'id': int(article['id']),

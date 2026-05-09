@@ -94,6 +94,7 @@ export type DocumentDetail = {
   updatedAtSource: string;
   fullText: string;
   sourceAnchorMap?: Record<string, number>;
+  sourceDocumentMap?: Record<string, number>;
   articles: ArticleItem[];
 };
 

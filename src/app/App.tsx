@@ -24,7 +24,7 @@ import {
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
 import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
-import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap } from './ArticleContent';
+import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
   { id: 'dashboard', label: 'ダッシュボード', icon: Database },
@@ -379,6 +379,10 @@ function buildSourceAnchorLinkMap(doc: DocumentDetail, anchorPrefix: string): So
   return links;
 }
 
+function buildSourceDocumentLinkMap(doc: DocumentDetail): SourceDocumentLinkMap {
+  return doc.sourceDocumentMap || {};
+}
+
 function articleHeadingTone(depth: number): string {
   if (depth <= 0) return 'border-l-4 border-primary bg-accent/35 px-3 py-2';
   if (depth === 1) return 'border-l-2 border-border px-3 py-1.5';
@@ -564,6 +568,8 @@ function AppShell() {
   const [browseDocId, setBrowseDocId] = useState<number | null>(null);
   const [browseDoc, setBrowseDoc] = useState<DocumentDetail | null>(null);
   const [browseDocLoading, setBrowseDocLoading] = useState(false);
+  const [pendingBrowseAnchor, setPendingBrowseAnchor] = useState<string | null>(null);
+  const [pendingSelectedAnchor, setPendingSelectedAnchor] = useState<string | null>(null);
 
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
@@ -723,6 +729,32 @@ function AppShell() {
     };
   }, [browseDocId]);
 
+  useEffect(() => {
+    if (!browseDoc || !pendingBrowseAnchor) return;
+    const articleId = browseDoc.sourceAnchorMap?.[pendingBrowseAnchor];
+    if (!articleId) {
+      setPendingBrowseAnchor(null);
+      return;
+    }
+    window.setTimeout(() => {
+      document.getElementById(`barticle-${articleId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPendingBrowseAnchor(null);
+    }, 0);
+  }, [browseDoc, pendingBrowseAnchor]);
+
+  useEffect(() => {
+    if (!selectedDoc || !pendingSelectedAnchor) return;
+    const articleId = selectedDoc.sourceAnchorMap?.[pendingSelectedAnchor];
+    if (!articleId) {
+      setPendingSelectedAnchor(null);
+      return;
+    }
+    window.setTimeout(() => {
+      document.getElementById(`article-${articleId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPendingSelectedAnchor(null);
+    }, 0);
+  }, [selectedDoc, pendingSelectedAnchor]);
+
   async function handleLogin(username: string, password: string) {
     const loggedIn = await login(username, password);
     if (!loggedIn) throw new Error('ユーザー名またはパスワードが正しくありません。');
@@ -736,6 +768,19 @@ function AppShell() {
     setSelectedDoc(null);
     setSelectedDocId(null);
     await bootstrap();
+  }
+
+  function openBrowseSourceDocument(documentId: number, sourceAnchorId?: string) {
+    setBrowseSource('mine-city');
+    if (sourceAnchorId) setPendingBrowseAnchor(sourceAnchorId);
+    setBrowseDocId(documentId);
+    setTab('browse');
+  }
+
+  function openSelectedSourceDocument(documentId: number, sourceAnchorId?: string) {
+    if (sourceAnchorId) setPendingSelectedAnchor(sourceAnchorId);
+    setSelectedDocId(documentId);
+    setTab('search');
   }
 
   async function loadAnalytics() {
@@ -1081,7 +1126,9 @@ function AppShell() {
     keywords: string[],
     articleLinks: ArticleLinkMap,
     sourceAnchorLinks: SourceAnchorLinkMap,
+    sourceDocumentLinks: SourceDocumentLinkMap,
     sourceUrl: string,
+    onSourceDocumentLink: (documentId: number, sourceAnchorId?: string) => void,
     depth = 0,
   ): JSX.Element => (
     <div className={depth === 0 ? 'space-y-7' : 'mt-4 space-y-5'}>
@@ -1093,12 +1140,22 @@ function AppShell() {
               {node.articles.map((article) => (
                 <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="scroll-mt-24 border-b pb-5 target:bg-accent/30 last:border-b-0">
                   <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
-                  <div className="mt-3"><ArticleContent text={article.text} keywords={keywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceUrl={sourceUrl} /></div>
+                  <div className="mt-3">
+                    <ArticleContent
+                      text={article.text}
+                      keywords={keywords}
+                      articleLinks={articleLinks}
+                      sourceAnchorLinks={sourceAnchorLinks}
+                      sourceDocumentLinks={sourceDocumentLinks}
+                      sourceUrl={sourceUrl}
+                      onSourceDocumentLink={onSourceDocumentLink}
+                    />
+                  </div>
                 </article>
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceUrl, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -1443,7 +1500,9 @@ function AppShell() {
                             [],
                             buildArticleLinkMap(browseDoc.articles, 'barticle'),
                             buildSourceAnchorLinkMap(browseDoc, 'barticle'),
+                            buildSourceDocumentLinkMap(browseDoc),
                             browseDoc.sourceUrl,
+                            openBrowseSourceDocument,
                           )
                         ) : (
                           <ArticleContent text={browseDoc.fullText} />
@@ -1682,7 +1741,9 @@ function AppShell() {
                             searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : [])),
                             buildArticleLinkMap(selectedDoc.articles, 'article'),
                             buildSourceAnchorLinkMap(selectedDoc, 'article'),
+                            buildSourceDocumentLinkMap(selectedDoc),
                             selectedDoc.sourceUrl,
+                            openSelectedSourceDocument,
                           )
                         ) : (
                           <ArticleContent text={selectedDoc.fullText} />
