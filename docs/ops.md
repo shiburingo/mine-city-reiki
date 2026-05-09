@@ -82,6 +82,8 @@ mysql -u root mine_city_reiki < server/schema.mariadb.sql
 
 スキーマは `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` で冪等に書かれているため、再実行しても安全です。
 
+`law_search_terms` は容量が大きくなりやすいため、`idx_law_search_terms_target_term_doc_article` でカバーできる短い重複索引は作成しません。既存本番DBの重複索引削除は行データを変更しない索引DDLとして実施済みです。
+
 ### 初回データ取り込み
 
 API 起動後、UI の「設定」タブ → 「すべて同期」ボタンを押すか、CLI から:

@@ -203,3 +203,13 @@ python3 -m py_compile server/app.py
 | `ask_query_cache` | 質問応答キャッシュ |
 
 スキーマは `server/schema.mariadb.sql` に冪等な `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` で記述されており、再実行しても安全です。
+
+`law_search_terms` は検索速度と容量のバランスを取るため、次の主要索引を持ちます。
+
+- `uq_law_search_terms_target_term (target_type, target_id, term)`
+- `idx_law_search_terms_term_target (term, target_type)`
+- `idx_law_search_terms_target_term_doc_article (target_type, term, document_id, article_id)`
+- `idx_law_search_terms_document (document_id)`
+- `idx_law_search_terms_article (article_id)`
+
+`(target_type, term, document_id)` 単独索引は、上記の複合索引で左辺一致として利用できるため作成しません。

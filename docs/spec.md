@@ -46,6 +46,17 @@
 
 > **フォールバック**: `law_search_terms` にインデックスがない場合は LIKE 検索に自動フォールバックする。
 
+### `law_search_terms` の索引方針
+
+`law_search_terms` は最も大きいテーブルになるため、検索で使う索引だけを維持します。
+
+- `uq_law_search_terms_target_term (target_type, target_id, term)` で同一対象の同一term重複を防ぐ。
+- `idx_law_search_terms_term_target (term, target_type)` は term 起点の候補抽出で使う。
+- `idx_law_search_terms_target_term_doc_article (target_type, term, document_id, article_id)` は article/document 候補抽出と `document_id` / `article_id` のグルーピングに使う。
+- `idx_law_search_terms_document (document_id)` と `idx_law_search_terms_article (article_id)` は文書削除・条文削除時の外部キー参照を支える。
+
+`idx_law_search_terms_target_term_doc (target_type, term, document_id)` は上記の複合索引でカバーできるため、容量削減のため作成しません。
+
 ### 2 層キャッシュ
 
 | 層 | TTL | 失効条件 |
