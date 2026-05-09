@@ -973,6 +973,17 @@ def strip_link_markers(text: str) -> str:
     return LINK_MARKER_RE.sub(repl, text or "")
 
 
+def extract_mine_city_link_href(node: Any) -> str:
+    href = normalize_text(str(node.get("href") or ""))
+    if href and not href.lower().startswith("javascript:"):
+        return href
+    onclick = str(node.get("onclick") or node.get("onClick") or "")
+    m = re.search(r"fileDownloadAction2\(['\"]([^'\"]+)['\"]", onclick)
+    if m:
+        return normalize_text(m.group(1))
+    return ""
+
+
 def linked_node_text(node: Any) -> str:
     if node is None:
         return ""
@@ -980,7 +991,7 @@ def linked_node_text(node: Any) -> str:
         return node
     if getattr(node, "name", None) == "a":
         label = normalize_text(node.get_text("", strip=True))
-        href = normalize_text(str(node.get("href") or ""))
+        href = extract_mine_city_link_href(node)
         return encode_link_marker(label, href) if label and href else label
     parts: list[str] = []
     for child in getattr(node, "contents", []) or []:
