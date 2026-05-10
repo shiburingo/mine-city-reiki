@@ -51,7 +51,7 @@ export function PortalHeader({
 
   const syncClass =
     syncStatusTone === "ok"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-[rgba(16,185,129,0.45)] dark:bg-[rgba(6,78,59,0.36)] dark:text-[#6ee7b7]"
       : syncStatusTone === "error"
         ? "border-red-200 bg-red-50 text-red-700"
         : "border-border bg-background text-muted-foreground";
