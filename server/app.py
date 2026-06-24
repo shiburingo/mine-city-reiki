@@ -4095,6 +4095,21 @@ def score_ask_candidate(
     article_text = normalize_text(candidate.get("articleText") or candidate.get("snippet") or "").lower()
     haystack = " ".join([title, article_number, article_title, article_text])
 
+    core_terms = profile.get("core", [])
+    fallback_terms = profile.get("fallback", [])
+    matched_core = sum(1 for term in core_terms if term and term in haystack)
+    primary_term = core_terms[0] if core_terms else ""
+    primary_components = [
+        term
+        for term in fallback_terms
+        if primary_term and term in primary_term and term in haystack and len(term) >= 2
+    ]
+    if primary_term and primary_term not in haystack:
+        score -= 120 if len(primary_components) >= 2 else 700
+    if core_terms and matched_core == 0 and not primary_components:
+        score -= 900
+    score += matched_core * 160 + len(primary_components) * 70
+
     for phrase in profile.get("phrases", []):
         if phrase in title:
             score += 420
