@@ -5,6 +5,7 @@
 - API env: `/etc/mine-city-reiki-api.env`
 - nginx snippet: `/etc/nginx/snippets/mine-city-reiki.conf`
 - timer: `mine-city-reiki-sync.timer`
+- optional search engine: `meilisearch.service` on `127.0.0.1:7700`
 
 ## 更新
 本番反映は GitHub 経由に統一します。Mac側で commit / push した後、Raspberry Pi 側で次を実行します。
@@ -13,6 +14,21 @@
 cd /opt/mine-city-reiki
 ./deploy/raspi/update.sh
 ```
+
+## Meilisearch
+
+Meilisearch is optional. When `MEILI_ENABLED=1`, the API uses Meilisearch first and falls back to the existing MySQL search if Meilisearch is unavailable or a query is not supported by the Meilisearch path.
+
+Required API env values:
+
+```bash
+MEILI_ENABLED=1
+MEILI_URL=http://127.0.0.1:7700
+MEILI_MASTER_KEY=...
+MEILI_INDEX=mine_city_reiki_articles
+```
+
+After enabling Meilisearch, run a full reindex from the Settings screen or `POST /api/reindex/run` so the Meilisearch index is rebuilt from MySQL.
 
 ## Git 管理の前提
 

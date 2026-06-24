@@ -65,6 +65,10 @@ class AppConfig:
     auth_verify_url: str
     auth_app_slug: str
     auth_bypass: bool
+    meili_url: str
+    meili_key: str
+    meili_index: str
+    meili_enabled: bool
 
 
 def _env(name: str, default: str = "") -> str:
@@ -98,6 +102,10 @@ def load_config() -> AppConfig:
         auth_verify_url=_env("AUTH_VERIFY_URL", "http://127.0.0.1:8787/api/auth/verify"),
         auth_app_slug=_env("AUTH_APP_SLUG", APP_SLUG),
         auth_bypass=_env_bool("MINE_CITY_REIKI_AUTH_BYPASS", False),
+        meili_url=_env("MEILI_URL", "http://127.0.0.1:7700").rstrip("/"),
+        meili_key=_env("MEILI_MASTER_KEY", ""),
+        meili_index=_env("MEILI_INDEX", "mine_city_reiki_articles"),
+        meili_enabled=_env_bool("MEILI_ENABLED", False),
     )
 
 
@@ -990,6 +998,247 @@ def clean_link_marker_fragments(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def meili_is_enabled() -> bool:
+    return bool(CFG.meili_enabled and CFG.meili_url and CFG.meili_key)
+
+
+def meili_request(
+    method: str,
+    path: str,
+    payload: Any | None = None,
+    timeout: int = 10,
+    expected: tuple[int, ...] = (200, 201, 202, 204),
+) -> Any:
+    if not meili_is_enabled():
+        raise RuntimeError("Meilisearch is not enabled")
+    body = None
+    headers = {
+        "Authorization": f"Bearer {CFG.meili_key}",
+        "Content-Type": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        f"{CFG.meili_url}{path}",
+        data=body,
+        headers=headers,
+        method=method.upper(),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            if resp.status not in expected:
+                raise RuntimeError(f"Meilisearch returned HTTP {resp.status}: {raw[:200]}")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Meilisearch returned HTTP {exc.code}: {raw[:300]}") from exc
+
+
+def meili_health() -> bool:
+    if not meili_is_enabled():
+        return False
+    try:
+        payload = meili_request("GET", "/health", timeout=2)
+        return payload.get("status") == "available"
+    except Exception:
+        return False
+
+
+def wait_meili_task(task_uid: int | None, timeout_seconds: int = 30) -> None:
+    if task_uid is None:
+        return
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        task = meili_request("GET", f"/tasks/{task_uid}", timeout=5)
+        status = str(task.get("status") or "")
+        if status in {"succeeded", "failed", "canceled"}:
+            if status != "succeeded":
+                raise RuntimeError(f"Meilisearch task {task_uid} {status}: {task.get('error')}")
+            return
+        time.sleep(0.2)
+    raise RuntimeError(f"Meilisearch task {task_uid} timed out")
+
+
+def meili_task_uid(payload: Any) -> int | None:
+    try:
+        return int(payload.get("taskUid"))
+    except Exception:
+        return None
+
+
+def configure_meili_index() -> None:
+    if not meili_is_enabled():
+        return
+    try:
+        meili_request("GET", f"/indexes/{urllib.parse.quote(CFG.meili_index)}", timeout=5)
+    except Exception:
+        task = meili_request(
+            "POST",
+            "/indexes",
+            {"uid": CFG.meili_index, "primaryKey": "id"},
+            timeout=5,
+        )
+        wait_meili_task(meili_task_uid(task), timeout_seconds=30)
+    settings = {
+        "searchableAttributes": [
+            "title",
+            "lawNumber",
+            "articleNumber",
+            "articleTitle",
+            "categoryPath",
+            "parentPath",
+            "bodyPlain",
+        ],
+        "filterableAttributes": ["source", "lawType", "promulgatedAt"],
+        "sortableAttributes": ["documentId", "articleSort"],
+        "rankingRules": [
+            "words",
+            "exactness",
+            "attribute",
+            "proximity",
+            "typo",
+            "sort",
+        ],
+        "typoTolerance": {"enabled": False},
+    }
+    task = meili_request("PATCH", f"/indexes/{urllib.parse.quote(CFG.meili_index)}/settings", settings, timeout=10)
+    wait_meili_task(meili_task_uid(task), timeout_seconds=60)
+
+
+def meili_filter_expr(source: str = "all", law_type: str = "", from_date: str = "", to_date: str = "") -> list[str]:
+    filters: list[str] = []
+    if source != "all":
+        filters.append(f"source = {json.dumps(source, ensure_ascii=False)}")
+    if law_type:
+        filters.append(f"lawType = {json.dumps(law_type, ensure_ascii=False)}")
+    if from_date:
+        filters.append(f"(promulgatedAt IS NULL OR promulgatedAt >= {json.dumps(from_date)})")
+    if to_date:
+        filters.append(f"(promulgatedAt IS NULL OR promulgatedAt <= {json.dumps(to_date)})")
+    return filters
+
+
+def can_use_meili_structured(
+    active: list[dict[str, str]],
+    source: str,
+    law_type: str = "",
+    from_date: str = "",
+    to_date: str = "",
+) -> bool:
+    if not meili_is_enabled() or not active:
+        return False
+    if from_date or to_date:
+        return False
+    if source not in SOURCE_SCOPES:
+        return False
+    return all((field.get("op") or "AND").upper() == "AND" for field in active)
+
+
+def infer_match_reasons_from_hit(hit: dict[str, Any], keywords: list[str], normalized_query: str) -> list[str]:
+    reasons: list[str] = []
+    title = str(hit.get("title") or "").lower()
+    article_number = str(hit.get("articleNumber") or "").lower()
+    article_title = str(hit.get("articleTitle") or "").lower()
+    body = str(hit.get("bodyPlain") or "").lower()
+    if normalized_query and normalized_query in title:
+        reasons.append("タイトル")
+    if normalized_query and normalized_query in article_number:
+        reasons.append("条番号")
+    if normalized_query and normalized_query in article_title:
+        reasons.append("条名")
+    if normalized_query and normalized_query in body:
+        reasons.append("条文")
+    for keyword in keywords:
+        kw = keyword.lower()
+        if kw in title and "タイトル" not in reasons:
+            reasons.append("タイトル")
+        if kw in article_number and "条番号" not in reasons:
+            reasons.append("条番号")
+        if kw in article_title and "条名" not in reasons:
+            reasons.append("条名")
+        if kw in body and "条文" not in reasons:
+            reasons.append("条文")
+    return reasons
+
+
+def serialize_meili_hit(hit: dict[str, Any], keywords: list[str], normalized_query: str) -> dict[str, Any]:
+    ranking_score = hit.get("_rankingScore")
+    try:
+        score = int(float(ranking_score) * 1000)
+    except Exception:
+        score = 500
+    body = clean_link_marker_fragments(hit.get("bodyPlain") or "")
+    return {
+        "score": score,
+        "documentId": int(hit.get("documentId") or 0),
+        "articleId": int(hit["articleId"]) if hit.get("articleId") is not None else None,
+        "source": hit.get("source") or "",
+        "title": hit.get("title") or "",
+        "lawType": hit.get("lawType") or "",
+        "lawNumber": hit.get("lawNumber") or "",
+        "sourceUrl": hit.get("sourceUrl") or "",
+        "articleNumber": hit.get("articleNumber") or None,
+        "articleTitle": hit.get("articleTitle") or None,
+        "snippet": text_snippet(body, keywords),
+        "categoryPath": hit.get("categoryPath") or "",
+        "matchReasons": infer_match_reasons_from_hit(hit, keywords, normalized_query),
+        "promulgatedAt": hit.get("promulgatedAt"),
+    }
+
+
+def search_documents_meili_structured(
+    fields: list[dict[str, str]],
+    source: str,
+    limit: int,
+    offset: int,
+    law_type: str = "",
+    fuzzy: bool = False,
+) -> tuple[int, list[dict[str, Any]]]:
+    active = [f for f in fields if f.get("q", "").strip()]
+    all_keywords: list[str] = []
+    for field in active:
+        all_keywords.extend(normalize_text(field["q"]).lower().split())
+    if not all_keywords:
+        return 0, []
+    keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20) if fuzzy else all_keywords
+    query_text = " ".join(keywords)
+    normalized_query = " ".join(all_keywords)
+    payload: dict[str, Any] = {
+        "q": query_text,
+        "limit": limit,
+        "offset": offset,
+        "matchingStrategy": "all",
+        "showRankingScore": True,
+        "attributesToRetrieve": [
+            "documentId",
+            "articleId",
+            "source",
+            "title",
+            "lawType",
+            "lawNumber",
+            "sourceUrl",
+            "categoryPath",
+            "promulgatedAt",
+            "articleNumber",
+            "articleTitle",
+            "bodyPlain",
+        ],
+    }
+    filters = meili_filter_expr(source, law_type)
+    if filters:
+        payload["filter"] = filters
+    result = meili_request(
+        "POST",
+        f"/indexes/{urllib.parse.quote(CFG.meili_index)}/search",
+        payload,
+        timeout=5,
+    )
+    hits = result.get("hits") or []
+    total = int(result.get("estimatedTotalHits") or result.get("totalHits") or len(hits))
+    return total, [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
+
+
 def extract_mine_city_link_href(node: Any) -> str:
     href = normalize_text(str(node.get("href") or ""))
     if href and not href.lower().startswith("javascript:"):
@@ -1658,6 +1907,98 @@ def rebuild_search_terms_for_document(cur, document_id: int) -> None:
         insert_search_terms(cur, "article", int(article["id"]), document_id, int(article["id"]), article_terms)
 
 
+def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    article_id = row.get("article_id")
+    body = clean_link_marker_fragments(row.get("article_text") or row.get("full_text") or "")
+    return {
+        "id": f"a{int(article_id)}" if article_id else f"d{int(row['document_id'])}",
+        "documentId": int(row["document_id"]),
+        "articleId": int(article_id) if article_id else None,
+        "articleSort": int(row.get("sort_key") or 0),
+        "source": row.get("source") or "",
+        "title": row.get("title") or "",
+        "lawType": row.get("law_type") or "",
+        "lawNumber": row.get("law_number") or "",
+        "sourceUrl": row.get("source_url") or "",
+        "categoryPath": row.get("category_path") or "",
+        "promulgatedAt": str(row["promulgated_at"]) if row.get("promulgated_at") else None,
+        "articleNumber": row.get("article_number") or "",
+        "articleTitle": row.get("article_title") or "",
+        "parentPath": row.get("parent_path") or "",
+        "bodyPlain": body,
+    }
+
+
+def fetch_meili_documents_for_ids(document_ids: list[int]) -> list[dict[str, Any]]:
+    if not document_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(document_ids))
+    with db_cursor() as (_, cur):
+        cur.execute(
+            f"""
+            SELECT
+              d.id AS document_id,
+              d.source,
+              d.title,
+              d.law_type,
+              d.law_number,
+              d.source_url,
+              d.category_path,
+              d.promulgated_at,
+              d.full_text,
+              a.id AS article_id,
+              a.article_number,
+              a.article_title,
+              a.parent_path,
+              a.sort_key,
+              a.text AS article_text
+            FROM law_documents d
+            LEFT JOIN law_articles a ON a.document_id=d.id
+            WHERE d.id IN ({placeholders})
+            ORDER BY d.id ASC, a.sort_key ASC, a.id ASC
+            """,
+            tuple(document_ids),
+        )
+        rows = cur.fetchall() or []
+    docs = [meili_document_from_row(row) for row in rows if row.get("article_id") or row.get("full_text")]
+    return docs
+
+
+def index_meili_documents(document_ids: list[int], batch_size: int = 500) -> int:
+    if not meili_is_enabled():
+        return 0
+    configure_meili_index()
+    indexed = 0
+    for offset in range(0, len(document_ids), 100):
+        source_batch = document_ids[offset:offset + 100]
+        docs = fetch_meili_documents_for_ids(source_batch)
+        for start in range(0, len(docs), batch_size):
+            batch = docs[start:start + batch_size]
+            if not batch:
+                continue
+            task = meili_request(
+                "POST",
+                f"/indexes/{urllib.parse.quote(CFG.meili_index)}/documents",
+                batch,
+                timeout=30,
+            )
+            wait_meili_task(meili_task_uid(task), timeout_seconds=120)
+            indexed += len(batch)
+    return indexed
+
+
+def reset_meili_index() -> None:
+    if not meili_is_enabled():
+        return
+    try:
+        task = meili_request("DELETE", f"/indexes/{urllib.parse.quote(CFG.meili_index)}", timeout=10)
+        wait_meili_task(meili_task_uid(task), timeout_seconds=60)
+    except Exception:
+        # Deleting a missing index should not block a rebuild.
+        pass
+    configure_meili_index()
+
+
 def maybe_backfill_search_terms() -> None:
     with db_cursor(commit=True) as (_, cur):
         cur.execute("SELECT COUNT(*) AS cnt FROM law_search_terms")
@@ -2035,12 +2376,25 @@ def execute_reindex(batch_size: int = 10) -> dict[str, Any]:
         'operation': 'reindex',
         'documents': len(doc_ids),
         'reindexed': 0,
+        'meiliEnabled': meili_is_enabled(),
+        'meiliIndexed': 0,
         'batchSize': batch_size,
         'progressCurrent': 0,
         'progressTotal': len(doc_ids),
         'progressLabel': '再索引を開始します',
     }
     try:
+        meili_ready = False
+        if meili_is_enabled():
+            try:
+                summary['progressLabel'] = 'Meilisearchインデックスを初期化しています'
+                with db_cursor(commit=True) as (_, cur):
+                    update_sync_run_summary(cur, run_id, summary)
+                reset_meili_index()
+                meili_ready = True
+            except Exception as exc:
+                summary['meiliError'] = str(exc)
+                meili_ready = False
         for start in range(0, len(doc_ids), batch_size):
             batch = doc_ids[start:start + batch_size]
             with db_cursor(commit=True) as (_, cur):
@@ -2051,6 +2405,18 @@ def execute_reindex(batch_size: int = 10) -> dict[str, Any]:
                 summary['reindexed'] += len(batch)
                 summary['progressCurrent'] += len(batch)
                 update_sync_run_summary(cur, run_id, summary)
+            if meili_ready:
+                try:
+                    summary['progressLabel'] = f"Meilisearch投入 {start + 1}-{start + len(batch)} / {len(doc_ids)}"
+                    indexed = index_meili_documents(batch)
+                    summary['meiliIndexed'] += indexed
+                    with db_cursor(commit=True) as (_, cur):
+                        update_sync_run_summary(cur, run_id, summary)
+                except Exception as exc:
+                    summary['meiliError'] = str(exc)
+                    meili_ready = False
+                    with db_cursor(commit=True) as (_, cur):
+                        update_sync_run_summary(cur, run_id, summary)
         with db_cursor(commit=True) as (_, cur):
             summary['progressLabel'] = '完了処理中'
             bump_cache_generation(cur)
@@ -2577,6 +2943,11 @@ def search_documents_structured(
         + [f"{f['op']}:{normalize_text(f['q']).lower()}" for f in active]
         + [source, str(limit), law_type, from_date, to_date, "fuzzy" if fuzzy else "exact"]
     )
+    if can_use_meili_structured(active, source, law_type, from_date, to_date):
+        try:
+            return search_documents_meili_structured(active, source, limit, offset, law_type, fuzzy=fuzzy)
+        except Exception as exc:
+            app.logger.warning("Meilisearch structured search fallback: %s", exc)
 
     with db_cursor() as (_, cur):
         generation = get_cache_generation(cur)
@@ -2682,6 +3053,11 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
     normalized_query = normalize_text(query).lower()
     if not normalized_query:
         return 0, []
+    if meili_is_enabled() and source in SOURCE_SCOPES:
+        try:
+            return search_documents_meili_structured([{"q": query, "op": "AND"}], source, limit, 0, "", fuzzy=fuzzy)
+        except Exception as exc:
+            app.logger.warning("Meilisearch search fallback: %s", exc)
     article_candidates: list[dict[str, Any]] = []
     document_candidates: list[dict[str, Any]] = []
     anchor_doc_ids: set[int] | None = None
