@@ -560,6 +560,7 @@ function AppShell() {
   const [diffLoading, setDiffLoading] = useState(false);
 
   const searchHistoryRef = useRef<string[]>(loadSearchHistory());
+  const selectedArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
 
@@ -762,7 +763,16 @@ function AppShell() {
     if (selectedDoc.id !== pendingSelectedArticleHit.documentId) return;
     const articleId = pendingSelectedArticleHit.articleId;
     window.setTimeout(() => {
-      document.getElementById(`article-${articleId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const target = document.getElementById(`article-${articleId}`);
+      const container = selectedArticleScrollRef.current;
+      if (target && container?.contains(target)) {
+        const targetRect = target.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        const top = targetRect.top - containerRect.top + container.scrollTop - 24;
+        container.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+      } else {
+        target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       setPendingSelectedArticleHit(null);
     }, 0);
   }, [selectedDoc, pendingSelectedArticleHit]);
@@ -1786,7 +1796,7 @@ function AppShell() {
                       <p className="mb-3 text-sm font-semibold">条文一覧</p>
                       {renderArticleNavTree(selectedDocArticleTree, 'article')}
                     </div>
-                    <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-5">
+                    <div ref={selectedArticleScrollRef} className="max-h-[70vh] overflow-auto rounded-2xl border bg-background p-5">
                       <div className="space-y-6">
                         {selectedDoc.articles.length > 0 ? (
                           renderArticleBodyTree(
