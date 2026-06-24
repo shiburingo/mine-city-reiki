@@ -813,7 +813,7 @@ def make_document_content_hash(full_text: str, articles: list[dict[str, Any]] | 
 
 
 QUESTION_TYPE_PATTERNS: list[tuple[str, list[str]]] = [
-    ("eligibility", ["できますか", "できるか", "できるでしょうか", "可能ですか", "権利があります", "資格があります", "受けられます", "対象になります"]),
+    ("eligibility", ["できますか", "できるか", "できるでしょうか", "可能ですか", "権利があります", "資格があります", "受けられます", "対象になります", "要件", "条件", "対象"]),
     ("procedure",   ["手続き", "申請", "どうすれば", "どのようにすれば", "どのように手続き", "方法を", "方法は", "どうしたら", "どこに申請"]),
     ("definition",  ["とは何ですか", "とはなんですか", "とはどういう", "とは何か", "の定義", "の意味", "について教えて", "とはどのよう"]),
     ("period",      ["いつから", "いつまで", "期間は", "何日間", "何ヶ月", "何年間", "いつ", "期限は"]),
@@ -850,7 +850,9 @@ QUESTION_INTENT_TERMS = {
     "手続",
     "手続き",
     "申請",
+    "取得",
     "方法",
+    "内容",
     "教える",
     "教えて",
     "必要",
@@ -862,6 +864,7 @@ QUESTION_INTENT_TERMS = {
     "金額",
     "額",
     "どこ",
+    "開催",
     "窓口",
     "場所",
     "部署",
@@ -955,7 +958,50 @@ def _known_question_terms(normalized_query: str, cur=None) -> list[str]:
         canonical_norm = normalize_text(canonical).lower()
         if len(canonical_norm) >= 3 and contains_japanese(canonical_norm) and canonical_norm in normalized_query:
             known.append(canonical_norm)
-    return sorted(_dedupe_terms(known, limit=24), key=lambda value: (-len(value), value))
+    return sorted(
+        _dedupe_terms(known, limit=24),
+        key=lambda value: (normalized_query.find(value) if value in normalized_query else 10**6, -len(value), value),
+    )
+
+
+def _strip_question_intent_suffix(term: str) -> str:
+    cleaned = normalize_text(term).lower()
+    changed = True
+    while changed and cleaned:
+        changed = False
+        for suffix in sorted(QUESTION_INTENT_TERMS, key=len, reverse=True):
+            if suffix and cleaned.endswith(suffix) and len(cleaned) - len(suffix) >= 2:
+                cleaned = cleaned[: -len(suffix)]
+                changed = True
+                break
+    cleaned = re.sub(r"(する|したい|される|なる|について)$", "", cleaned)
+    return cleaned.strip()
+
+
+def _question_particle_phrases(cleaned: str) -> list[str]:
+    normalized = normalize_text(cleaned).lower()
+    phrases: list[str] = []
+    for chunk in re.split(r"(?:について|に関して|に関する|の|には|では|には|に|を|は|が|で|と|、|,|，|。)", normalized):
+        chunk = re.sub(r"[^0-9a-z一-龯ぁ-んァ-ヶー々]+", "", chunk)
+        chunk = _strip_question_intent_suffix(chunk)
+        if len(chunk) >= 3 and contains_japanese(chunk) and not is_hiragana_only(chunk):
+            phrases.append(chunk)
+    return _dedupe_terms(phrases, limit=12)
+
+
+def _remove_subsumed_terms(terms: list[str], normalized_query: str, limit: int = 16) -> list[str]:
+    sorted_terms = sorted(
+        _dedupe_terms(terms, limit=64),
+        key=lambda value: (normalized_query.find(value) if value in normalized_query else 10**6, -len(value), value),
+    )
+    result: list[str] = []
+    for term in sorted_terms:
+        if any(term != selected and term in selected for selected in result):
+            continue
+        result.append(term)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
@@ -963,6 +1009,7 @@ def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
     cleaned = clean_question_text(query)
     normalized = normalize_text(cleaned).lower()
     known_terms = _known_question_terms(normalized, cur=cur)
+    particle_phrases = _question_particle_phrases(cleaned)
     token_terms = [
         term
         for term in janome_terms(cleaned)
@@ -978,17 +1025,15 @@ def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
             current += token_terms[end]
             if 4 <= len(current) <= 20 and current in normalized:
                 compounds.append(current)
-    phrase_terms = sorted(
-        _dedupe_terms([*known_terms, *compounds], limit=16),
-        key=lambda value: (-len(value), value),
-    )
+    phrase_terms = _remove_subsumed_terms([*known_terms, *particle_phrases, *compounds], normalized, limit=16)
     core_terms = _dedupe_terms(
         [
             *phrase_terms,
             *[
                 term
                 for term in token_terms
-                if term not in phrase_terms and (len(term) >= 3 or re.search(r"[一-龯]", term))
+                if not any(term in phrase for phrase in phrase_terms)
+                and (len(term) >= 3 or re.search(r"[一-龯]", term))
             ],
         ],
         limit=12,
@@ -4067,23 +4112,32 @@ def ask_candidate_search(
     question_type: str,
     limit: int = 12,
 ) -> list[dict[str, Any]]:
-    search_plans: list[tuple[str, bool, int]] = []
+    primary_plans: list[tuple[str, bool, int]] = []
+    fallback_plans: list[tuple[str, bool, int]] = []
     phrases = profile.get("phrases", [])
     core = profile.get("core", [])
-    if phrases:
-        search_plans.append((" ".join(phrases[:2]), False, 24))
-    if core:
-        search_plans.append((" ".join(core[:4]), False, 28))
     if len(core) >= 2:
-        search_plans.append((" ".join(core[:2]), False, 24))
-    if phrases or core:
-        search_plans.append((" ".join([*(phrases[:1]), *(core[:3])]), True, 24))
+        primary_plans.append((" ".join(core[:2]), False, 24))
+    if len(core) >= 3:
+        primary_plans.append((" ".join(core[:3]), False, 24))
+    for phrase in phrases[:4]:
+        primary_plans.append((phrase, False, 14))
+    if len(core) >= 2:
+        for term in core[1:5]:
+            fallback_plans.append((f"{core[0]} {term}", False, 18))
+    for term in core[:5]:
+        if len(term) >= 3 and term not in QUESTION_INTENT_TERMS:
+            fallback_plans.append((term, False, 10))
+    if core:
+        fallback_plans.append((" ".join(core[:4]), True, 24))
     else:
-        search_plans.append((query, True, 20))
+        fallback_plans.append((query, True, 20))
 
     candidates: list[dict[str, Any]] = []
     seen_plans: set[tuple[str, bool]] = set()
-    for plan_query, fuzzy, plan_limit in search_plans:
+    for idx, (plan_query, fuzzy, plan_limit) in enumerate([*primary_plans, *fallback_plans]):
+        if idx >= len(primary_plans) and len(candidates) >= max(10, limit * 2):
+            break
         plan_query = normalize_text(plan_query)
         if not plan_query:
             continue
@@ -4100,6 +4154,7 @@ def ask_candidate_search(
                 fuzzy=fuzzy,
             )
             candidates.extend(items)
+            candidates = merge_candidates_by_identity(candidates, limit=60)
         except Exception as exc:
             app.logger.warning("ask candidate search failed: %s", exc)
 
