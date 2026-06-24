@@ -307,6 +307,8 @@ function cleanSearchSnippet(text: string): string {
     .replace(/[A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=-]*__REIKI_LINK_END__/g, '')
     .replace(/__REIKI_LINK_START__[A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=-]*/g, '')
     .replace(/__REIKI_LINK_TEXT__[A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=-]*/g, '')
+    .replace(/__REIKI_LINK_[A-Z_]*/g, '')
+    .replace(/(?:START|TART|ART|RT|TEXT|EXT|XT|END|ND|D)__/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }

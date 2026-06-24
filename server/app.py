@@ -976,6 +976,8 @@ LINK_MARKER_FRAGMENT_CHARS = r"A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=\-"
 LINK_MARKER_TRAILING_END_RE = re.compile(rf"[{LINK_MARKER_FRAGMENT_CHARS}]*{re.escape(LINK_END)}")
 LINK_MARKER_START_FRAGMENT_RE = re.compile(rf"{re.escape(LINK_START)}[{LINK_MARKER_FRAGMENT_CHARS}]*")
 LINK_MARKER_TEXT_FRAGMENT_RE = re.compile(rf"{re.escape(LINK_TEXT)}[{LINK_MARKER_FRAGMENT_CHARS}]*")
+LINK_MARKER_PREFIX_FRAGMENT_RE = re.compile(r"__REIKI_LINK_[A-Z_]*")
+LINK_MARKER_SUFFIX_FRAGMENT_RE = re.compile(r"(?:START|TART|ART|RT|TEXT|EXT|XT|END|ND|D)__")
 
 
 def clean_link_marker_fragments(text: str) -> str:
@@ -983,6 +985,8 @@ def clean_link_marker_fragments(text: str) -> str:
     cleaned = LINK_MARKER_TRAILING_END_RE.sub("", cleaned)
     cleaned = LINK_MARKER_START_FRAGMENT_RE.sub("", cleaned)
     cleaned = LINK_MARKER_TEXT_FRAGMENT_RE.sub("", cleaned)
+    cleaned = LINK_MARKER_PREFIX_FRAGMENT_RE.sub("", cleaned)
+    cleaned = LINK_MARKER_SUFFIX_FRAGMENT_RE.sub("", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
