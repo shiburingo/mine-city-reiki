@@ -1088,6 +1088,7 @@ def configure_meili_index() -> None:
             "articleTitle",
             "categoryPath",
             "parentPath",
+            "exactTerms",
             "bodyPlain",
         ],
         "filterableAttributes": ["source", "lawType", "promulgatedAt"],
@@ -1907,9 +1908,40 @@ def rebuild_search_terms_for_document(cur, document_id: int) -> None:
         insert_search_terms(cur, "article", int(article["id"]), document_id, int(article["id"]), article_terms)
 
 
+def build_meili_exact_terms(values: list[str], max_terms: int = 1200) -> str:
+    """Add bounded Japanese n-grams so exact queries do not depend on Meilisearch tokenization."""
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = normalize_text(value).lower()
+        for run in re.findall(r"[0-9a-zぁ-んァ-ヶ一-龯々〆ヵヶー]{2,}", normalized):
+            max_size = min(12, len(run))
+            for size in range(2, max_size + 1):
+                for start in range(0, len(run) - size + 1):
+                    term = run[start:start + size]
+                    if term in seen:
+                        continue
+                    seen.add(term)
+                    terms.append(term)
+                    if len(terms) >= max_terms:
+                        return " ".join(terms)
+    return " ".join(terms)
+
+
 def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
     article_id = row.get("article_id")
     body = clean_link_marker_fragments(row.get("article_text") or row.get("full_text") or "")
+    exact_terms = build_meili_exact_terms(
+        [
+            row.get("title") or "",
+            row.get("law_number") or "",
+            row.get("category_path") or "",
+            row.get("article_number") or "",
+            row.get("article_title") or "",
+            row.get("parent_path") or "",
+            body,
+        ]
+    )
     return {
         "id": f"a{int(article_id)}" if article_id else f"d{int(row['document_id'])}",
         "documentId": int(row["document_id"]),
@@ -1925,6 +1957,7 @@ def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "articleNumber": row.get("article_number") or "",
         "articleTitle": row.get("article_title") or "",
         "parentPath": row.get("parent_path") or "",
+        "exactTerms": exact_terms,
         "bodyPlain": body,
     }
 
