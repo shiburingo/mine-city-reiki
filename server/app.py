@@ -2507,6 +2507,8 @@ def _doc_ids_for_field(field_q: str, source: str, cur, fuzzy: bool = False) -> s
     keywords = [k for k in normalize_text(field_q).lower().split() if k]
     if not keywords:
         return None
+    if not fuzzy and len(keywords) > 1:
+        return _doc_ids_matching_all_terms(keywords, source, cur, max_ids=5000)
     sets = [_doc_ids_for_keyword(k, source, cur, fuzzy=fuzzy) for k in keywords]
     result = sets[0]
     for s in sets[1:]:
