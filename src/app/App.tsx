@@ -51,6 +51,17 @@ type ArticleGroupNode = {
   children: ArticleGroupNode[];
   articles: DocumentDetail['articles'];
 };
+type SearchResultGroup = {
+  documentId: number;
+  source: SearchResult['source'];
+  title: string;
+  lawType: string;
+  lawNumber: string;
+  sourceUrl: string;
+  categoryPath: string;
+  maxScore: number;
+  hits: SearchResult[];
+};
 const ORDER_COLLATOR = new Intl.Collator('ja-JP', { numeric: true, sensitivity: 'base' });
 
 function loadSearchHistory(): string[] {
@@ -165,6 +176,30 @@ function sourceLabel(source: string): string {
   if (source === 'egov') return '地方自治法';
   if (source === 'local-public-service') return '地方公務員法';
   return '全ソース';
+}
+
+function groupSearchResults(items: SearchResult[]): SearchResultGroup[] {
+  const groups = new Map<number, SearchResultGroup>();
+  for (const item of items) {
+    const existing = groups.get(item.documentId);
+    if (existing) {
+      existing.hits.push(item);
+      existing.maxScore = Math.max(existing.maxScore, item.score);
+      continue;
+    }
+    groups.set(item.documentId, {
+      documentId: item.documentId,
+      source: item.source,
+      title: item.title,
+      lawType: item.lawType,
+      lawNumber: item.lawNumber,
+      sourceUrl: item.sourceUrl,
+      categoryPath: item.categoryPath,
+      maxScore: item.score,
+      hits: [item],
+    });
+  }
+  return [...groups.values()];
 }
 
 function normalizeOrderText(value: string | null | undefined): string {
@@ -1194,6 +1229,7 @@ function AppShell() {
   const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
   const browseDocArticleTree = useMemo(() => buildArticleGroupTree(browseDoc?.articles || []), [browseDoc]);
   const selectedDocArticleTree = useMemo(() => buildArticleGroupTree(selectedDoc?.articles || []), [selectedDoc]);
+  const groupedResults = useMemo(() => groupSearchResults(results), [results]);
 
   const renderArticleNavTree = (nodes: ArticleGroupNode[], anchorPrefix: string, depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-2' : 'mt-1 space-y-1 border-l border-border/70 pl-3'}>
@@ -1769,51 +1805,77 @@ function AppShell() {
                 ) : (
                   <>
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm text-muted-foreground">全{searchTotal}件中 {searchPage * 20 + 1}〜{Math.min(searchTotal, searchPage * 20 + results.length)}件</p>
+                      <p className="text-sm text-muted-foreground">
+                        全{searchTotal}件中 {searchPage * 20 + 1}〜{Math.min(searchTotal, searchPage * 20 + results.length)}件
+                        {groupedResults.length !== results.length ? ` / ${groupedResults.length}文書に集約` : ''}
+                      </p>
                       {searchTotal >= 20 ? (
                         <p className="text-sm text-amber-600">件数が多いため、キーワードを追加して絞り込んでください。</p>
                       ) : null}
                     </div>
-                    {results.map((item, idx) => {
-                      const isActiveResult = selectedDocId === item.documentId
-                        && (item.articleId == null || (
-                          activeSelectedArticleHit?.documentId === item.documentId
-                          && activeSelectedArticleHit.articleId === item.articleId
-                        ));
+                    {groupedResults.map((group) => {
+                      const firstHit = group.hits[0];
+                      const isActiveGroup = selectedDocId === group.documentId;
                       return (
-                        <button
-                          key={`${item.documentId}-${item.articleId ?? 'doc'}-${idx}`}
-                          type="button"
-                          onClick={() => openSearchResult(item)}
-                          className={`w-full rounded-2xl border p-4 text-left transition ${isActiveResult ? 'border-primary bg-primary/5' : 'bg-background hover:bg-accent/40'}`}
+                        <div
+                          key={`group-${group.documentId}`}
+                          className={`rounded-2xl border p-4 transition ${isActiveGroup ? 'border-primary bg-primary/5' : 'bg-background'}`}
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <p className="text-xs text-muted-foreground">{sourceLabel(item.source)} / {item.lawType || '例規'}</p>
-                              <p className="mt-1 font-semibold">{item.title}</p>
-                              {item.articleNumber ? (
-                                <p className="mt-2 inline-flex rounded-full bg-primary/10 px-2.5 py-1 text-sm font-semibold text-primary">
-                                  ヒット条文: {item.articleNumber}{item.articleTitle ? ` ${item.articleTitle}` : ''}
-                                </p>
-                              ) : null}
+                              <p className="text-xs text-muted-foreground">{sourceLabel(group.source)} / {group.lawType || '例規'}</p>
+                              <button
+                                type="button"
+                                onClick={() => openSearchResult(firstHit)}
+                                className="mt-1 text-left font-semibold hover:text-primary"
+                              >
+                                {group.title}
+                              </button>
+                              {group.lawNumber ? <p className="mt-1 text-xs text-muted-foreground">{group.lawNumber}</p> : null}
                             </div>
-                            <span className="rounded-full bg-accent px-2 py-1 text-xs text-muted-foreground">score {item.score}</span>
+                            <div className="flex shrink-0 flex-col items-end gap-1">
+                              <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">{group.hits.length}件</span>
+                              <span className="rounded-full bg-accent px-2 py-1 text-xs text-muted-foreground">score {group.maxScore}</span>
+                            </div>
                           </div>
-                          {item.snippet ? (
-                            <p className="mt-3 break-words rounded-xl bg-muted/40 px-3 py-2 text-sm leading-6 text-foreground">
-                              {cleanSearchSnippet(item.snippet)}
-                            </p>
-                          ) : null}
-                          {item.matchReasons && item.matchReasons.length > 0 ? (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              <span className="text-xs font-medium text-muted-foreground">ヒット箇所:</span>
-                              {item.matchReasons.map((r) => (
-                                <span key={r} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{r}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                          <p className="mt-2 text-sm text-muted-foreground">{item.categoryPath || '分類なし'}</p>
-                        </button>
+                          <div className="mt-3 space-y-2">
+                            {group.hits.map((item, idx) => {
+                              const isActiveHit = selectedDocId === item.documentId
+                                && (item.articleId == null || (
+                                  activeSelectedArticleHit?.documentId === item.documentId
+                                  && activeSelectedArticleHit.articleId === item.articleId
+                                ));
+                              return (
+                                <button
+                                  key={`${item.documentId}-${item.articleId ?? 'doc'}-${idx}`}
+                                  type="button"
+                                  onClick={() => openSearchResult(item)}
+                                  className={`w-full rounded-xl px-3 py-2 text-left transition ${isActiveHit ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-muted/35 hover:bg-accent/50'}`}
+                                >
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full bg-primary/10 px-2.5 py-1 text-sm font-semibold text-primary">
+                                      {item.articleNumber ? `ヒット条文: ${item.articleNumber}${item.articleTitle ? ` ${item.articleTitle}` : ''}` : '文書全体'}
+                                    </span>
+                                    {item.matchReasons && item.matchReasons.length > 0 ? (
+                                      <span className="flex flex-wrap items-center gap-1">
+                                        <span className="text-xs font-medium text-muted-foreground">ヒット箇所:</span>
+                                        {item.matchReasons.map((r) => (
+                                          <span key={`${item.documentId}-${item.articleId ?? 'doc'}-${r}`} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{r}</span>
+                                        ))}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {item.snippet ? (
+                                    <p className="mt-2 break-words text-sm leading-6 text-foreground">
+                                      {cleanSearchSnippet(item.snippet)}
+                                    </p>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <p className="mt-3 text-sm text-muted-foreground">{group.categoryPath || '分類なし'}</p>
+                        </div>
                       );
                     })}
                     {searchTotal > 20 ? (
