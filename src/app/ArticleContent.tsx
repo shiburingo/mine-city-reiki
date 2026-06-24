@@ -46,8 +46,8 @@ function parseArticleParts(text: string): Part[] {
   return parts;
 }
 
-// 第X条 / 第X項 / 第X号 形式の相互参照を検出してアンカーリンクにする
-const ARTICLE_REF_RE = /(第[〇一二三四五六七八九十百千万\d]+条(?:の[〇一二三四五六七八九十百千万\d]+)*)/g;
+// 第X条 / 別表第X / 様式第X 形式の相互参照を検出してアンカーリンクにする
+const ARTICLE_REF_RE = /(第[〇一二三四五六七八九十百千万\d]+条(?:の[〇一二三四五六七八九十百千万\d]+)*|別表第[〇一二三四五六七八九十百千万\d]+|様式第[〇一二三四五六七八九十百千万\d]+号?)/g;
 const LINK_MARKER_RE = /__REIKI_LINK_START__(.*?)__REIKI_LINK_TEXT__(.*?)__REIKI_LINK_END__/g;
 
 function normalizeArticleRef(value: string): string {
@@ -92,6 +92,29 @@ function resolveSourceHref(href: string, sourceAnchorLinks: SourceAnchorLinkMap,
   return href;
 }
 
+function scrollToInternalAnchor(event: React.MouseEvent<HTMLAnchorElement>, href: string): void {
+  if (!href.startsWith('#')) return;
+  const targetId = decodeURIComponent(href.slice(1));
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  event.preventDefault();
+
+  let container = target.parentElement;
+  while (container && container !== document.body) {
+    const style = window.getComputedStyle(container);
+    const canScroll = /(auto|scroll)/.test(`${style.overflowY}${style.overflow}`);
+    if (canScroll && container.scrollHeight > container.clientHeight) {
+      const targetRect = target.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const top = targetRect.top - containerRect.top + container.scrollTop - 24;
+      container.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+      return;
+    }
+    container = container.parentElement;
+  }
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function renderPlainText(part: string, keywords: string[], articleLinks: ArticleLinkMap, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   const refParts = part.split(ARTICLE_REF_RE);
@@ -101,7 +124,13 @@ function renderPlainText(part: string, keywords: string[], articleLinks: Article
       const href = articleLinks[normalizeArticleRef(part)];
       if (href) {
         nodes.push(
-          <a key={`${keyPrefix}-ref-${pi}`} className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid" href={href} title={`${part}へ移動`}>
+          <a
+            key={`${keyPrefix}-ref-${pi}`}
+            className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+            href={href}
+            onClick={(event) => scrollToInternalAnchor(event, href)}
+            title={`${part}へ移動`}
+          >
             {part}
           </a>,
         );
@@ -169,7 +198,7 @@ function renderTextLine(
         onClick={documentLink && onSourceDocumentLink ? (event) => {
           event.preventDefault();
           onSourceDocumentLink(documentLink.documentId, documentLink.sourceAnchorId);
-        } : undefined}
+        } : href.startsWith('#') ? (event) => scrollToInternalAnchor(event, href) : undefined}
         rel={isInternal ? undefined : 'noreferrer'}
         target={isInternal ? undefined : '_blank'}
         title={isInternal ? `${label}へ移動` : `${label}を原文で開く`}

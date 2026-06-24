@@ -370,12 +370,29 @@ function normalizeArticleRef(value: string): string {
   return value.replace(/\s+/g, '').trim();
 }
 
+function articleRefAliases(articleNumber: string, articleTitle: string): string[] {
+  const rawValues = [articleNumber, articleTitle].filter(Boolean);
+  const aliases = new Set<string>();
+  for (const raw of rawValues) {
+    const normalized = normalizeArticleRef(raw);
+    if (!normalized) continue;
+    aliases.add(normalized);
+    const withoutParen = normalized.replace(/[（(].*$/, '');
+    if (withoutParen) aliases.add(withoutParen);
+    const tableMatch = normalized.match(/^(別表第[〇一二三四五六七八九十百千万\d]+)/);
+    if (tableMatch) aliases.add(tableMatch[1]);
+    const formMatch = normalized.match(/^(様式第[〇一二三四五六七八九十百千万\d]+号?)/);
+    if (formMatch) aliases.add(formMatch[1]);
+  }
+  return [...aliases];
+}
+
 function buildArticleLinkMap(articles: DocumentDetail['articles'], anchorPrefix: string): ArticleLinkMap {
   const links: ArticleLinkMap = {};
   for (const article of articles) {
-    const articleNumber = normalizeArticleRef(article.articleNumber || '');
-    if (!articleNumber) continue;
-    links[articleNumber] = `#${anchorPrefix}-${article.id}`;
+    for (const alias of articleRefAliases(article.articleNumber || '', article.articleTitle || '')) {
+      links[alias] = `#${anchorPrefix}-${article.id}`;
+    }
   }
   return links;
 }
