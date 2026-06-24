@@ -972,6 +972,20 @@ def strip_link_markers(text: str) -> str:
     return LINK_MARKER_RE.sub(repl, text or "")
 
 
+LINK_MARKER_FRAGMENT_CHARS = r"A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=\-"
+LINK_MARKER_TRAILING_END_RE = re.compile(rf"[{LINK_MARKER_FRAGMENT_CHARS}]*{re.escape(LINK_END)}")
+LINK_MARKER_START_FRAGMENT_RE = re.compile(rf"{re.escape(LINK_START)}[{LINK_MARKER_FRAGMENT_CHARS}]*")
+LINK_MARKER_TEXT_FRAGMENT_RE = re.compile(rf"{re.escape(LINK_TEXT)}[{LINK_MARKER_FRAGMENT_CHARS}]*")
+
+
+def clean_link_marker_fragments(text: str) -> str:
+    cleaned = strip_link_markers(text)
+    cleaned = LINK_MARKER_TRAILING_END_RE.sub("", cleaned)
+    cleaned = LINK_MARKER_START_FRAGMENT_RE.sub("", cleaned)
+    cleaned = LINK_MARKER_TEXT_FRAGMENT_RE.sub("", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def extract_mine_city_link_href(node: Any) -> str:
     href = normalize_text(str(node.get("href") or ""))
     if href and not href.lower().startswith("javascript:"):
@@ -2081,10 +2095,24 @@ def put_local_cache(cache: dict[str, tuple[float, Any]], key: str, payload: Any)
     cache[key] = (time.time(), payload)
 
 
+def sanitize_search_results(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+    sanitized: list[Any] = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("snippet"), str):
+            next_item = dict(item)
+            next_item["snippet"] = clean_link_marker_fragments(next_item["snippet"])
+            sanitized.append(next_item)
+        else:
+            sanitized.append(item)
+    return sanitized
+
+
 def get_search_cache(cur, cache_key: str):
     payload = get_local_cache(LOCAL_SEARCH_CACHE, cache_key)
     if payload is not None:
-        return payload
+        return sanitize_search_results(payload)
     cur.execute(
         """
         SELECT result_json
@@ -2100,7 +2128,7 @@ def get_search_cache(cur, cache_key: str):
         "UPDATE search_query_cache SET hit_count=hit_count+1, last_hit_at=CURRENT_TIMESTAMP WHERE cache_key=%s",
         (cache_key,),
     )
-    payload = json.loads(row.get("result_json") or "[]")
+    payload = sanitize_search_results(json.loads(row.get("result_json") or "[]"))
     put_local_cache(LOCAL_SEARCH_CACHE, cache_key, payload)
     return payload
 
@@ -2171,7 +2199,7 @@ def put_ask_cache(cur, cache_key: str, normalized_query: str, generation: int, p
 
 def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, Any]:
     law_type = row.get('law_type') or ''
-    snippet_text = strip_link_markers(row.get('article_text') or row.get('full_text') or '')
+    snippet_text = clean_link_marker_fragments(row.get('article_text') or row.get('full_text') or '')
     return {
         'score': int(row.get('score') or 0),
         'documentId': int(row['document_id']),

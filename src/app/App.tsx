@@ -301,6 +301,16 @@ function snippet(text: string): string {
   return `${compact.slice(0, 180)}…`;
 }
 
+function cleanSearchSnippet(text: string): string {
+  return (text || '')
+    .replace(/__REIKI_LINK_START__.*?__REIKI_LINK_TEXT__(.*?)__REIKI_LINK_END__/g, '$1')
+    .replace(/[A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=-]*__REIKI_LINK_END__/g, '')
+    .replace(/__REIKI_LINK_START__[A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=-]*/g, '')
+    .replace(/__REIKI_LINK_TEXT__[A-Za-z0-9%._~:/?#\[\]@!$&'()*+,;=-]*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function buildArticleGroupTree(articles: DocumentDetail['articles']): ArticleGroupNode[] {
   const roots: ArticleGroupNode[] = [];
   const nodeIndex = new Map<string, ArticleGroupNode>();
@@ -1723,8 +1733,8 @@ function AppShell() {
                             <span className="rounded-full bg-accent px-2 py-1 text-xs text-muted-foreground">score {item.score}</span>
                           </div>
                           {item.snippet ? (
-                            <p className="mt-3 rounded-xl bg-muted/40 px-3 py-2 text-sm leading-6 text-foreground">
-                              {item.snippet}
+                            <p className="mt-3 break-words rounded-xl bg-muted/40 px-3 py-2 text-sm leading-6 text-foreground">
+                              {cleanSearchSnippet(item.snippet)}
                             </p>
                           ) : null}
                           {item.matchReasons && item.matchReasons.length > 0 ? (
