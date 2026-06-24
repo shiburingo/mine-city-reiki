@@ -23,11 +23,13 @@ cd /opt/mine-city-reiki
 
 このスクリプトは以下を行います:
 
-1. `git pull` で最新コードを取得
+1. `git pull --ff-only` で最新コードを取得
 2. `npm ci && npm run build` でフロントエンドをビルド
 3. `dist/` を `/var/www/mine-city-reiki/` にコピー
 4. `pip install -r server/requirements.txt` でバックエンド依存を更新
 5. `systemctl restart mine-city-reiki-api` で API を再起動
+
+本番反映は GitHub 経由に統一します。Mac側で commit / push した後、Raspberry Pi 側の Git checkout で `deploy/raspi/update.sh` を実行します。
 
 ### 前提: `/opt/mine-city-reiki` は Git clone 正本にする
 

@@ -7,6 +7,8 @@
 - timer: `mine-city-reiki-sync.timer`
 
 ## 更新
+本番反映は GitHub 経由に統一します。Mac側で commit / push した後、Raspberry Pi 側で次を実行します。
+
 ```bash
 cd /opt/mine-city-reiki
 ./deploy/raspi/update.sh
