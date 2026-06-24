@@ -838,6 +838,51 @@ QUESTION_SUFFIXES = [
     "はどこに", "はいつ", "とはなんですか", "とは何ですか", "はどういうこと",
 ]
 
+QUESTION_INTENT_TERMS = {
+    "できる",
+    "できます",
+    "可能",
+    "可否",
+    "対象",
+    "資格",
+    "要件",
+    "条件",
+    "手続",
+    "手続き",
+    "申請",
+    "方法",
+    "教える",
+    "教えて",
+    "必要",
+    "書類",
+    "いつ",
+    "期限",
+    "期間",
+    "いくら",
+    "金額",
+    "額",
+    "どこ",
+    "窓口",
+    "場所",
+    "部署",
+    "何",
+    "場合",
+    "該当",
+    "関係",
+    "規定",
+    "定める",
+}
+
+QUESTION_TYPE_BOOST_TERMS: dict[str, tuple[str, ...]] = {
+    "eligibility": ("対象", "資格", "要件", "条件", "できる", "することができる", "認める", "承認"),
+    "procedure": ("手続", "申請", "届出", "請求", "提出", "様式", "許可", "承認"),
+    "definition": ("定義", "意義", "趣旨", "目的", "いう", "範囲"),
+    "period": ("期間", "期限", "日", "月", "年", "まで", "から", "以内"),
+    "amount": ("額", "金額", "円", "費用", "料金", "報酬", "給与", "手当", "割合"),
+    "location": ("窓口", "場所", "課", "部署", "所管", "提出先"),
+    "general": (),
+}
+
 
 def detect_question_type(query: str) -> str:
     normalized = normalize_text(query).lower()
@@ -874,6 +919,98 @@ def split_keywords(query: str) -> list[str]:
     if not result and normalized:
         result = [normalized]
     return result[:8]
+
+
+def clean_question_text(query: str) -> str:
+    cleaned = normalize_text(query)
+    cleaned = re.sub(r"[？?。]+$", "", cleaned).strip()
+    for suffix in QUESTION_SUFFIXES:
+        cleaned = re.sub(re.escape(suffix) + r"$", "", cleaned).strip()
+    cleaned = re.sub(r"(について|に関して|に関する|を|は)$", "", cleaned).strip()
+    return cleaned or normalize_text(query)
+
+
+def _dedupe_terms(terms: Iterable[str], limit: int = 20) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        normalized = normalize_text(str(term)).lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _known_question_terms(normalized_query: str, cur=None) -> list[str]:
+    known: list[str] = []
+    lookup = synonyms_map(cur)
+    for canonical, synonyms in lookup.items():
+        for term in [canonical, *synonyms]:
+            candidate = normalize_text(term).lower()
+            if len(candidate) >= 3 and contains_japanese(candidate) and candidate in normalized_query:
+                known.append(candidate)
+        canonical_norm = normalize_text(canonical).lower()
+        if len(canonical_norm) >= 3 and contains_japanese(canonical_norm) and canonical_norm in normalized_query:
+            known.append(canonical_norm)
+    return sorted(_dedupe_terms(known, limit=24), key=lambda value: (-len(value), value))
+
+
+def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
+    """質問文から、検索に使う内容語と表示用キーワードを作る。"""
+    cleaned = clean_question_text(query)
+    normalized = normalize_text(cleaned).lower()
+    known_terms = _known_question_terms(normalized, cur=cur)
+    token_terms = [
+        term
+        for term in janome_terms(cleaned)
+        if len(term) >= 2
+        and term not in STOP_TERMS
+        and term not in QUESTION_INTENT_TERMS
+        and not is_hiragana_only(term)
+    ]
+    compounds: list[str] = []
+    for start in range(len(token_terms)):
+        current = ""
+        for end in range(start, min(len(token_terms), start + 4)):
+            current += token_terms[end]
+            if 4 <= len(current) <= 20 and current in normalized:
+                compounds.append(current)
+    phrase_terms = sorted(
+        _dedupe_terms([*known_terms, *compounds], limit=16),
+        key=lambda value: (-len(value), value),
+    )
+    core_terms = _dedupe_terms(
+        [
+            *phrase_terms,
+            *[
+                term
+                for term in token_terms
+                if term not in phrase_terms and (len(term) >= 3 or re.search(r"[一-龯]", term))
+            ],
+        ],
+        limit=12,
+    )
+    if not core_terms:
+        core_terms = _dedupe_terms(split_keywords(cleaned), limit=8)
+    intent_terms = _dedupe_terms(
+        [
+            term
+            for term in janome_terms(cleaned)
+            if term in QUESTION_INTENT_TERMS or any(boost in term for boost in QUESTION_INTENT_TERMS)
+        ],
+        limit=8,
+    )
+    display_terms = _dedupe_terms([*core_terms[:8], *intent_terms[:4]], limit=12)
+    return {
+        "cleaned": [cleaned],
+        "phrases": phrase_terms,
+        "core": core_terms,
+        "intent": intent_terms,
+        "display": display_terms,
+    }
 
 
 def expand_keywords_with_synonyms(keywords: list[str], cur=None, max_keywords: int = 16) -> list[str]:
@@ -3794,6 +3931,193 @@ def api_reference_document(document_id: int):
     return api_document_detail(document_id)
 
 
+def merge_candidates_by_identity(candidates: list[dict[str, Any]], limit: int = 40) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    by_key: dict[tuple[int, int | None], dict[str, Any]] = {}
+    for candidate in candidates:
+        key = (
+            int(candidate.get("documentId") or 0),
+            int(candidate["articleId"]) if candidate.get("articleId") is not None else None,
+        )
+        if not key[0]:
+            continue
+        existing = by_key.get(key)
+        if existing is None:
+            item = dict(candidate)
+            by_key[key] = item
+            merged.append(item)
+            continue
+        if int(candidate.get("score") or 0) > int(existing.get("score") or 0):
+            existing.update(candidate)
+        else:
+            reasons = list(existing.get("matchReasons") or [])
+            for reason in candidate.get("matchReasons") or []:
+                if reason not in reasons:
+                    reasons.append(reason)
+            existing["matchReasons"] = reasons
+    merged.sort(key=lambda item: -int(item.get("score") or 0))
+    return merged[:limit]
+
+
+def expand_document_candidates_to_articles(
+    candidates: list[dict[str, Any]],
+    terms: list[str],
+    limit_per_document: int = 3,
+) -> list[dict[str, Any]]:
+    doc_ids = [
+        int(candidate["documentId"])
+        for candidate in candidates
+        if candidate.get("documentId") and candidate.get("articleId") is None
+    ]
+    doc_ids = list(dict.fromkeys(doc_ids))
+    search_terms = _dedupe_terms(
+        [
+            term
+            for term in terms
+            if len(term) >= 2 and not is_hiragana_only(term)
+        ],
+        limit=16,
+    )
+    if not doc_ids or not search_terms:
+        return []
+    with db_cursor() as (_, cur):
+        term_ph = ",".join(["%s"] * len(search_terms))
+        doc_ph = ",".join(["%s"] * len(doc_ids))
+        cur.execute(
+            f"""
+            SELECT st.document_id, st.article_id,
+                   SUM(st.weight) AS term_score,
+                   COUNT(DISTINCT st.term) AS matched_terms
+            FROM law_search_terms st
+            WHERE st.target_type='article'
+              AND st.term IN ({term_ph})
+              AND st.document_id IN ({doc_ph})
+              AND st.article_id IS NOT NULL
+            GROUP BY st.document_id, st.article_id
+            ORDER BY st.document_id ASC, term_score DESC, matched_terms DESC, st.article_id ASC
+            LIMIT %s
+            """,
+            tuple(search_terms + doc_ids + [max(20, len(doc_ids) * limit_per_document * 3)]),
+        )
+        rows = cur.fetchall() or []
+    selected: list[dict[str, Any]] = []
+    per_doc: dict[int, int] = {}
+    for row in rows:
+        doc_id = int(row["document_id"])
+        if per_doc.get(doc_id, 0) >= limit_per_document:
+            continue
+        per_doc[doc_id] = per_doc.get(doc_id, 0) + 1
+        selected.append(row)
+    if not selected:
+        return []
+    _total, details = fetch_search_detail_rows(
+        selected,
+        [],
+        search_terms,
+        " ".join(search_terms),
+        limit=len(selected),
+    )
+    return details
+
+
+def score_ask_candidate(
+    candidate: dict[str, Any],
+    profile: dict[str, list[str]],
+    question_type: str,
+) -> int:
+    score = int(candidate.get("score") or 0)
+    title = normalize_text(candidate.get("title") or "").lower()
+    article_number = normalize_text(candidate.get("articleNumber") or "").lower()
+    article_title = normalize_text(candidate.get("articleTitle") or "").lower()
+    article_text = normalize_text(candidate.get("articleText") or candidate.get("snippet") or "").lower()
+    haystack = " ".join([title, article_number, article_title, article_text])
+
+    for phrase in profile.get("phrases", []):
+        if phrase in title:
+            score += 420
+        if phrase in article_title:
+            score += 220
+        if phrase in article_text:
+            score += 80
+    for term in profile.get("core", []):
+        if term in title:
+            score += 180
+        if term in article_title:
+            score += 95
+        if term in article_number:
+            score += 50
+        if term in article_text:
+            score += 35
+    for term in profile.get("intent", []):
+        if term in haystack:
+            score += 25
+    for boost_term in QUESTION_TYPE_BOOST_TERMS.get(question_type, ()):
+        if boost_term in article_title:
+            score += 80
+        elif boost_term in article_text:
+            score += 45
+    if candidate.get("articleId") is None:
+        score -= 120
+    return score
+
+
+def ask_candidate_search(
+    query: str,
+    profile: dict[str, list[str]],
+    question_type: str,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    search_plans: list[tuple[str, bool, int]] = []
+    phrases = profile.get("phrases", [])
+    core = profile.get("core", [])
+    if phrases:
+        search_plans.append((" ".join(phrases[:2]), False, 24))
+    if core:
+        search_plans.append((" ".join(core[:4]), False, 28))
+    if len(core) >= 2:
+        search_plans.append((" ".join(core[:2]), False, 24))
+    if phrases or core:
+        search_plans.append((" ".join([*(phrases[:1]), *(core[:3])]), True, 24))
+    else:
+        search_plans.append((query, True, 20))
+
+    candidates: list[dict[str, Any]] = []
+    seen_plans: set[tuple[str, bool]] = set()
+    for plan_query, fuzzy, plan_limit in search_plans:
+        plan_query = normalize_text(plan_query)
+        if not plan_query:
+            continue
+        plan_key = (plan_query.lower(), fuzzy)
+        if plan_key in seen_plans:
+            continue
+        seen_plans.add(plan_key)
+        try:
+            _total, items = search_documents_structured(
+                [{"q": plan_query, "op": "AND"}],
+                "all",
+                plan_limit,
+                0,
+                fuzzy=fuzzy,
+            )
+            candidates.extend(items)
+        except Exception as exc:
+            app.logger.warning("ask candidate search failed: %s", exc)
+
+    candidates = merge_candidates_by_identity(candidates, limit=60)
+    candidates = merge_candidates_by_identity(
+        [
+            *candidates,
+            *expand_document_candidates_to_articles(candidates, [*phrases, *core]),
+        ],
+        limit=60,
+    )
+    enriched = enrich_candidates_with_text(candidates)
+    for candidate in enriched:
+        candidate["score"] = score_ask_candidate(candidate, profile, question_type)
+    enriched.sort(key=lambda item: (-int(item.get("score") or 0), int(item.get("documentId") or 0), int(item.get("articleId") or 0)))
+    return enriched[:limit]
+
+
 def enrich_candidates_with_text(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """候補リストに条文テキストを付加する。"""
     article_ids = [c["articleId"] for c in candidates if c.get("articleId")]
@@ -3805,12 +4129,12 @@ def enrich_candidates_with_text(candidates: list[dict[str, Any]]) -> list[dict[s
             ph = ",".join(["%s"] * len(article_ids))
             cur.execute(f"SELECT id, text FROM law_articles WHERE id IN ({ph})", article_ids)
             for row in cur.fetchall():
-                article_texts[int(row["id"])] = row["text"] or ""
+                article_texts[int(row["id"])] = clean_link_marker_fragments(row["text"] or "")
         if doc_ids_no_article:
             ph = ",".join(["%s"] * len(doc_ids_no_article))
             cur.execute(f"SELECT id, full_text FROM law_documents WHERE id IN ({ph})", doc_ids_no_article)
             for row in cur.fetchall():
-                full = row["full_text"] or ""
+                full = clean_link_marker_fragments(row["full_text"] or "")
                 doc_texts[int(row["id"])] = full[:600]
     result = []
     for c in candidates:
@@ -3840,6 +4164,7 @@ def group_ask_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any
                 "topScore": int(c.get("score") or 0),
                 "articles": [],
             }
+        groups[doc_id]["topScore"] = max(groups[doc_id]["topScore"], int(c.get("score") or 0))
         groups[doc_id]["articles"].append({
             "articleId": c.get("articleId"),
             "articleNumber": c.get("articleNumber"),
@@ -3847,6 +4172,9 @@ def group_ask_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any
             "articleText": c.get("articleText", ""),
             "score": int(c.get("score") or 0),
         })
+    for group in groups.values():
+        group["articles"].sort(key=lambda item: -int(item.get("score") or 0))
+        group["articles"] = group["articles"][:5]
     return sorted(groups.values(), key=lambda g: -g["topScore"])
 
 
@@ -3860,15 +4188,14 @@ def api_ask():
     question_type = detect_question_type(query)
     with db_cursor(commit=True) as (_, cur):
         generation = get_cache_generation(cur)
-        cache_key = make_cache_key(["ask2", normalized_query, str(generation)])
+        cache_key = make_cache_key(["ask3", normalized_query, str(generation)])
         cached = get_ask_cache(cur, cache_key)
         if cached is not None:
             return jsonify(cached)
-        base_keywords = extract_question_keywords(query)
-        keywords = expand_keywords_with_synonyms(base_keywords, cur=cur, max_keywords=20)
-    _total, candidates = search_documents(query, 'all', 10)
-    enriched = enrich_candidates_with_text(candidates)
-    candidate_groups = group_ask_candidates(enriched)
+        profile = question_search_profile(query, cur=cur)
+        keywords = expand_keywords_with_synonyms(profile["display"], cur=cur, max_keywords=20)
+    candidates = ask_candidate_search(query, profile, question_type, limit=14)
+    candidate_groups = group_ask_candidates(candidates)
     # answerLead をタイプに応じて生成
     type_label = QUESTION_TYPE_LABELS.get(question_type, "一般的な質問")
     if candidate_groups:
@@ -3876,8 +4203,8 @@ def api_ask():
         top_article = top["articles"][0] if top["articles"] else {}
         article_part = f"（{top_article['articleNumber']}）" if top_article.get("articleNumber") else ""
         lead = (
-            f"{source_label(top['source'])}の「{top['title']}」{article_part}が最も関連すると推定されます。"
-            f"以下の条文を確認のうえ、必ず原文で内容を確認してください。"
+            f"{type_label}として、{source_label(top['source'])}の「{top['title']}」{article_part}が"
+            f"最も関連すると推定されます。候補条文を確認し、必要に応じて原文で最終確認してください。"
         )
     else:
         lead = "関連する条文が見つかりませんでした。キーワードを変えて再度お試しください。"
@@ -3885,6 +4212,7 @@ def api_ask():
         'query': query,
         'normalizedQuery': normalize_text(query),
         'keywords': keywords,
+        'searchKeywords': profile["core"],
         'questionType': question_type,
         'questionTypeLabel': type_label,
         'answerLead': lead,
