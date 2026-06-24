@@ -15,6 +15,7 @@ export type SourceAnchorLinkMap = Record<string, string>;
 export type SourceDocumentLinkMap = Record<string, number>;
 
 type SourceDocumentLinkHandler = (documentId: number, sourceAnchorId?: string) => void;
+type InternalAnchorLinkHandler = (href: string) => void;
 
 function parseArticleParts(text: string): Part[] {
   const parts: Part[] = [];
@@ -93,12 +94,13 @@ function resolveSourceHref(href: string, sourceAnchorLinks: SourceAnchorLinkMap,
   return href;
 }
 
-function scrollToInternalAnchor(event: React.MouseEvent<HTMLAnchorElement>, href: string): void {
+function scrollToInternalAnchor(event: React.MouseEvent<HTMLAnchorElement>, href: string, onInternalAnchorLink?: InternalAnchorLinkHandler): void {
   if (!href.startsWith('#')) return;
   const targetId = decodeURIComponent(href.slice(1));
   const target = document.getElementById(targetId);
   if (!target) return;
   event.preventDefault();
+  onInternalAnchorLink?.(href);
 
   let container = target.parentElement;
   while (container && container !== document.body) {
@@ -116,7 +118,7 @@ function scrollToInternalAnchor(event: React.MouseEvent<HTMLAnchorElement>, href
   target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function renderPlainText(part: string, keywords: string[], articleLinks: ArticleLinkMap, keyPrefix: string): React.ReactNode[] {
+function renderPlainText(part: string, keywords: string[], articleLinks: ArticleLinkMap, keyPrefix: string, onInternalAnchorLink?: InternalAnchorLinkHandler): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   const refParts = part.split(ARTICLE_REF_RE);
   refParts.forEach((part, pi) => {
@@ -129,7 +131,7 @@ function renderPlainText(part: string, keywords: string[], articleLinks: Article
             key={`${keyPrefix}-ref-${pi}`}
             className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
             href={href}
-            onClick={(event) => scrollToInternalAnchor(event, href)}
+            onClick={(event) => scrollToInternalAnchor(event, href, onInternalAnchorLink)}
             title={`${part}へ移動`}
           >
             {part}
@@ -178,13 +180,14 @@ function renderTextLine(
   sourceDocumentLinks: SourceDocumentLinkMap,
   sourceUrl?: string,
   onSourceDocumentLink?: SourceDocumentLinkHandler,
+  onInternalAnchorLink?: InternalAnchorLinkHandler,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
   for (const match of line.matchAll(LINK_MARKER_RE)) {
     const index = match.index ?? 0;
     if (index > cursor) {
-      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, articleLinks, `plain-${cursor}`));
+      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
     }
     const rawHref = decodeMarkerValue(match[1] || '');
     const label = decodeMarkerValue(match[2] || '');
@@ -199,18 +202,18 @@ function renderTextLine(
         onClick={documentLink && onSourceDocumentLink ? (event) => {
           event.preventDefault();
           onSourceDocumentLink(documentLink.documentId, documentLink.sourceAnchorId);
-        } : href.startsWith('#') ? (event) => scrollToInternalAnchor(event, href) : undefined}
+        } : href.startsWith('#') ? (event) => scrollToInternalAnchor(event, href, onInternalAnchorLink) : undefined}
         rel={isInternal ? undefined : 'noreferrer'}
         target={isInternal ? undefined : '_blank'}
         title={isInternal ? `${label}へ移動` : `${label}を原文で開く`}
       >
-        {renderPlainText(label, keywords, {}, `link-label-${index}`)}
+        {renderPlainText(label, keywords, {}, `link-label-${index}`, onInternalAnchorLink)}
       </a>,
     );
     cursor = index + match[0].length;
   }
   if (cursor < line.length) {
-    nodes.push(...renderPlainText(line.slice(cursor), keywords, articleLinks, `plain-${cursor}`));
+    nodes.push(...renderPlainText(line.slice(cursor), keywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
   }
   return nodes;
 }
@@ -223,6 +226,7 @@ function ArticleTable({
   sourceDocumentLinks,
   sourceUrl,
   onSourceDocumentLink,
+  onInternalAnchorLink,
 }: {
   rows: string[][];
   keywords: string[];
@@ -231,6 +235,7 @@ function ArticleTable({
   sourceDocumentLinks: SourceDocumentLinkMap;
   sourceUrl?: string;
   onSourceDocumentLink?: SourceDocumentLinkHandler;
+  onInternalAnchorLink?: InternalAnchorLinkHandler;
 }) {
   const hasHeader = rows.length > 1;
   const headerRow = hasHeader ? rows[0] : null;
@@ -243,7 +248,7 @@ function ArticleTable({
             <tr>
               {headerRow.map((cell, ci) => (
                 <th key={ci} className="px-3 py-2 text-left font-semibold border-b whitespace-nowrap">
-                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink)}
+                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
                 </th>
               ))}
             </tr>
@@ -254,7 +259,7 @@ function ArticleTable({
             <tr key={ri} className="border-b last:border-b-0 hover:bg-muted/20">
               {row.map((cell, ci) => (
                 <td key={ci} className="px-3 py-2 align-top whitespace-pre-wrap">
-                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink)}
+                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
                 </td>
               ))}
             </tr>
@@ -273,6 +278,7 @@ export function ArticleContent({
   sourceDocumentLinks = {},
   sourceUrl,
   onSourceDocumentLink,
+  onInternalAnchorLink,
 }: {
   text: string;
   keywords?: string[];
@@ -281,13 +287,14 @@ export function ArticleContent({
   sourceDocumentLinks?: SourceDocumentLinkMap;
   sourceUrl?: string;
   onSourceDocumentLink?: SourceDocumentLinkHandler;
+  onInternalAnchorLink?: InternalAnchorLinkHandler;
 }) {
   const parts = parseArticleParts(text || '');
   return (
     <div className="space-y-1 text-sm leading-7">
       {parts.map((part, i) => {
         if (part.type === 'table') {
-          return <ArticleTable key={i} rows={part.rows} keywords={keywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceDocumentLinks={sourceDocumentLinks} sourceUrl={sourceUrl} onSourceDocumentLink={onSourceDocumentLink} />;
+          return <ArticleTable key={i} rows={part.rows} keywords={keywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceDocumentLinks={sourceDocumentLinks} sourceUrl={sourceUrl} onSourceDocumentLink={onSourceDocumentLink} onInternalAnchorLink={onInternalAnchorLink} />;
         }
         const lines = part.text.split('\n');
         return (
@@ -295,7 +302,7 @@ export function ArticleContent({
             {lines.map((line, li) => (
               <React.Fragment key={li}>
                 {li > 0 ? '\n' : null}
-                {renderTextLine(line, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink)}
+                {renderTextLine(line, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
               </React.Fragment>
             ))}
           </p>

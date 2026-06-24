@@ -605,6 +605,8 @@ function AppShell() {
   const searchHistoryRef = useRef<string[]>(loadSearchHistory());
   const selectedArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
+  const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
+  const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
 
@@ -740,6 +742,7 @@ function AppShell() {
 
   useEffect(() => {
     if (selectedDocId == null) return;
+    setSelectedReturnScrollTop(null);
     let cancelled = false;
     void (async () => {
       try {
@@ -759,6 +762,7 @@ function AppShell() {
 
   useEffect(() => {
     if (browseDocId == null) return;
+    setBrowseReturnScrollTop(null);
     let cancelled = false;
     setBrowseDocLoading(true);
     void (async () => {
@@ -840,6 +844,30 @@ function AppShell() {
     setPendingSelectedArticleHit(null);
     setSelectedDocId(documentId);
     setTab('search');
+  }
+
+  function rememberBrowseReturnPosition() {
+    const container = browseArticleScrollRef.current;
+    if (!container) return;
+    setBrowseReturnScrollTop(container.scrollTop);
+  }
+
+  function rememberSelectedReturnPosition() {
+    const container = selectedArticleScrollRef.current;
+    if (!container) return;
+    setSelectedReturnScrollTop(container.scrollTop);
+  }
+
+  function returnBrowseLinkPosition() {
+    if (browseReturnScrollTop == null) return;
+    browseArticleScrollRef.current?.scrollTo({ top: browseReturnScrollTop, behavior: 'smooth' });
+    setBrowseReturnScrollTop(null);
+  }
+
+  function returnSelectedLinkPosition() {
+    if (selectedReturnScrollTop == null) return;
+    selectedArticleScrollRef.current?.scrollTo({ top: selectedReturnScrollTop, behavior: 'smooth' });
+    setSelectedReturnScrollTop(null);
   }
 
   function openSearchResult(item: SearchResult) {
@@ -1203,6 +1231,7 @@ function AppShell() {
     sourceDocumentLinks: SourceDocumentLinkMap,
     sourceUrl: string,
     onSourceDocumentLink: (documentId: number, sourceAnchorId?: string) => void,
+    onInternalAnchorLink?: () => void,
     activeArticleId: number | null = null,
     depth = 0,
   ): JSX.Element => (
@@ -1230,13 +1259,14 @@ function AppShell() {
                       sourceDocumentLinks={sourceDocumentLinks}
                       sourceUrl={sourceUrl}
                       onSourceDocumentLink={onSourceDocumentLink}
+                      onInternalAnchorLink={onInternalAnchorLink}
                     />
                   </div>
                 </article>
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, activeArticleId, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink, activeArticleId, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -1561,9 +1591,20 @@ function AppShell() {
                         </p>
                       ) : null}
                     </div>
-                    <a className="inline-flex h-10 shrink-0 items-center rounded-2xl border px-4 text-sm font-medium hover:bg-accent" href={browseDoc.sourceUrl} rel="noreferrer" target="_blank">
-                      原文を開く
-                    </a>
+                    <div className="flex shrink-0 flex-col gap-2">
+                      <a className="inline-flex h-10 items-center justify-center rounded-2xl border px-4 text-sm font-medium hover:bg-accent" href={browseDoc.sourceUrl} rel="noreferrer" target="_blank">
+                        原文を開く
+                      </a>
+                      <button
+                        type="button"
+                        disabled={browseReturnScrollTop == null}
+                        onClick={returnBrowseLinkPosition}
+                        className="inline-flex h-9 items-center justify-center gap-1 rounded-2xl border px-3 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <ChevronLeft className="size-4" />
+                        リンク元に戻る
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-6">
                     <div ref={browseArticleScrollRef} className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
@@ -1584,6 +1625,7 @@ function AppShell() {
                             buildSourceDocumentLinkMap(browseDoc),
                             browseDoc.sourceUrl,
                             openBrowseSourceDocument,
+                            rememberBrowseReturnPosition,
                             null,
                           )
                         ) : (
@@ -1822,9 +1864,20 @@ function AppShell() {
                         </button>
                       </div>
                     </div>
-                    <a className="inline-flex h-10 items-center rounded-2xl border px-4 text-sm font-medium hover:bg-accent" href={selectedDoc.sourceUrl} rel="noreferrer" target="_blank">
-                      原文を開く
-                    </a>
+                    <div className="flex shrink-0 flex-col gap-2">
+                      <a className="inline-flex h-10 items-center justify-center rounded-2xl border px-4 text-sm font-medium hover:bg-accent" href={selectedDoc.sourceUrl} rel="noreferrer" target="_blank">
+                        原文を開く
+                      </a>
+                      <button
+                        type="button"
+                        disabled={selectedReturnScrollTop == null}
+                        onClick={returnSelectedLinkPosition}
+                        className="inline-flex h-9 items-center justify-center gap-1 rounded-2xl border px-3 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <ChevronLeft className="size-4" />
+                        リンク元に戻る
+                      </button>
+                    </div>
                   </div>
                   <div className="mt-6 grid gap-4 xl:grid-cols-[15rem_minmax(0,1fr)]">
                     <div className="max-h-[70vh] overflow-auto rounded-2xl border bg-muted/20 p-3">
@@ -1843,6 +1896,7 @@ function AppShell() {
                             buildSourceDocumentLinkMap(selectedDoc),
                             selectedDoc.sourceUrl,
                             openSelectedSourceDocument,
+                            rememberSelectedReturnPosition,
                             activeSelectedArticleHit?.documentId === selectedDoc.id ? activeSelectedArticleHit.articleId : null,
                           )
                         ) : (
