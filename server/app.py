@@ -1237,6 +1237,26 @@ def serialize_meili_hit(
     }
 
 
+def meili_hit_matches_exact(hit: dict[str, Any], keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+    haystack = normalize_text(
+        " ".join(
+            str(hit.get(field) or "")
+            for field in [
+                "title",
+                "lawNumber",
+                "categoryPath",
+                "articleNumber",
+                "articleTitle",
+                "parentPath",
+                "bodyPlain",
+            ]
+        )
+    ).lower()
+    return all(keyword in haystack for keyword in keywords)
+
+
 def merge_search_items(primary: list[dict[str, Any]], secondary: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[tuple[int, int | None]] = set()
@@ -1398,6 +1418,8 @@ def search_documents_meili_structured(
     result = meili_search_index(payload)
     hits = result.get("hits") or []
     total = int(result.get("estimatedTotalHits") or result.get("totalHits") or len(hits))
+    if not fuzzy:
+        hits = [hit for hit in hits if meili_hit_matches_exact(hit, all_keywords)]
     items = [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
     if not fuzzy and offset == 0 and not pre_items and not items:
         key_query = build_meili_query_key_text(all_keywords)
