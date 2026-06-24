@@ -63,6 +63,7 @@ function decodeMarkerValue(value: string): string {
 }
 
 function resolveSourceDocumentLink(href: string, sourceDocumentLinks: SourceDocumentLinkMap, sourceUrl?: string): { documentId: number; sourceAnchorId?: string } | null {
+  if (href.startsWith('#')) return null;
   if (!sourceUrl) return null;
   try {
     const url = new URL(href, sourceUrl);

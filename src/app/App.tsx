@@ -418,6 +418,20 @@ function articleHeadingTone(depth: number): string {
   return 'px-3 py-1 text-muted-foreground';
 }
 
+function scrollElementIntoContainer(elementId: string, container: HTMLElement | null, block: ScrollLogicalPosition = 'start'): void {
+  const target = document.getElementById(elementId);
+  if (!target) return;
+  if (container?.contains(target)) {
+    const targetRect = target.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const offset = block === 'center' ? (container.clientHeight - targetRect.height) / 2 : 24;
+    const top = targetRect.top - containerRect.top + container.scrollTop - offset;
+    container.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+    return;
+  }
+  target.scrollIntoView({ behavior: 'smooth', block });
+}
+
 type DiffLine = { type: 'same' | 'del' | 'add'; text: string };
 
 function computeDiff(oldText: string, newText: string): DiffLine[] {
@@ -590,6 +604,7 @@ function AppShell() {
 
   const searchHistoryRef = useRef<string[]>(loadSearchHistory());
   const selectedArticleScrollRef = useRef<HTMLDivElement | null>(null);
+  const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
   const [showSuggest, setShowSuggest] = useState(false);
 
@@ -769,7 +784,7 @@ function AppShell() {
       return;
     }
     window.setTimeout(() => {
-      document.getElementById(`barticle-${articleId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      scrollElementIntoContainer(`barticle-${articleId}`, browseArticleScrollRef.current);
       setPendingBrowseAnchor(null);
     }, 0);
   }, [browseDoc, pendingBrowseAnchor]);
@@ -782,7 +797,7 @@ function AppShell() {
       return;
     }
     window.setTimeout(() => {
-      document.getElementById(`article-${articleId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      scrollElementIntoContainer(`article-${articleId}`, selectedArticleScrollRef.current);
       setPendingSelectedAnchor(null);
     }, 0);
   }, [selectedDoc, pendingSelectedAnchor]);
@@ -792,16 +807,7 @@ function AppShell() {
     if (selectedDoc.id !== pendingSelectedArticleHit.documentId) return;
     const articleId = pendingSelectedArticleHit.articleId;
     window.setTimeout(() => {
-      const target = document.getElementById(`article-${articleId}`);
-      const container = selectedArticleScrollRef.current;
-      if (target && container?.contains(target)) {
-        const targetRect = target.getBoundingClientRect();
-        const containerRect = container.getBoundingClientRect();
-        const top = targetRect.top - containerRect.top + container.scrollTop - 24;
-        container.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
-      } else {
-        target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      scrollElementIntoContainer(`article-${articleId}`, selectedArticleScrollRef.current, 'center');
       setPendingSelectedArticleHit(null);
     }, 0);
   }, [selectedDoc, pendingSelectedArticleHit]);
@@ -1560,7 +1566,7 @@ function AppShell() {
                     </a>
                   </div>
                   <div className="mt-6">
-                    <div className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
+                    <div ref={browseArticleScrollRef} className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
                       {browseSource === 'mine-city' ? (
                         <div className="mb-5 rounded-2xl border bg-muted/20 p-3">
                           <p className="mb-3 text-sm font-semibold">条文一覧</p>
