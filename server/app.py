@@ -2379,6 +2379,10 @@ def fetch_search_detail_rows(
     return total, [serialize_search_row(row, keywords) for row in sliced]
 
 
+def search_candidate_limit(limit: int, offset: int = 0, multiplier: int = 4, minimum: int = 80, maximum: int = 240) -> int:
+    return max(minimum, min(maximum, (limit + offset) * multiplier))
+
+
 def _filter_doc_ids_by_meta(
     doc_ids: set[int],
     cur,
@@ -2588,9 +2592,11 @@ def search_documents_structured(
             ))
         if not all_terms:
             return 0, []
+        article_limit = search_candidate_limit(limit, offset)
+        document_limit = search_candidate_limit(limit, offset, multiplier=2, minimum=40, maximum=120)
         placeholders = ",".join(["%s"] * len(all_terms))
         id_placeholders = ",".join(["%s"] * len(valid_ids))
-        params_a: list[Any] = all_terms + list(valid_ids)
+        params_a: list[Any] = all_terms + list(valid_ids) + [article_limit]
         cur.execute(
             f"""
             SELECT st.document_id, st.article_id,
@@ -2601,13 +2607,13 @@ def search_documents_structured(
               AND st.document_id IN ({id_placeholders})
             GROUP BY st.document_id, st.article_id
             ORDER BY term_score DESC, matched_terms DESC
-            LIMIT 240
+            LIMIT %s
             """,
             tuple(params_a),
         )
         article_candidates = cur.fetchall() or []
 
-        params_d: list[Any] = all_terms + list(valid_ids)
+        params_d: list[Any] = all_terms + list(valid_ids) + [document_limit]
         cur.execute(
             f"""
             SELECT st.document_id,
@@ -2618,7 +2624,7 @@ def search_documents_structured(
               AND st.document_id IN ({id_placeholders})
             GROUP BY st.document_id
             ORDER BY term_score DESC, matched_terms DESC
-            LIMIT 120
+            LIMIT %s
             """,
             tuple(params_d),
         )
@@ -2672,6 +2678,9 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
             id_placeholders = ",".join(["%s"] * len(anchor_doc_ids))
             doc_filter_sql = f" AND st.document_id IN ({id_placeholders})"
             params.extend(list(anchor_doc_ids))
+        article_limit = search_candidate_limit(limit)
+        document_limit = search_candidate_limit(limit, multiplier=2, minimum=40, maximum=180)
+        params.append(article_limit)
         cur.execute(
             f"""
             SELECT
@@ -2684,7 +2693,7 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
             WHERE st.target_type='article' AND st.term IN ({placeholders}){source_sql}{doc_filter_sql}
             GROUP BY st.document_id, st.article_id
             ORDER BY term_score DESC, matched_terms DESC, st.document_id ASC, st.article_id ASC
-            LIMIT 240
+            LIMIT %s
             """,
             tuple(params),
         )
@@ -2695,6 +2704,7 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
             params.append(source)
         if anchor_doc_ids:
             params.extend(list(anchor_doc_ids))
+        params.append(document_limit)
         cur.execute(
             f"""
             SELECT
@@ -2706,7 +2716,7 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
             WHERE st.target_type='document' AND st.term IN ({placeholders}){source_sql}{doc_filter_sql}
             GROUP BY st.document_id
             ORDER BY term_score DESC, matched_terms DESC, st.document_id ASC
-            LIMIT 180
+            LIMIT %s
             """,
             tuple(params),
         )
