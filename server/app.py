@@ -2290,7 +2290,6 @@ def fetch_search_detail_rows(
                   d.law_number,
                   d.source_url,
                   d.category_path,
-                  d.full_text,
                   d.promulgated_at,
                   a.id AS article_id,
                   a.article_number,
@@ -2317,7 +2316,7 @@ def fetch_search_detail_rows(
                       d.law_number,
                       d.source_url,
                       d.category_path,
-                      d.full_text,
+                      d.search_tokens AS full_text,
                       d.promulgated_at,
                       NULL AS article_id,
                       NULL AS article_number,
@@ -2338,7 +2337,6 @@ def fetch_search_detail_rows(
         article_no = (row.get("article_number") or "").lower()
         article_title = (row.get("article_title") or "").lower()
         article_text = (row.get("article_text") or "").lower()
-        doc_text = (row.get("full_text") or "").lower()
         score = term_score * 10 + matched_terms * 12
         match_reasons: list[str] = []
         if normalized_query and normalized_query in title:
@@ -2367,10 +2365,6 @@ def fetch_search_detail_rows(
                 score += 14
                 if "条文" not in match_reasons:
                     match_reasons.append("条文")
-            elif kw in doc_text:
-                score += 4
-                if "本文" not in match_reasons:
-                    match_reasons.append("本文")
             if kw in title:
                 score += 35
             if kw in article_no:
