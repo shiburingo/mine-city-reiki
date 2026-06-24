@@ -1142,16 +1142,15 @@ def configure_meili_index() -> None:
             "titleKeyText",
             "articleKeyText",
             "bodyKeyText",
-            "title",
-            "lawNumber",
-            "articleNumber",
-            "articleTitle",
-            "categoryPath",
-            "parentPath",
+            "titleSearchText",
+            "lawNumberSearchText",
+            "articleSearchText",
+            "categorySearchText",
             "bodyPlain",
         ],
         "displayedAttributes": [
             "id",
+            "recordType",
             "documentId",
             "articleId",
             "articleSort",
@@ -1167,7 +1166,7 @@ def configure_meili_index() -> None:
             "parentPath",
             "bodyPlain",
         ],
-        "filterableAttributes": ["source", "lawType", "promulgatedAt"],
+        "filterableAttributes": ["recordType", "source", "lawType", "promulgatedAt"],
         "sortableAttributes": [],
         "rankingRules": [
             "words",
@@ -1180,7 +1179,7 @@ def configure_meili_index() -> None:
         "localizedAttributes": [
             {
                 "locales": ["jpn"],
-                "attributePatterns": ["title", "articleTitle", "categoryPath", "parentPath", "bodyPlain"],
+                "attributePatterns": ["titleSearchText", "articleSearchText", "categorySearchText", "bodyPlain"],
             }
         ],
         "dictionary": meili_dictionary_terms(),
@@ -1418,17 +1417,19 @@ def search_documents_meili_structured(
         key_query = build_meili_query_key_text(all_keywords)
         if key_query:
             key_limit = max(limit, min(60, limit * 3))
-            for attr, boost, reason, document_level in [
-                ("titleKeyText", 2500, "タイトル", True),
-                ("articleKeyText", 1800, "条名", False),
-                ("bodyKeyText", 900, "条文", False),
+            for attr, boost, reason, document_level, record_type in [
+                ("titleKeyText", 2500, "タイトル", True, "document"),
+                ("articleKeyText", 1800, "条名", False, "article"),
             ]:
+                key_filters = list(filters)
+                key_filters.append(f"recordType = {json.dumps(record_type)}")
                 key_payload = {
                     **base_payload,
                     "q": key_query,
                     "limit": key_limit,
                     "offset": 0,
                     "attributesToSearchOn": [attr],
+                    "filter": key_filters,
                 }
                 key_result = meili_search_index(key_payload)
                 pre_items.extend(
@@ -1448,11 +1449,44 @@ def search_documents_meili_structured(
         "q": query_text,
         "limit": limit,
         "offset": offset,
+        "attributesToSearchOn": [
+            "titleSearchText",
+            "lawNumberSearchText",
+            "articleSearchText",
+            "categorySearchText",
+            "bodyPlain",
+        ],
     }
     result = meili_search_index(payload)
     hits = result.get("hits") or []
     total = int(result.get("estimatedTotalHits") or result.get("totalHits") or len(hits))
     items = [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
+    if not fuzzy and offset == 0 and not pre_items and not items:
+        key_query = build_meili_query_key_text(all_keywords)
+        if key_query:
+            body_filters = list(filters)
+            body_filters.append('recordType = "article"')
+            body_result = meili_search_index(
+                {
+                    **base_payload,
+                    "q": key_query,
+                    "limit": limit,
+                    "offset": 0,
+                    "attributesToSearchOn": ["bodyKeyText"],
+                    "filter": body_filters,
+                }
+            )
+            pre_items.extend(
+                serialize_meili_hit(
+                    hit,
+                    keywords,
+                    normalized_query,
+                    score_boost=900,
+                    document_level=False,
+                    force_match_reason="条文",
+                )
+                for hit in (body_result.get("hits") or [])
+            )
     if pre_items:
         items = merge_search_items(pre_items, items, limit)
         total = max(total, len(items))
@@ -2177,22 +2211,51 @@ def build_meili_query_key_text(keywords: list[str]) -> str:
     return " ".join(keys)
 
 
-def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    article_id = row.get("article_id")
-    body = clean_link_marker_fragments(row.get("article_text") or row.get("full_text") or "")
+def meili_document_record_from_row(row: dict[str, Any]) -> dict[str, Any]:
     title_key_text = build_meili_ja_key_text(
         [row.get("title") or "", row.get("law_number") or "", row.get("category_path") or ""],
         max_terms=500,
         max_ngram=24,
     )
+    return {
+        "id": f"d{int(row['document_id'])}",
+        "recordType": "document",
+        "documentId": int(row["document_id"]),
+        "articleId": None,
+        "articleSort": 0,
+        "source": row.get("source") or "",
+        "title": row.get("title") or "",
+        "lawType": row.get("law_type") or "",
+        "lawNumber": row.get("law_number") or "",
+        "sourceUrl": row.get("source_url") or "",
+        "categoryPath": row.get("category_path") or "",
+        "promulgatedAt": str(row["promulgated_at"]) if row.get("promulgated_at") else None,
+        "articleNumber": "",
+        "articleTitle": "",
+        "parentPath": "",
+        "titleKeyText": title_key_text,
+        "articleKeyText": "",
+        "bodyKeyText": "",
+        "titleSearchText": row.get("title") or "",
+        "lawNumberSearchText": row.get("law_number") or "",
+        "articleSearchText": "",
+        "categorySearchText": row.get("category_path") or "",
+        "bodyPlain": "",
+    }
+
+
+def meili_article_record_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    article_id = row.get("article_id")
+    body = clean_link_marker_fragments(row.get("article_text") or row.get("full_text") or "")
     article_key_text = build_meili_ja_key_text(
         [row.get("article_number") or "", row.get("article_title") or "", row.get("parent_path") or ""],
         max_terms=240,
         max_ngram=18,
     )
-    body_key_text = build_meili_ja_key_text([body], max_terms=360, max_ngram=14)
+    body_key_text = build_meili_ja_key_text([body], max_terms=160, max_ngram=14)
     return {
         "id": f"a{int(article_id)}" if article_id else f"d{int(row['document_id'])}",
+        "recordType": "article" if article_id else "document",
         "documentId": int(row["document_id"]),
         "articleId": int(article_id) if article_id else None,
         "articleSort": int(row.get("sort_key") or 0),
@@ -2206,9 +2269,21 @@ def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "articleNumber": row.get("article_number") or "",
         "articleTitle": row.get("article_title") or "",
         "parentPath": row.get("parent_path") or "",
-        "titleKeyText": title_key_text,
+        "titleKeyText": "",
         "articleKeyText": article_key_text,
         "bodyKeyText": body_key_text,
+        "titleSearchText": "",
+        "lawNumberSearchText": "",
+        "articleSearchText": " ".join(
+            part
+            for part in [
+                row.get("article_number") or "",
+                row.get("article_title") or "",
+                row.get("parent_path") or "",
+            ]
+            if part
+        ),
+        "categorySearchText": "",
         "bodyPlain": body,
     }
 
@@ -2244,7 +2319,15 @@ def fetch_meili_documents_for_ids(document_ids: list[int]) -> list[dict[str, Any
             tuple(document_ids),
         )
         rows = cur.fetchall() or []
-    docs = [meili_document_from_row(row) for row in rows if row.get("article_id") or row.get("full_text")]
+    docs: list[dict[str, Any]] = []
+    seen_documents: set[int] = set()
+    for row in rows:
+        document_id = int(row["document_id"])
+        if document_id not in seen_documents:
+            seen_documents.add(document_id)
+            docs.append(meili_document_record_from_row(row))
+        if row.get("article_id"):
+            docs.append(meili_article_record_from_row(row))
     return docs
 
 
