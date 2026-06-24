@@ -1067,63 +1067,6 @@ def meili_task_uid(payload: Any) -> int | None:
         return None
 
 
-MEILI_JA_DICTIONARY_BASE = [
-    "美祢市",
-    "美祢市例規",
-    "地方自治法",
-    "地方公務員法",
-    "会計年度任用職員",
-    "給与及び費用弁償",
-    "費用弁償",
-    "勤務時間",
-    "休暇等",
-    "養鱒場",
-    "美祢市養鱒場",
-    "生産物販売",
-    "特別会計",
-    "行政職給料表",
-    "医師職給料表",
-    "医療技術職給料表",
-    "看護職給料表",
-]
-
-
-def meili_dictionary_terms(max_terms: int = 1000) -> list[str]:
-    terms: list[str] = []
-    seen: set[str] = set()
-
-    def add(term: str) -> None:
-        normalized = normalize_text(term)
-        if len(normalized) < 2 or normalized in seen:
-            return
-        seen.add(normalized)
-        terms.append(normalized)
-
-    for term in MEILI_JA_DICTIONARY_BASE:
-        add(term)
-    try:
-        with db_cursor() as (_, cur):
-            cur.execute(
-                """
-                SELECT title AS term FROM law_documents
-                UNION
-                SELECT article_title AS term FROM law_articles
-                WHERE article_title <> ''
-                LIMIT 1200
-                """
-            )
-            for row in cur.fetchall() or []:
-                raw = normalize_text(row.get("term") or "").strip("()（）")
-                add(raw)
-                for run in re.findall(r"[ぁ-んァ-ヶ一-龯々〆ヵヶー]{3,30}", raw):
-                    add(run)
-                if len(terms) >= max_terms:
-                    break
-    except Exception:
-        pass
-    return terms[:max_terms]
-
-
 def configure_meili_index() -> None:
     if not meili_is_enabled():
         return
@@ -1176,13 +1119,8 @@ def configure_meili_index() -> None:
         ],
         "typoTolerance": {"enabled": False},
         "proximityPrecision": "byAttribute",
-        "localizedAttributes": [
-            {
-                "locales": ["jpn"],
-                "attributePatterns": ["titleSearchText", "articleSearchText", "categorySearchText", "bodyPlain"],
-            }
-        ],
-        "dictionary": meili_dictionary_terms(),
+        "localizedAttributes": [],
+        "dictionary": [],
         "pagination": {"maxTotalHits": 500},
         "faceting": {"maxValuesPerFacet": 20},
         "prefixSearch": "disabled",
