@@ -4105,7 +4105,14 @@ def score_ask_candidate(
         if primary_term and term in primary_term and term in haystack and len(term) >= 2
     ]
     if primary_term and primary_term not in haystack:
-        score -= 120 if len(primary_components) >= 2 else 700
+        if len(primary_components) >= 2:
+            score -= 120
+        elif len(primary_term) <= 4:
+            score -= 4200
+        elif matched_core > 0:
+            score -= 900
+        else:
+            score -= 1800
     if core_terms and matched_core == 0 and not primary_components:
         score -= 900
     score += matched_core * 160 + len(primary_components) * 70
