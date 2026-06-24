@@ -1188,6 +1188,83 @@ def serialize_meili_hit(hit: dict[str, Any], keywords: list[str], normalized_que
     }
 
 
+def merge_search_items(primary: list[dict[str, Any]], secondary: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[int, int | None]] = set()
+    for item in [*primary, *secondary]:
+        key = (int(item.get("documentId") or 0), int(item["articleId"]) if item.get("articleId") is not None else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def search_title_exact_matches(
+    keywords: list[str],
+    normalized_query: str,
+    source: str,
+    law_type: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    if not keywords:
+        return []
+    where_parts = []
+    params: list[Any] = []
+    if source != "all":
+        where_parts.append("source=%s")
+        params.append(source)
+    if law_type:
+        where_parts.append("law_type=%s")
+        params.append(law_type)
+    for keyword in keywords:
+        like = f"%{keyword}%"
+        where_parts.append("(normalized_title LIKE %s OR LOWER(law_number) LIKE %s)")
+        params.extend([like, like])
+    where_sql = " AND ".join(where_parts) if where_parts else "1=1"
+    phrase = normalized_query or keywords[0]
+    with db_cursor() as (_, cur):
+        cur.execute(
+            f"""
+            SELECT id, source, title, law_type, law_number, source_url, category_path, promulgated_at,
+                   CASE
+                     WHEN normalized_title=%s THEN 0
+                     WHEN normalized_title LIKE %s THEN 1
+                     ELSE 2
+                   END AS title_rank,
+                   LOCATE(%s, normalized_title) AS phrase_pos,
+                   CHAR_LENGTH(normalized_title) AS title_len
+            FROM law_documents
+            WHERE {where_sql}
+            ORDER BY title_rank ASC, phrase_pos ASC, title_len ASC, id ASC
+            LIMIT %s
+            """,
+            tuple([phrase, f"%{phrase}%", phrase] + params + [limit]),
+        )
+        rows = cur.fetchall() or []
+    return [
+        {
+            "score": 1200 - idx,
+            "documentId": int(row["id"]),
+            "articleId": None,
+            "source": row.get("source") or "",
+            "title": row.get("title") or "",
+            "lawType": row.get("law_type") or "",
+            "lawNumber": row.get("law_number") or "",
+            "sourceUrl": row.get("source_url") or "",
+            "articleNumber": None,
+            "articleTitle": None,
+            "snippet": "",
+            "categoryPath": row.get("category_path") or "",
+            "matchReasons": ["タイトル"],
+            "promulgatedAt": str(row["promulgated_at"]) if row.get("promulgated_at") else None,
+        }
+        for idx, row in enumerate(rows)
+    ]
+
+
 def search_documents_meili_structured(
     fields: list[dict[str, str]],
     source: str,
@@ -1237,7 +1314,13 @@ def search_documents_meili_structured(
     )
     hits = result.get("hits") or []
     total = int(result.get("estimatedTotalHits") or result.get("totalHits") or len(hits))
-    return total, [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
+    items = [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
+    if not fuzzy and offset == 0:
+        title_items = search_title_exact_matches(all_keywords, normalized_query, source, law_type, limit=limit)
+        if title_items:
+            items = merge_search_items(title_items, items, limit)
+            total = max(total, len(items))
+    return total, items
 
 
 def extract_mine_city_link_href(node: Any) -> str:
