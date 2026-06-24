@@ -2379,7 +2379,7 @@ def fetch_search_detail_rows(
     return total, [serialize_search_row(row, keywords) for row in sliced]
 
 
-def search_candidate_limit(limit: int, offset: int = 0, multiplier: int = 4, minimum: int = 80, maximum: int = 240) -> int:
+def search_candidate_limit(limit: int, offset: int = 0, multiplier: int = 3, minimum: int = 60, maximum: int = 240) -> int:
     return max(minimum, min(maximum, (limit + offset) * multiplier))
 
 
