@@ -1067,6 +1067,63 @@ def meili_task_uid(payload: Any) -> int | None:
         return None
 
 
+MEILI_JA_DICTIONARY_BASE = [
+    "美祢市",
+    "美祢市例規",
+    "地方自治法",
+    "地方公務員法",
+    "会計年度任用職員",
+    "給与及び費用弁償",
+    "費用弁償",
+    "勤務時間",
+    "休暇等",
+    "養鱒場",
+    "美祢市養鱒場",
+    "生産物販売",
+    "特別会計",
+    "行政職給料表",
+    "医師職給料表",
+    "医療技術職給料表",
+    "看護職給料表",
+]
+
+
+def meili_dictionary_terms(max_terms: int = 1000) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(term: str) -> None:
+        normalized = normalize_text(term)
+        if len(normalized) < 2 or normalized in seen:
+            return
+        seen.add(normalized)
+        terms.append(normalized)
+
+    for term in MEILI_JA_DICTIONARY_BASE:
+        add(term)
+    try:
+        with db_cursor() as (_, cur):
+            cur.execute(
+                """
+                SELECT title AS term FROM law_documents
+                UNION
+                SELECT article_title AS term FROM law_articles
+                WHERE article_title <> ''
+                LIMIT 1200
+                """
+            )
+            for row in cur.fetchall() or []:
+                raw = normalize_text(row.get("term") or "").strip("()（）")
+                add(raw)
+                for run in re.findall(r"[ぁ-んァ-ヶ一-龯々〆ヵヶー]{3,30}", raw):
+                    add(run)
+                if len(terms) >= max_terms:
+                    break
+    except Exception:
+        pass
+    return terms[:max_terms]
+
+
 def configure_meili_index() -> None:
     if not meili_is_enabled():
         return
@@ -1082,26 +1139,55 @@ def configure_meili_index() -> None:
         wait_meili_task(meili_task_uid(task), timeout_seconds=30)
     settings = {
         "searchableAttributes": [
+            "titleKeyText",
+            "articleKeyText",
+            "bodyKeyText",
             "title",
             "lawNumber",
             "articleNumber",
             "articleTitle",
             "categoryPath",
             "parentPath",
-            "exactTerms",
+            "bodyPlain",
+        ],
+        "displayedAttributes": [
+            "id",
+            "documentId",
+            "articleId",
+            "articleSort",
+            "source",
+            "title",
+            "lawType",
+            "lawNumber",
+            "sourceUrl",
+            "categoryPath",
+            "promulgatedAt",
+            "articleNumber",
+            "articleTitle",
+            "parentPath",
             "bodyPlain",
         ],
         "filterableAttributes": ["source", "lawType", "promulgatedAt"],
-        "sortableAttributes": ["documentId", "articleSort"],
+        "sortableAttributes": [],
         "rankingRules": [
             "words",
+            "attributeRank",
+            "wordPosition",
             "exactness",
-            "attribute",
-            "proximity",
-            "typo",
-            "sort",
         ],
         "typoTolerance": {"enabled": False},
+        "proximityPrecision": "byAttribute",
+        "localizedAttributes": [
+            {
+                "locales": ["jpn"],
+                "attributePatterns": ["title", "articleTitle", "categoryPath", "parentPath", "bodyPlain"],
+            }
+        ],
+        "dictionary": meili_dictionary_terms(),
+        "pagination": {"maxTotalHits": 500},
+        "faceting": {"maxValuesPerFacet": 20},
+        "prefixSearch": "disabled",
+        "searchCutoffMs": 150,
     }
     task = meili_request("PATCH", f"/indexes/{urllib.parse.quote(CFG.meili_index)}/settings", settings, timeout=10)
     wait_meili_task(meili_task_uid(task), timeout_seconds=60)
@@ -1163,27 +1249,53 @@ def infer_match_reasons_from_hit(hit: dict[str, Any], keywords: list[str], norma
     return reasons
 
 
-def serialize_meili_hit(hit: dict[str, Any], keywords: list[str], normalized_query: str) -> dict[str, Any]:
+MEILI_RETRIEVE_ATTRIBUTES = [
+    "documentId",
+    "articleId",
+    "source",
+    "title",
+    "lawType",
+    "lawNumber",
+    "sourceUrl",
+    "categoryPath",
+    "promulgatedAt",
+    "articleNumber",
+    "articleTitle",
+    "bodyPlain",
+]
+
+
+def serialize_meili_hit(
+    hit: dict[str, Any],
+    keywords: list[str],
+    normalized_query: str,
+    score_boost: int = 0,
+    document_level: bool = False,
+    force_match_reason: str | None = None,
+) -> dict[str, Any]:
     ranking_score = hit.get("_rankingScore")
     try:
-        score = int(float(ranking_score) * 1000)
+        score = int(float(ranking_score) * 1000) + score_boost
     except Exception:
-        score = 500
+        score = 500 + score_boost
     body = clean_link_marker_fragments(hit.get("bodyPlain") or "")
+    article_id = int(hit["articleId"]) if hit.get("articleId") is not None else None
+    if document_level:
+        article_id = None
     return {
         "score": score,
         "documentId": int(hit.get("documentId") or 0),
-        "articleId": int(hit["articleId"]) if hit.get("articleId") is not None else None,
+        "articleId": article_id,
         "source": hit.get("source") or "",
         "title": hit.get("title") or "",
         "lawType": hit.get("lawType") or "",
         "lawNumber": hit.get("lawNumber") or "",
         "sourceUrl": hit.get("sourceUrl") or "",
-        "articleNumber": hit.get("articleNumber") or None,
-        "articleTitle": hit.get("articleTitle") or None,
+        "articleNumber": None if document_level else hit.get("articleNumber") or None,
+        "articleTitle": None if document_level else hit.get("articleTitle") or None,
         "snippet": text_snippet(body, keywords),
         "categoryPath": hit.get("categoryPath") or "",
-        "matchReasons": infer_match_reasons_from_hit(hit, keywords, normalized_query),
+        "matchReasons": [force_match_reason] if force_match_reason else infer_match_reasons_from_hit(hit, keywords, normalized_query),
         "promulgatedAt": hit.get("promulgatedAt"),
     }
 
@@ -1265,6 +1377,15 @@ def search_title_exact_matches(
     ]
 
 
+def meili_search_index(payload: dict[str, Any]) -> dict[str, Any]:
+    return meili_request(
+        "POST",
+        f"/indexes/{urllib.parse.quote(CFG.meili_index)}/search",
+        payload,
+        timeout=5,
+    )
+
+
 def search_documents_meili_structured(
     fields: list[dict[str, str]],
     source: str,
@@ -1282,44 +1403,59 @@ def search_documents_meili_structured(
     keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20) if fuzzy else all_keywords
     query_text = " ".join(keywords)
     normalized_query = " ".join(all_keywords)
+    filters = meili_filter_expr(source, law_type)
+    base_payload: dict[str, Any] = {
+        "limit": limit,
+        "matchingStrategy": "all",
+        "showRankingScore": True,
+        "attributesToRetrieve": MEILI_RETRIEVE_ATTRIBUTES,
+    }
+    if filters:
+        base_payload["filter"] = filters
+
+    pre_items: list[dict[str, Any]] = []
+    if not fuzzy and offset == 0:
+        key_query = build_meili_query_key_text(all_keywords)
+        if key_query:
+            key_limit = max(limit, min(60, limit * 3))
+            for attr, boost, reason, document_level in [
+                ("titleKeyText", 2500, "タイトル", True),
+                ("articleKeyText", 1800, "条名", False),
+                ("bodyKeyText", 900, "条文", False),
+            ]:
+                key_payload = {
+                    **base_payload,
+                    "q": key_query,
+                    "limit": key_limit,
+                    "offset": 0,
+                    "attributesToSearchOn": [attr],
+                }
+                key_result = meili_search_index(key_payload)
+                pre_items.extend(
+                    serialize_meili_hit(
+                        hit,
+                        keywords,
+                        normalized_query,
+                        score_boost=boost,
+                        document_level=document_level,
+                        force_match_reason=reason,
+                    )
+                    for hit in (key_result.get("hits") or [])
+                )
+
     payload: dict[str, Any] = {
+        **base_payload,
         "q": query_text,
         "limit": limit,
         "offset": offset,
-        "matchingStrategy": "all",
-        "showRankingScore": True,
-        "attributesToRetrieve": [
-            "documentId",
-            "articleId",
-            "source",
-            "title",
-            "lawType",
-            "lawNumber",
-            "sourceUrl",
-            "categoryPath",
-            "promulgatedAt",
-            "articleNumber",
-            "articleTitle",
-            "bodyPlain",
-        ],
     }
-    filters = meili_filter_expr(source, law_type)
-    if filters:
-        payload["filter"] = filters
-    result = meili_request(
-        "POST",
-        f"/indexes/{urllib.parse.quote(CFG.meili_index)}/search",
-        payload,
-        timeout=5,
-    )
+    result = meili_search_index(payload)
     hits = result.get("hits") or []
     total = int(result.get("estimatedTotalHits") or result.get("totalHits") or len(hits))
     items = [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
-    if not fuzzy and offset == 0:
-        title_items = search_title_exact_matches(all_keywords, normalized_query, source, law_type, limit=limit)
-        if title_items:
-            items = merge_search_items(title_items, items, limit)
-            total = max(total, len(items))
+    if pre_items:
+        items = merge_search_items(pre_items, items, limit)
+        total = max(total, len(items))
     return total, items
 
 
@@ -1991,40 +2127,70 @@ def rebuild_search_terms_for_document(cur, document_id: int) -> None:
         insert_search_terms(cur, "article", int(article["id"]), document_id, int(article["id"]), article_terms)
 
 
-def build_meili_exact_terms(values: list[str], max_terms: int = 1200) -> str:
-    """Add bounded Japanese n-grams so exact queries do not depend on Meilisearch tokenization."""
+def meili_ja_key(term: str) -> str:
+    normalized = normalize_text(term).lower()
+    return "jx" + hashlib.blake2b(normalized.encode("utf-8"), digest_size=10).hexdigest()
+
+
+def build_meili_ja_key_text(values: list[str], max_terms: int = 400, max_ngram: int = 14) -> str:
+    """ASCII search keys for exact Japanese substring matching independent of tokenizer output."""
     terms: list[str] = []
     seen: set[str] = set()
+
+    def add(term: str) -> bool:
+        normalized = normalize_text(term).lower()
+        if len(normalized) < 2:
+            return False
+        key = meili_ja_key(normalized)
+        if key in seen:
+            return False
+        seen.add(key)
+        terms.append(key)
+        return len(terms) >= max_terms
+
     for value in values:
         normalized = normalize_text(value).lower()
+        if add(normalized):
+            return " ".join(terms)
         for run in re.findall(r"[0-9a-zぁ-んァ-ヶ一-龯々〆ヵヶー]{2,}", normalized):
-            max_size = min(12, len(run))
+            if add(run):
+                return " ".join(terms)
+            max_size = min(max_ngram, len(run))
             for size in range(2, max_size + 1):
                 for start in range(0, len(run) - size + 1):
-                    term = run[start:start + size]
-                    if term in seen:
-                        continue
-                    seen.add(term)
-                    terms.append(term)
-                    if len(terms) >= max_terms:
+                    if add(run[start:start + size]):
                         return " ".join(terms)
     return " ".join(terms)
+
+
+def build_meili_query_key_text(keywords: list[str]) -> str:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for keyword in keywords:
+        normalized = normalize_text(keyword).lower()
+        if len(normalized) < 2:
+            continue
+        key = meili_ja_key(normalized)
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return " ".join(keys)
 
 
 def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
     article_id = row.get("article_id")
     body = clean_link_marker_fragments(row.get("article_text") or row.get("full_text") or "")
-    exact_terms = build_meili_exact_terms(
-        [
-            row.get("title") or "",
-            row.get("article_number") or "",
-            row.get("article_title") or "",
-            body,
-            row.get("law_number") or "",
-            row.get("category_path") or "",
-            row.get("parent_path") or "",
-        ]
+    title_key_text = build_meili_ja_key_text(
+        [row.get("title") or "", row.get("law_number") or "", row.get("category_path") or ""],
+        max_terms=500,
+        max_ngram=24,
     )
+    article_key_text = build_meili_ja_key_text(
+        [row.get("article_number") or "", row.get("article_title") or "", row.get("parent_path") or ""],
+        max_terms=240,
+        max_ngram=18,
+    )
+    body_key_text = build_meili_ja_key_text([body], max_terms=360, max_ngram=14)
     return {
         "id": f"a{int(article_id)}" if article_id else f"d{int(row['document_id'])}",
         "documentId": int(row["document_id"]),
@@ -2040,7 +2206,9 @@ def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "articleNumber": row.get("article_number") or "",
         "articleTitle": row.get("article_title") or "",
         "parentPath": row.get("parent_path") or "",
-        "exactTerms": exact_terms,
+        "titleKeyText": title_key_text,
+        "articleKeyText": article_key_text,
+        "bodyKeyText": body_key_text,
         "bodyPlain": body,
     }
 
