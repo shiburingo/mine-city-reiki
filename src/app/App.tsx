@@ -530,6 +530,8 @@ function AppShell() {
   const [searchPage, setSearchPage] = useState(0);
   const [selectedDoc, setSelectedDoc] = useState<DocumentDetail | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<number | null>(null);
+  const [pendingSelectedArticleHit, setPendingSelectedArticleHit] = useState<{ documentId: number; articleId: number } | null>(null);
+  const [activeSelectedArticleHit, setActiveSelectedArticleHit] = useState<{ documentId: number; articleId: number } | null>(null);
 
   const [searchLawType, setSearchLawType] = useState('');
   const [searchFromDate, setSearchFromDate] = useState('');
@@ -755,6 +757,16 @@ function AppShell() {
     }, 0);
   }, [selectedDoc, pendingSelectedAnchor]);
 
+  useEffect(() => {
+    if (!selectedDoc || !pendingSelectedArticleHit) return;
+    if (selectedDoc.id !== pendingSelectedArticleHit.documentId) return;
+    const articleId = pendingSelectedArticleHit.articleId;
+    window.setTimeout(() => {
+      document.getElementById(`article-${articleId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setPendingSelectedArticleHit(null);
+    }, 0);
+  }, [selectedDoc, pendingSelectedArticleHit]);
+
   async function handleLogin(username: string, password: string) {
     const loggedIn = await login(username, password);
     if (!loggedIn) throw new Error('ユーザー名またはパスワードが正しくありません。');
@@ -779,7 +791,22 @@ function AppShell() {
 
   function openSelectedSourceDocument(documentId: number, sourceAnchorId?: string) {
     if (sourceAnchorId) setPendingSelectedAnchor(sourceAnchorId);
+    setActiveSelectedArticleHit(null);
+    setPendingSelectedArticleHit(null);
     setSelectedDocId(documentId);
+    setTab('search');
+  }
+
+  function openSearchResult(item: SearchResult) {
+    setSelectedDocId(item.documentId);
+    if (item.articleId != null) {
+      const hit = { documentId: item.documentId, articleId: item.articleId };
+      setPendingSelectedArticleHit(hit);
+      setActiveSelectedArticleHit(hit);
+    } else {
+      setPendingSelectedArticleHit(null);
+      setActiveSelectedArticleHit(null);
+    }
     setTab('search');
   }
 
@@ -954,10 +981,12 @@ function AppShell() {
       });
       setResults(resp.items);
       setSearchTotal(resp.total);
-      if (resp.items.length > 0) setSelectedDocId(resp.items[0].documentId);
+      if (resp.items.length > 0) openSearchResult(resp.items[0]);
       else {
         setSelectedDoc(null);
         setSelectedDocId(null);
+        setPendingSelectedArticleHit(null);
+        setActiveSelectedArticleHit(null);
       }
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '検索に失敗しました。');
@@ -1129,6 +1158,7 @@ function AppShell() {
     sourceDocumentLinks: SourceDocumentLinkMap,
     sourceUrl: string,
     onSourceDocumentLink: (documentId: number, sourceAnchorId?: string) => void,
+    activeArticleId: number | null = null,
     depth = 0,
   ): JSX.Element => (
     <div className={depth === 0 ? 'space-y-7' : 'mt-4 space-y-5'}>
@@ -1138,7 +1168,13 @@ function AppShell() {
           {node.articles.length > 0 ? (
             <div className="space-y-5">
               {node.articles.map((article) => (
-                <article key={`${anchorPrefix}-article-${article.id}`} id={`${anchorPrefix}-${article.id}`} className="scroll-mt-24 border-b pb-5 target:bg-accent/30 last:border-b-0">
+                <article
+                  key={`${anchorPrefix}-article-${article.id}`}
+                  id={`${anchorPrefix}-${article.id}`}
+                  className={`scroll-mt-24 border-b pb-5 transition-colors last:border-b-0 ${
+                    article.id === activeArticleId ? 'rounded-2xl bg-primary/10 p-4 ring-2 ring-primary/35' : 'target:bg-accent/30'
+                  }`}
+                >
                   <h4 className="text-lg font-semibold">{article.articleNumber}{article.articleTitle ? `　${article.articleTitle}` : ''}</h4>
                   <div className="mt-3">
                     <ArticleContent
@@ -1155,7 +1191,7 @@ function AppShell() {
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, activeArticleId, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -1503,6 +1539,7 @@ function AppShell() {
                             buildSourceDocumentLinkMap(browseDoc),
                             browseDoc.sourceUrl,
                             openBrowseSourceDocument,
+                            null,
                           )
                         ) : (
                           <ArticleContent text={browseDoc.fullText} />
@@ -1650,31 +1687,48 @@ function AppShell() {
                         <p className="text-sm text-amber-600">件数が多いため、キーワードを追加して絞り込んでください。</p>
                       ) : null}
                     </div>
-                    {results.map((item, idx) => (
-                      <button
-                        key={`${item.documentId}-${item.articleId ?? 'doc'}-${idx}`}
-                        type="button"
-                        onClick={() => setSelectedDocId(item.documentId)}
-                        className={`w-full rounded-2xl border p-4 text-left transition ${selectedDocId === item.documentId ? 'border-primary bg-primary/5' : 'bg-background hover:bg-accent/40'}`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-xs text-muted-foreground">{sourceLabel(item.source)} / {item.lawType || '例規'}</p>
-                            <p className="mt-1 font-semibold">{item.title}</p>
-                            {item.articleNumber ? <p className="mt-1 text-sm text-primary">{item.articleNumber}{item.articleTitle ? ` ${item.articleTitle}` : ''}</p> : null}
+                    {results.map((item, idx) => {
+                      const isActiveResult = selectedDocId === item.documentId
+                        && (item.articleId == null || (
+                          activeSelectedArticleHit?.documentId === item.documentId
+                          && activeSelectedArticleHit.articleId === item.articleId
+                        ));
+                      return (
+                        <button
+                          key={`${item.documentId}-${item.articleId ?? 'doc'}-${idx}`}
+                          type="button"
+                          onClick={() => openSearchResult(item)}
+                          className={`w-full rounded-2xl border p-4 text-left transition ${isActiveResult ? 'border-primary bg-primary/5' : 'bg-background hover:bg-accent/40'}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs text-muted-foreground">{sourceLabel(item.source)} / {item.lawType || '例規'}</p>
+                              <p className="mt-1 font-semibold">{item.title}</p>
+                              {item.articleNumber ? (
+                                <p className="mt-2 inline-flex rounded-full bg-primary/10 px-2.5 py-1 text-sm font-semibold text-primary">
+                                  ヒット条文: {item.articleNumber}{item.articleTitle ? ` ${item.articleTitle}` : ''}
+                                </p>
+                              ) : null}
+                            </div>
+                            <span className="rounded-full bg-accent px-2 py-1 text-xs text-muted-foreground">score {item.score}</span>
                           </div>
-                          <span className="rounded-full bg-accent px-2 py-1 text-xs text-muted-foreground">score {item.score}</span>
-                        </div>
-                        {item.matchReasons && item.matchReasons.length > 0 ? (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {item.matchReasons.map((r) => (
-                              <span key={r} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">📌 {r}</span>
-                            ))}
-                          </div>
-                        ) : null}
-                        <p className="mt-1 text-sm text-muted-foreground">{item.categoryPath || '分類なし'}</p>
-                      </button>
-                    ))}
+                          {item.snippet ? (
+                            <p className="mt-3 rounded-xl bg-muted/40 px-3 py-2 text-sm leading-6 text-foreground">
+                              {item.snippet}
+                            </p>
+                          ) : null}
+                          {item.matchReasons && item.matchReasons.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              <span className="text-xs font-medium text-muted-foreground">ヒット箇所:</span>
+                              {item.matchReasons.map((r) => (
+                                <span key={r} className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">{r}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                          <p className="mt-2 text-sm text-muted-foreground">{item.categoryPath || '分類なし'}</p>
+                        </button>
+                      );
+                    })}
                     {searchTotal > 20 ? (
                       <div className="flex items-center justify-center gap-2 pt-2">
                         <button
@@ -1744,6 +1798,7 @@ function AppShell() {
                             buildSourceDocumentLinkMap(selectedDoc),
                             selectedDoc.sourceUrl,
                             openSelectedSourceDocument,
+                            activeSelectedArticleHit?.documentId === selectedDoc.id ? activeSelectedArticleHit.articleId : null,
                           )
                         ) : (
                           <ArticleContent text={selectedDoc.fullText} />
@@ -1763,7 +1818,7 @@ function AppShell() {
                             <button
                               key={`${r.documentId}-${r.articleId}`}
                               type="button"
-                              onClick={() => setSelectedDocId(r.documentId)}
+                              onClick={() => openSearchResult(r)}
                               className="w-full rounded-xl border bg-background px-3 py-2 text-left text-sm hover:bg-accent/40"
                             >
                               <p className="text-xs text-muted-foreground">{sourceLabel(r.source)} / {r.lawType || '例規'}</p>
