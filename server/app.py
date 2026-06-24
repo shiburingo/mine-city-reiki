@@ -2171,7 +2171,7 @@ def put_ask_cache(cur, cache_key: str, normalized_query: str, generation: int, p
 
 def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, Any]:
     law_type = row.get('law_type') or ''
-    snippet_text = row.get('article_text') or row.get('full_text') or ''
+    snippet_text = strip_link_markers(row.get('article_text') or row.get('full_text') or '')
     return {
         'score': int(row.get('score') or 0),
         'documentId': int(row['document_id']),
