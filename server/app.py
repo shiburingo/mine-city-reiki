@@ -853,6 +853,7 @@ QUESTION_INTENT_TERMS = {
     "取得",
     "方法",
     "内容",
+    "必要な",
     "教える",
     "教えて",
     "必要",
@@ -869,6 +870,7 @@ QUESTION_INTENT_TERMS = {
     "場所",
     "部署",
     "何",
+    "いつ開催され",
     "場合",
     "該当",
     "関係",
@@ -966,6 +968,8 @@ def _known_question_terms(normalized_query: str, cur=None) -> list[str]:
 
 def _strip_question_intent_suffix(term: str) -> str:
     cleaned = normalize_text(term).lower()
+    cleaned = re.sub(r"(ください|です|ます)$", "", cleaned)
+    cleaned = re.sub(r"(されてい|される|され|したい|した|な)$", "", cleaned)
     changed = True
     while changed and cleaned:
         changed = False
@@ -984,7 +988,9 @@ def _question_particle_phrases(cleaned: str) -> list[str]:
     for chunk in re.split(r"(?:について|に関して|に関する|の|には|では|には|に|を|は|が|で|と|、|,|，|。)", normalized):
         chunk = re.sub(r"[^0-9a-z一-龯ぁ-んァ-ヶー々]+", "", chunk)
         chunk = _strip_question_intent_suffix(chunk)
-        if len(chunk) >= 3 and contains_japanese(chunk) and not is_hiragana_only(chunk):
+        if chunk in QUESTION_INTENT_TERMS:
+            continue
+        if len(chunk) >= 2 and contains_japanese(chunk) and not is_hiragana_only(chunk):
             phrases.append(chunk)
     return _dedupe_terms(phrases, limit=12)
 
@@ -1038,6 +1044,17 @@ def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
         ],
         limit=12,
     )
+    fallback_terms = _dedupe_terms(
+        [
+            term
+            for term in [*compounds, *token_terms]
+            if term not in core_terms
+            and term not in QUESTION_INTENT_TERMS
+            and not is_hiragana_only(term)
+            and len(term) >= 2
+        ],
+        limit=12,
+    )
     if not core_terms:
         core_terms = _dedupe_terms(split_keywords(cleaned), limit=8)
     intent_terms = _dedupe_terms(
@@ -1053,6 +1070,7 @@ def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
         "cleaned": [cleaned],
         "phrases": phrase_terms,
         "core": core_terms,
+        "fallback": fallback_terms,
         "intent": intent_terms,
         "display": display_terms,
     }
@@ -4116,6 +4134,7 @@ def ask_candidate_search(
     fallback_plans: list[tuple[str, bool, int]] = []
     phrases = profile.get("phrases", [])
     core = profile.get("core", [])
+    fallback_terms = profile.get("fallback", [])
     if len(core) >= 2:
         primary_plans.append((" ".join(core[:2]), False, 24))
     if len(core) >= 3:
@@ -4128,6 +4147,11 @@ def ask_candidate_search(
     for term in core[:5]:
         if len(term) >= 3 and term not in QUESTION_INTENT_TERMS:
             fallback_plans.append((term, False, 10))
+    for term in fallback_terms[:8]:
+        fallback_plans.append((term, False, 10))
+    if core and fallback_terms:
+        for term in fallback_terms[:4]:
+            fallback_plans.append((f"{core[0]} {term}", False, 14))
     if core:
         fallback_plans.append((" ".join(core[:4]), True, 24))
     else:
