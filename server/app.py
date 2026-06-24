@@ -1964,10 +1964,11 @@ def fetch_meili_documents_for_ids(document_ids: list[int]) -> list[dict[str, Any
     return docs
 
 
-def index_meili_documents(document_ids: list[int], batch_size: int = 500) -> int:
+def index_meili_documents(document_ids: list[int], batch_size: int = 500, ensure_configured: bool = True) -> int:
     if not meili_is_enabled():
         return 0
-    configure_meili_index()
+    if ensure_configured:
+        configure_meili_index()
     indexed = 0
     for offset in range(0, len(document_ids), 100):
         source_batch = document_ids[offset:offset + 100]
@@ -2408,7 +2409,7 @@ def execute_reindex(batch_size: int = 10) -> dict[str, Any]:
             if meili_ready:
                 try:
                     summary['progressLabel'] = f"Meilisearch投入 {start + 1}-{start + len(batch)} / {len(doc_ids)}"
-                    indexed = index_meili_documents(batch)
+                    indexed = index_meili_documents(batch, ensure_configured=False)
                     summary['meiliIndexed'] += indexed
                     with db_cursor(commit=True) as (_, cur):
                         update_sync_run_summary(cur, run_id, summary)
