@@ -1838,7 +1838,7 @@ function AppShell() {
                               <span className="rounded-full bg-accent px-2 py-1 text-xs text-muted-foreground">score {group.maxScore}</span>
                             </div>
                           </div>
-                          <div className="mt-3 space-y-2">
+                          <div className="mt-3 space-y-1.5">
                             {group.hits.map((item, idx) => {
                               const isActiveHit = selectedDocId === item.documentId
                                 && (item.articleId == null || (
@@ -1850,7 +1850,7 @@ function AppShell() {
                                   key={`${item.documentId}-${item.articleId ?? 'doc'}-${idx}`}
                                   type="button"
                                   onClick={() => openSearchResult(item)}
-                                  className={`w-full rounded-xl px-3 py-2 text-left transition ${isActiveHit ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-muted/35 hover:bg-accent/50'}`}
+                                  className={`w-full rounded-xl px-3 py-1.5 text-left transition ${isActiveHit ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-muted/35 hover:bg-accent/50'}`}
                                 >
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span className="rounded-full bg-primary/10 px-2.5 py-1 text-sm font-semibold text-primary">
@@ -1865,11 +1865,6 @@ function AppShell() {
                                       </span>
                                     ) : null}
                                   </div>
-                                  {item.snippet ? (
-                                    <p className="mt-2 break-words text-sm leading-6 text-foreground">
-                                      {cleanSearchSnippet(item.snippet)}
-                                    </p>
-                                  ) : null}
                                 </button>
                               );
                             })}
