@@ -1934,12 +1934,12 @@ def meili_document_from_row(row: dict[str, Any]) -> dict[str, Any]:
     exact_terms = build_meili_exact_terms(
         [
             row.get("title") or "",
-            row.get("law_number") or "",
-            row.get("category_path") or "",
             row.get("article_number") or "",
             row.get("article_title") or "",
-            row.get("parent_path") or "",
             body,
+            row.get("law_number") or "",
+            row.get("category_path") or "",
+            row.get("parent_path") or "",
         ]
     )
     return {
