@@ -2979,7 +2979,10 @@ def search_documents_structured(
     )
     if can_use_meili_structured(active, source, law_type, from_date, to_date):
         try:
-            return search_documents_meili_structured(active, source, limit, offset, law_type, fuzzy=fuzzy)
+            meili_total, meili_items = search_documents_meili_structured(active, source, limit, offset, law_type, fuzzy=fuzzy)
+            if meili_total > 0 or fuzzy:
+                return meili_total, meili_items
+            app.logger.info("Meilisearch structured search returned no exact hits; falling back to MySQL")
         except Exception as exc:
             app.logger.warning("Meilisearch structured search fallback: %s", exc)
 
@@ -3089,7 +3092,10 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
         return 0, []
     if meili_is_enabled() and source in SOURCE_SCOPES:
         try:
-            return search_documents_meili_structured([{"q": query, "op": "AND"}], source, limit, 0, "", fuzzy=fuzzy)
+            meili_total, meili_items = search_documents_meili_structured([{"q": query, "op": "AND"}], source, limit, 0, "", fuzzy=fuzzy)
+            if meili_total > 0 or fuzzy:
+                return meili_total, meili_items
+            app.logger.info("Meilisearch search returned no exact hits; falling back to MySQL")
         except Exception as exc:
             app.logger.warning("Meilisearch search fallback: %s", exc)
     article_candidates: list[dict[str, Any]] = []
