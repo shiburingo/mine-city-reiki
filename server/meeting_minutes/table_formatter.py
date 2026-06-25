@@ -119,7 +119,9 @@ def _split_role_name_scored(cells: list[str], names: set[str]) -> tuple[int, str
             score += 4
         if name in names:
             score += 8
-        if 3 <= len(name) <= 5:
+        if 4 <= len(name) <= 5:
+            score += 6
+        elif len(name) == 3:
             score += 4
         elif len(name) == 2:
             score += 1
