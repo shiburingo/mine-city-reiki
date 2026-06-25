@@ -9,6 +9,7 @@ from .pdf_extractor import ExtractedPage
 
 
 ENGINE_VERSION = "coordinate-table-v1"
+PERSON_TABLE_ENGINE_VERSION = "coordinate-person-table-v2"
 
 
 @dataclass
@@ -41,18 +42,189 @@ def _assign_column(x0: float, clusters: list[float]) -> int:
     return min(range(len(clusters)), key=lambda idx: abs(float(x0) - clusters[idx]))
 
 
-def _render_html(rows: list[list[str]]) -> str:
+def _render_html(rows: list[list[str]], has_header: bool = True) -> str:
     if not rows:
         return ""
     parts = ["<table>"]
     for row_index, row in enumerate(rows):
-        tag = "th" if row_index == 0 else "td"
+        tag = "th" if has_header and row_index == 0 else "td"
         parts.append("<tr>")
         for cell in row:
             parts.append(f"<{tag}>{html.escape(cell)}</{tag}>")
         parts.append("</tr>")
     parts.append("</table>")
     return "".join(parts)
+
+
+def _norm(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def _non_empty(row: list[str]) -> list[str]:
+    return [cell.strip() for cell in row if cell.strip()]
+
+
+def _is_number_cell(value: str) -> bool:
+    return bool(re.fullmatch(r"\d+\s*番", _norm(value)))
+
+
+def _name_candidates(speakers: list[Any]) -> set[str]:
+    names: set[str] = set()
+    for speaker in speakers:
+        value = getattr(speaker, "speaker_name", "") or ""
+        normalized = _norm(str(value))
+        if normalized:
+            names.add(normalized)
+    return names
+
+
+ROLE_TOKENS = (
+    "市長",
+    "副市長",
+    "教育長",
+    "部長",
+    "次長",
+    "課長",
+    "局長",
+    "消防長",
+    "会計管理者",
+    "事務局長",
+    "病院事業管理者",
+    "代表監査委員",
+    "委員長",
+    "副委員長",
+    "委員",
+    "理事",
+    "監",
+    "管理者",
+)
+
+
+def _split_role_name_scored(cells: list[str], names: set[str]) -> tuple[int, str, str] | None:
+    values = _non_empty(cells)
+    if len(values) < 2:
+        return None
+    best: tuple[int, str, str] | None = None
+    for index in range(1, len(values)):
+        role = _norm("".join(values[:index]))
+        name = _norm("".join(values[index:]))
+        if not role or not name:
+            continue
+        score = 0
+        if any(token in role for token in ROLE_TOKENS):
+            score += 5
+        if name in names:
+            score += 4
+        if 2 <= len(name) <= 6:
+            score += 2
+        if len(role) <= 16:
+            score += 1
+        candidate = (score, role, name)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if not best or best[0] < 7:
+        return None
+    return best
+
+
+def _split_role_name(cells: list[str], names: set[str]) -> tuple[str, str] | None:
+    parsed = _split_role_name_scored(cells, names)
+    if not parsed:
+        return None
+    return parsed[1], parsed[2]
+
+
+def _compact_number_roster(rows: list[list[str]]) -> list[list[str]] | None:
+    compacted: list[list[str]] = [["番号", "氏名", "番号", "氏名"]]
+    matched = 0
+    for row in rows:
+        values = _non_empty(row)
+        if len(values) < 3:
+            continue
+        entries: list[tuple[str, str]] = []
+        index = 0
+        while index + 2 < len(values):
+            if _is_number_cell(values[index]):
+                name = _norm(values[index + 1] + values[index + 2])
+                if name:
+                    entries.append((_norm(values[index]), name))
+                    index += 3
+                    continue
+            index += 1
+        if entries:
+            matched += len(entries)
+            for pair_index in range(0, len(entries), 2):
+                left = entries[pair_index]
+                right = entries[pair_index + 1] if pair_index + 1 < len(entries) else ("", "")
+                compacted.append([left[0], left[1], right[0], right[1]])
+    return compacted if matched >= 4 else None
+
+
+def _compact_role_roster(rows: list[list[str]], names: set[str]) -> list[list[str]] | None:
+    compacted: list[list[str]] = [["役職", "氏名", "役職", "氏名"]]
+    matched = 0
+    for row in rows:
+        values = _non_empty(row)
+        if len(values) < 4 or any(_is_number_cell(value) for value in values):
+            continue
+        candidates: list[tuple[int, list[tuple[str, str]]]] = []
+
+        def walk(start: int, score: int, entries: list[tuple[str, str]]) -> None:
+            if start >= len(values):
+                candidates.append((score, entries))
+                return
+            for end in range(start + 2, min(len(values), start + 4) + 1):
+                parsed = _split_role_name_scored(values[start:end], names)
+                if parsed:
+                    walk(end, score + parsed[0], entries + [(parsed[1], parsed[2])])
+
+        walk(0, 0, [])
+        if not candidates:
+            continue
+        entries = max(candidates, key=lambda item: (len(item[1]), item[0]))[1]
+        if entries:
+            matched += len(entries)
+            left = entries[0]
+            right = entries[1] if len(entries) > 1 else ("", "")
+            compacted.append([left[0], left[1], right[0], right[1]])
+    return compacted if matched >= 4 else None
+
+
+def _replace_table(table: FormattedTable, rows: list[list[str]], caption: str, confidence: float) -> FormattedTable:
+    search_parts = [caption]
+    for row in rows:
+        search_parts.append(" ".join(cell for cell in row if cell))
+    return FormattedTable(
+        table_key=table.table_key,
+        page=table.page,
+        caption=caption,
+        rows=rows,
+        html=_render_html(rows, has_header=True),
+        search_text="\n".join(search_parts),
+        confidence=confidence,
+    )
+
+
+def refine_person_roster_tables(tables: list[FormattedTable], speakers: list[Any]) -> list[FormattedTable]:
+    """Normalize attendance/executive roster tables using speaker names.
+
+    Coordinate extraction splits Japanese names and titles easily. This pass is
+    intentionally narrow: it only rewrites tables that clearly look like member
+    number rosters or role/name rosters.
+    """
+    names = _name_candidates(speakers)
+    refined: list[FormattedTable] = []
+    for table in tables:
+        number_rows = _compact_number_roster(table.rows)
+        if number_rows:
+            refined.append(_replace_table(table, number_rows, f"出席者番号名簿 {table.table_key}", 0.86))
+            continue
+        role_rows = _compact_role_roster(table.rows, names)
+        if role_rows:
+            refined.append(_replace_table(table, role_rows, f"役職者名簿 {table.table_key}", 0.82))
+            continue
+        refined.append(table)
+    return refined
 
 
 def _flush_table(table_key: str, page_no: int, rows: list[list[str]], caption_prefix: str) -> FormattedTable | None:
@@ -120,4 +292,3 @@ def extract_coordinate_tables(pages: list[ExtractedPage], document_key: str) -> 
         if table:
             tables.append(table)
     return tables
-

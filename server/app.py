@@ -30,7 +30,7 @@ from meeting_minutes.pdf_extractor import extract_pdf_from_url
 from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERSION
 from meeting_minutes.speaker_tagger import tag_utterances
 from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSION
-from meeting_minutes.table_formatter import extract_coordinate_tables
+from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract_coordinate_tables, refine_person_roster_tables
 
 try:
     from janome.tokenizer import Tokenizer as JanomeTokenizer
@@ -501,6 +501,35 @@ def ensure_schema() -> None:
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                   UNIQUE KEY uq_meeting_speakers_identity (normalized_name, title, role),
                   KEY idx_meeting_speakers_role_name (role, display_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_speaker_dictionary",
+                """
+                CREATE TABLE meeting_speaker_dictionary (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  fiscal_year INT NOT NULL,
+                  valid_from DATE NULL,
+                  valid_to DATE NULL,
+                  normalized_name VARCHAR(191) NOT NULL,
+                  display_name VARCHAR(191) NOT NULL,
+                  title VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_group VARCHAR(64) NOT NULL DEFAULT '',
+                  role VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                  source_type VARCHAR(32) NOT NULL DEFAULT 'utterance',
+                  confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+                  first_day_id BIGINT UNSIGNED NULL,
+                  last_day_id BIGINT UNSIGNED NULL,
+                  occurrences INT UNSIGNED NOT NULL DEFAULT 0,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_speaker_dict_identity (fiscal_year, normalized_name, title, role),
+                  KEY idx_meeting_speaker_dict_year_role (fiscal_year, role, display_name),
+                  KEY idx_meeting_speaker_dict_name (normalized_name),
+                  CONSTRAINT fk_meeting_speaker_dict_first_day FOREIGN KEY (first_day_id) REFERENCES meeting_days(id) ON DELETE SET NULL,
+                  CONSTRAINT fk_meeting_speaker_dict_last_day FOREIGN KEY (last_day_id) REFERENCES meeting_days(id) ON DELETE SET NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
@@ -3118,6 +3147,15 @@ def normalize_minutes_speaker_name(name: str) -> str:
     return re.sub(r"\s+", "", normalize_text(name))
 
 
+def fiscal_year_for_date(value: date | datetime | None) -> int:
+    if isinstance(value, datetime):
+        value = value.date()
+    if not isinstance(value, date):
+        now = datetime.now().date()
+        return now.year if now.month >= 4 else now.year - 1
+    return value.year if value.month >= 4 else value.year - 1
+
+
 def upsert_meeting_session(cur, item: Any) -> int:
     cur.execute(
         """
@@ -3176,6 +3214,77 @@ def upsert_meeting_speaker(cur, speaker_name: str, speaker_title: str, speaker_r
     return int((cur.fetchone() or {})["id"])
 
 
+def upsert_meeting_speaker_dictionary(cur, day_id: int, meeting_date: date | datetime | None, utterance: Any) -> None:
+    normalized = normalize_minutes_speaker_name(utterance.speaker_name)
+    if not normalized:
+        return
+    fiscal_year = fiscal_year_for_date(meeting_date)
+    valid_from = meeting_date.date() if isinstance(meeting_date, datetime) else meeting_date
+    cur.execute(
+        """
+        INSERT INTO meeting_speaker_dictionary
+          (fiscal_year, valid_from, valid_to, normalized_name, display_name, title, speaker_group, role,
+           source_type, confidence, first_day_id, last_day_id, occurrences)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'utterance',%s,%s,%s,1)
+        ON DUPLICATE KEY UPDATE
+          valid_from=LEAST(COALESCE(valid_from, VALUES(valid_from)), COALESCE(VALUES(valid_from), valid_from)),
+          valid_to=GREATEST(COALESCE(valid_to, VALUES(valid_to)), COALESCE(VALUES(valid_to), valid_to)),
+          display_name=VALUES(display_name),
+          speaker_group=VALUES(speaker_group),
+          source_type='utterance',
+          confidence=GREATEST(confidence, VALUES(confidence)),
+          last_day_id=VALUES(last_day_id),
+          occurrences=occurrences + 1,
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (
+            fiscal_year,
+            valid_from,
+            valid_from,
+            normalized,
+            utterance.speaker_name,
+            utterance.speaker_title,
+            utterance.speaker_group,
+            utterance.speaker_role,
+            utterance.confidence,
+            day_id,
+            day_id,
+        ),
+    )
+
+
+def rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year: int) -> None:
+    start = date(fiscal_year, 4, 1)
+    end = date(fiscal_year + 1, 4, 1)
+    cur.execute("DELETE FROM meeting_speaker_dictionary WHERE fiscal_year=%s AND source_type='utterance'", (fiscal_year,))
+    cur.execute(
+        """
+        INSERT INTO meeting_speaker_dictionary
+          (fiscal_year, valid_from, valid_to, normalized_name, display_name, title, speaker_group, role,
+           source_type, confidence, first_day_id, last_day_id, occurrences)
+        SELECT
+          %s AS fiscal_year,
+          MIN(d.meeting_date) AS valid_from,
+          MAX(d.meeting_date) AS valid_to,
+          REPLACE(REPLACE(u.speaker_name, ' ', ''), '　', '') AS normalized_name,
+          MIN(u.speaker_name) AS display_name,
+          u.speaker_title AS title,
+          MIN(u.speaker_group) AS speaker_group,
+          u.speaker_role AS role,
+          'utterance' AS source_type,
+          MAX(u.confidence) AS confidence,
+          MIN(d.id) AS first_day_id,
+          MAX(d.id) AS last_day_id,
+          COUNT(*) AS occurrences
+        FROM meeting_utterances u
+        JOIN meeting_days d ON d.id=u.day_id
+        WHERE d.meeting_date >= %s AND d.meeting_date < %s AND u.speaker_name <> ''
+        GROUP BY REPLACE(REPLACE(u.speaker_name, ' ', ''), '　', ''), u.speaker_title, u.speaker_role
+        """,
+        (fiscal_year, start, end),
+    )
+
+
 def reset_meeting_day_content(cur, day_id: int) -> None:
     cur.execute("DELETE FROM meeting_tables WHERE day_id=%s", (day_id,))
     cur.execute("DELETE FROM meeting_utterances WHERE day_id=%s", (day_id,))
@@ -3185,7 +3294,7 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
     all_lines = [line for page in extracted.pages for line in page.lines]
     utterances = tag_utterances(all_lines)
     document_key = f"minutes-{day_id}"
-    tables = extract_coordinate_tables(extracted.pages, document_key)
+    tables = refine_person_roster_tables(extract_coordinate_tables(extracted.pages, document_key), utterances)
     reset_meeting_day_content(cur, day_id)
     speaker_count = 0
     for utterance in utterances:
@@ -3249,9 +3358,10 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
                 table.html,
                 table.search_text,
                 table.confidence,
-                TABLE_ENGINE_VERSION,
+                PERSON_TABLE_ENGINE_VERSION if table.caption.startswith(("出席者番号名簿", "役職者名簿")) else TABLE_ENGINE_VERSION,
             ),
         )
+    rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year_for_date(item.meeting_date))
     cur.execute(
         """
         UPDATE meeting_days
