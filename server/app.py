@@ -4493,10 +4493,10 @@ def api_minutes_speakers():
     with db_cursor() as (_, cur):
         cur.execute(
             """
-            SELECT display_name, title, role, speaker_group, COUNT(u.id) AS utterance_count
+            SELECT sp.display_name, sp.title, sp.role, sp.speaker_group, COUNT(u.id) AS utterance_count
             FROM meeting_speakers sp
             LEFT JOIN meeting_utterances u ON u.speaker_id=sp.id
-            GROUP BY sp.id, display_name, title, role, speaker_group
+            GROUP BY sp.id, sp.display_name, sp.title, sp.role, sp.speaker_group
             ORDER BY utterance_count DESC, display_name ASC
             LIMIT 500
             """
