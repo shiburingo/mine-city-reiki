@@ -181,8 +181,21 @@ export async function searchMinutes(params: {
   return { items: data.items || [], total: data.total ?? data.items?.length ?? 0 };
 }
 
-export async function fetchMinutesSpeakers(): Promise<MinutesSpeaker[]> {
-  const data = await apiFetch<{ items: MinutesSpeaker[] }>('/minutes/speakers');
+export async function fetchMinutesSpeakers(params: {
+  role?: string;
+  section?: string;
+  meetingId?: number | null;
+  fromDate?: string;
+  toDate?: string;
+} = {}): Promise<MinutesSpeaker[]> {
+  const qs = new URLSearchParams();
+  if (params.role && params.role !== 'all') qs.set('role', params.role);
+  if (params.section && params.section !== 'all') qs.set('section', params.section);
+  if (params.meetingId) qs.set('meetingId', String(params.meetingId));
+  if (params.fromDate) qs.set('fromDate', params.fromDate);
+  if (params.toDate) qs.set('toDate', params.toDate);
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  const data = await apiFetch<{ items: MinutesSpeaker[] }>(`/minutes/speakers${suffix}`);
   return data.items || [];
 }
 

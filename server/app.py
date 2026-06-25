@@ -4490,16 +4490,43 @@ def api_minutes_meetings():
 
 @app.get('/api/minutes/speakers')
 def api_minutes_speakers():
+    role = (request.args.get("role") or "").strip()
+    section = (request.args.get("section") or "").strip()
+    from_date = (request.args.get("fromDate") or "").strip()
+    to_date = (request.args.get("toDate") or "").strip()
+    meeting_id = int(request.args.get("meetingId") or 0) or None
+    conditions = ["1=1"]
+    params: list[Any] = []
+    if role and role != "all":
+        conditions.append("sp.role=%s")
+        params.append(role)
+    if section and section != "all":
+        conditions.append("s.section=%s")
+        params.append(section)
+    if meeting_id:
+        conditions.append("s.id=%s")
+        params.append(meeting_id)
+    if from_date:
+        conditions.append("d.meeting_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("d.meeting_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions)
     with db_cursor() as (_, cur):
         cur.execute(
-            """
+            f"""
             SELECT sp.display_name, sp.title, sp.role, sp.speaker_group, COUNT(u.id) AS utterance_count
             FROM meeting_speakers sp
-            LEFT JOIN meeting_utterances u ON u.speaker_id=sp.id
+            JOIN meeting_utterances u ON u.speaker_id=sp.id
+            JOIN meeting_days d ON d.id=u.day_id
+            JOIN meeting_sessions s ON s.id=d.session_id
+            WHERE {where}
             GROUP BY sp.id, sp.display_name, sp.title, sp.role, sp.speaker_group
             ORDER BY utterance_count DESC, display_name ASC
             LIMIT 500
-            """
+            """,
+            tuple(params),
         )
         rows = cur.fetchall() or []
     return jsonify(

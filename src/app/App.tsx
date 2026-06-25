@@ -892,6 +892,17 @@ function AppShell() {
   }, [tab, syncRuns, minutesStatus.latestRun?.status]);
 
   useEffect(() => {
+    if (tab !== 'minutes' || minutesPage !== 'speaker') return;
+    void loadMinutesSpeakers({
+      role: minutesRole,
+      section: minutesSection,
+      meetingId: minutesMeetingId,
+      fromDate: minutesFromDate,
+      toDate: minutesToDate,
+    });
+  }, [tab, minutesPage, minutesRole, minutesSection, minutesMeetingId, minutesFromDate, minutesToDate]);
+
+  useEffect(() => {
     if (selectedDocId == null) return;
     setSelectedReturnScrollTop(null);
     let cancelled = false;
@@ -1145,9 +1156,15 @@ function AppShell() {
     }
   }
 
-  async function loadMinutesSpeakers() {
+  async function loadMinutesSpeakers(params: {
+    role?: string;
+    section?: string;
+    meetingId?: number | null;
+    fromDate?: string;
+    toDate?: string;
+  } = {}) {
     try {
-      const speakers = await fetchMinutesSpeakers();
+      const speakers = await fetchMinutesSpeakers(params);
       setMinutesSpeakers(speakers);
     } catch {
       // optional
@@ -1563,8 +1580,7 @@ function AppShell() {
   const filteredMinutesSpeakers = useMemo(() => {
     const needle = deferredMinutesSpeaker.trim();
     return minutesSpeakers
-      .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle))
-      .slice(0, 12);
+      .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle));
   }, [minutesSpeakers, deferredMinutesSpeaker]);
   const meetingGroupedMinutesResults = useMemo(() => {
     const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
@@ -2387,7 +2403,7 @@ function AppShell() {
                 <div className="rounded-3xl border bg-white p-5">
                   <div className="mb-4 flex items-center justify-between">
                     <p className="text-sm font-semibold text-[#173f36]">発言者一覧</p>
-                    <span className="text-xs text-muted-foreground">{filteredMinutesSpeakers.length}人表示 / 全{minutesSpeakers.length}人</span>
+                    <span className="text-xs text-muted-foreground">{filteredMinutesSpeakers.length}人表示 / 条件内{minutesSpeakers.length}人</span>
                   </div>
                   <div className="grid max-h-[64vh] gap-3 overflow-auto md:grid-cols-2">
                     {filteredMinutesSpeakers.map((speaker) => (
