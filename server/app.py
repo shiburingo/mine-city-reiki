@@ -15,7 +15,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -24,6 +24,13 @@ from bs4 import BeautifulSoup
 from flask import Flask, Response, g, jsonify, request
 from pymysql.cursors import DictCursor
 from werkzeug.exceptions import HTTPException
+
+from meeting_minutes.crawler import crawl_minutes_pdfs
+from meeting_minutes.pdf_extractor import extract_pdf_from_url
+from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERSION
+from meeting_minutes.speaker_tagger import tag_utterances
+from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSION
+from meeting_minutes.table_formatter import extract_coordinate_tables
 
 try:
     from janome.tokenizer import Tokenizer as JanomeTokenizer
@@ -431,6 +438,140 @@ def ensure_schema() -> None:
                   UNIQUE KEY uq_ask_query_cache_key (cache_key),
                   KEY idx_ask_query_cache_generation (cache_generation),
                   KEY idx_ask_query_cache_expires (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_sessions",
+                """
+                CREATE TABLE meeting_sessions (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  source_url VARCHAR(512) NOT NULL,
+                  section VARCHAR(64) NOT NULL,
+                  meeting_name VARCHAR(255) NOT NULL,
+                  title VARCHAR(255) NOT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_sessions_source (source_url),
+                  KEY idx_meeting_sessions_section_name (section, meeting_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_days",
+                """
+                CREATE TABLE meeting_days (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  session_id BIGINT UNSIGNED NOT NULL,
+                  source_url VARCHAR(512) NOT NULL,
+                  page_url VARCHAR(512) NOT NULL,
+                  pdf_url VARCHAR(512) NOT NULL,
+                  pdf_hash CHAR(64) NOT NULL DEFAULT '',
+                  meeting_date DATE NULL,
+                  date_label VARCHAR(255) NOT NULL DEFAULT '',
+                  title VARCHAR(255) NOT NULL DEFAULT '',
+                  extraction_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                  page_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  text_char_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  error_text TEXT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_days_pdf (pdf_url),
+                  KEY idx_meeting_days_session (session_id),
+                  KEY idx_meeting_days_date (meeting_date),
+                  KEY idx_meeting_days_status (extraction_status),
+                  CONSTRAINT fk_meeting_days_session FOREIGN KEY (session_id) REFERENCES meeting_sessions(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_speakers",
+                """
+                CREATE TABLE meeting_speakers (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  normalized_name VARCHAR(191) NOT NULL,
+                  display_name VARCHAR(191) NOT NULL,
+                  title VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_group VARCHAR(64) NOT NULL DEFAULT '',
+                  role VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_speakers_identity (normalized_name, title, role),
+                  KEY idx_meeting_speakers_role_name (role, display_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_utterances",
+                """
+                CREATE TABLE meeting_utterances (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  speaker_id BIGINT UNSIGNED NULL,
+                  speaker_name VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_title VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_role VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                  speaker_group VARCHAR(64) NOT NULL DEFAULT '',
+                  speech_type VARCHAR(32) NOT NULL DEFAULT 'statement',
+                  utterance_order INT UNSIGNED NOT NULL,
+                  page_start INT UNSIGNED NOT NULL DEFAULT 0,
+                  page_end INT UNSIGNED NOT NULL DEFAULT 0,
+                  text LONGTEXT NOT NULL,
+                  search_text LONGTEXT NOT NULL,
+                  confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+                  reason VARCHAR(255) NOT NULL DEFAULT '',
+                  engine_version VARCHAR(64) NOT NULL DEFAULT '',
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_utterances_day_order (day_id, utterance_order),
+                  KEY idx_meeting_utterances_day_role (day_id, speaker_role),
+                  KEY idx_meeting_utterances_speaker (speaker_id),
+                  KEY idx_meeting_utterances_role (speaker_role),
+                  FULLTEXT KEY ft_meeting_utterances_search (search_text),
+                  CONSTRAINT fk_meeting_utterances_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_meeting_utterances_speaker FOREIGN KEY (speaker_id) REFERENCES meeting_speakers(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_tables",
+                """
+                CREATE TABLE meeting_tables (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  table_key VARCHAR(191) NOT NULL,
+                  page INT UNSIGNED NOT NULL DEFAULT 0,
+                  caption VARCHAR(255) NOT NULL DEFAULT '',
+                  rows_json LONGTEXT NOT NULL,
+                  html LONGTEXT NOT NULL,
+                  search_text LONGTEXT NOT NULL,
+                  confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+                  engine_version VARCHAR(64) NOT NULL DEFAULT '',
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_tables_day_key (day_id, table_key),
+                  KEY idx_meeting_tables_day (day_id),
+                  FULLTEXT KEY ft_meeting_tables_search (search_text),
+                  CONSTRAINT fk_meeting_tables_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_extract_runs",
+                """
+                CREATE TABLE meeting_extract_runs (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  finished_at TIMESTAMP NULL DEFAULT NULL,
+                  status VARCHAR(32) NOT NULL DEFAULT 'running',
+                  recent_days INT UNSIGNED NOT NULL DEFAULT 365,
+                  summary_json LONGTEXT NOT NULL,
+                  error_text TEXT NULL,
+                  engine_versions VARCHAR(255) NOT NULL DEFAULT ''
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
@@ -2973,6 +3114,377 @@ def launch_reindex_in_background(batch_size: int = 10) -> None:
         thread.start()
 
 
+def normalize_minutes_speaker_name(name: str) -> str:
+    return re.sub(r"\s+", "", normalize_text(name))
+
+
+def upsert_meeting_session(cur, item: Any) -> int:
+    cur.execute(
+        """
+        INSERT INTO meeting_sessions (source_url, section, meeting_name, title)
+        VALUES (%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          section=VALUES(section),
+          meeting_name=VALUES(meeting_name),
+          title=VALUES(title),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (item.page_url, item.section, item.meeting_name, item.meeting_name),
+    )
+    cur.execute("SELECT id FROM meeting_sessions WHERE source_url=%s", (item.page_url,))
+    return int((cur.fetchone() or {})["id"])
+
+
+def upsert_meeting_day(cur, item: Any, session_id: int) -> int:
+    cur.execute(
+        """
+        INSERT INTO meeting_days
+          (session_id, source_url, page_url, pdf_url, meeting_date, date_label, title, extraction_status)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,'pending')
+        ON DUPLICATE KEY UPDATE
+          session_id=VALUES(session_id),
+          source_url=VALUES(source_url),
+          page_url=VALUES(page_url),
+          meeting_date=VALUES(meeting_date),
+          date_label=VALUES(date_label),
+          title=VALUES(title),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (session_id, item.pdf_url, item.page_url, item.pdf_url, item.meeting_date, item.date_label, item.title),
+    )
+    cur.execute("SELECT id FROM meeting_days WHERE pdf_url=%s", (item.pdf_url,))
+    return int((cur.fetchone() or {})["id"])
+
+
+def upsert_meeting_speaker(cur, speaker_name: str, speaker_title: str, speaker_role: str, speaker_group: str) -> int:
+    normalized = normalize_minutes_speaker_name(speaker_name)
+    cur.execute(
+        """
+        INSERT INTO meeting_speakers (normalized_name, display_name, title, speaker_group, role)
+        VALUES (%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          display_name=VALUES(display_name),
+          speaker_group=VALUES(speaker_group),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (normalized, speaker_name, speaker_title, speaker_group, speaker_role),
+    )
+    cur.execute(
+        "SELECT id FROM meeting_speakers WHERE normalized_name=%s AND title=%s AND role=%s",
+        (normalized, speaker_title, speaker_role),
+    )
+    return int((cur.fetchone() or {})["id"])
+
+
+def reset_meeting_day_content(cur, day_id: int) -> None:
+    cur.execute("DELETE FROM meeting_tables WHERE day_id=%s", (day_id,))
+    cur.execute("DELETE FROM meeting_utterances WHERE day_id=%s", (day_id,))
+
+
+def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> dict[str, int]:
+    all_lines = [line for page in extracted.pages for line in page.lines]
+    utterances = tag_utterances(all_lines)
+    document_key = f"minutes-{day_id}"
+    tables = extract_coordinate_tables(extracted.pages, document_key)
+    reset_meeting_day_content(cur, day_id)
+    speaker_count = 0
+    for utterance in utterances:
+        speaker_id = upsert_meeting_speaker(
+            cur,
+            utterance.speaker_name,
+            utterance.speaker_title,
+            utterance.speaker_role,
+            utterance.speaker_group,
+        )
+        speaker_count += 1
+        search_text = "\n".join(
+            [
+                item.section,
+                item.meeting_name,
+                item.title,
+                utterance.speaker_name,
+                utterance.speaker_title,
+                utterance.speaker_role,
+                utterance.text,
+            ]
+        )
+        cur.execute(
+            """
+            INSERT INTO meeting_utterances
+              (day_id, speaker_id, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
+               utterance_order, page_start, page_end, text, search_text, confidence, reason, engine_version)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                day_id,
+                speaker_id,
+                utterance.speaker_name,
+                utterance.speaker_title,
+                utterance.speaker_role,
+                utterance.speaker_group,
+                utterance.speech_type,
+                utterance.order,
+                utterance.page_start,
+                utterance.page_end,
+                utterance.text,
+                search_text,
+                utterance.confidence,
+                utterance.reason,
+                SPEAKER_ENGINE_VERSION,
+            ),
+        )
+    for table in tables:
+        cur.execute(
+            """
+            INSERT INTO meeting_tables
+              (day_id, table_key, page, caption, rows_json, html, search_text, confidence, engine_version)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                day_id,
+                table.table_key,
+                table.page,
+                table.caption,
+                json.dumps(table.rows, ensure_ascii=False),
+                table.html,
+                table.search_text,
+                table.confidence,
+                TABLE_ENGINE_VERSION,
+            ),
+        )
+    cur.execute(
+        """
+        UPDATE meeting_days
+        SET pdf_hash=%s, extraction_status='success', page_count=%s, text_char_count=%s,
+            error_text=NULL, updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s
+        """,
+        (extracted.sha256, extracted.page_count, len(extracted.text or ""), day_id),
+    )
+    return {"utterances": len(utterances), "tables": len(tables), "speakers": speaker_count}
+
+
+def update_minutes_run_summary(run_id: int, extract_run_id: int | None, summary: dict[str, Any]) -> None:
+    with db_cursor(commit=True) as (_, cur):
+        update_sync_run_summary(cur, run_id, summary)
+        if extract_run_id:
+            cur.execute(
+                "UPDATE meeting_extract_runs SET summary_json=%s WHERE id=%s",
+                (json.dumps(summary, ensure_ascii=False), extract_run_id),
+            )
+
+
+def execute_minutes_sync(recent_days: int = 365) -> dict[str, Any]:
+    recent_days = max(1, min(3660, int(recent_days or 365)))
+    with db_cursor(commit=True) as (_, cur):
+        summary: dict[str, Any] = {
+            "operation": "minutes-sync",
+            "recentDays": recent_days,
+            "discovered": 0,
+            "processed": 0,
+            "failed": 0,
+            "utterances": 0,
+            "tables": 0,
+            "progressCurrent": 0,
+            "progressTotal": 1,
+            "progressLabel": "会議録PDFリンクを収集しています",
+        }
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps(summary, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+        cur.execute(
+            """
+            INSERT INTO meeting_extract_runs (status, recent_days, summary_json, engine_versions)
+            VALUES ('running',%s,%s,%s)
+            """,
+            (
+                recent_days,
+                json.dumps(summary, ensure_ascii=False),
+                f"{SPEAKER_ENGINE_VERSION},{TABLE_ENGINE_VERSION}",
+            ),
+        )
+        extract_run_id = int(cur.lastrowid)
+    try:
+        items = crawl_minutes_pdfs(recent_days=recent_days)
+        summary["discovered"] = len(items)
+        summary["progressTotal"] = max(1, len(items))
+        summary["progressLabel"] = f"{len(items)}件のPDFを検出しました"
+        update_minutes_run_summary(run_id, extract_run_id, summary)
+        for index, item in enumerate(items, start=1):
+            summary["progressCurrent"] = index - 1
+            summary["progressLabel"] = f"{index}/{len(items)} {item.section} {item.title} を抽出しています"
+            update_minutes_run_summary(run_id, extract_run_id, summary)
+            day_id: int | None = None
+            try:
+                with db_cursor(commit=True) as (_, cur):
+                    session_id = upsert_meeting_session(cur, item)
+                    day_id = upsert_meeting_day(cur, item, session_id)
+                    cur.execute("UPDATE meeting_days SET extraction_status='running', error_text=NULL WHERE id=%s", (day_id,))
+                extracted = extract_pdf_from_url(item.pdf_url)
+                with db_cursor(commit=True) as (_, cur):
+                    counts = persist_meeting_day_content(cur, day_id, item, extracted)
+                summary["processed"] += 1
+                summary["utterances"] += counts["utterances"]
+                summary["tables"] += counts["tables"]
+            except Exception as exc:
+                summary["failed"] += 1
+                if day_id:
+                    with db_cursor(commit=True) as (_, cur):
+                        cur.execute(
+                            "UPDATE meeting_days SET extraction_status='failed', error_text=%s WHERE id=%s",
+                            (str(exc)[:2000], day_id),
+                        )
+                app.logger.exception("Meeting minutes extraction failed: %s", item.pdf_url)
+            summary["progressCurrent"] = index
+            update_minutes_run_summary(run_id, extract_run_id, summary)
+        with db_cursor(commit=True) as (_, cur):
+            summary["progressLabel"] = "会議録同期が完了しました"
+            set_sync_run_status(cur, run_id, "success", summary, None)
+            cur.execute(
+                "UPDATE meeting_extract_runs SET status='success', finished_at=CURRENT_TIMESTAMP, summary_json=%s WHERE id=%s",
+                (json.dumps(summary, ensure_ascii=False), extract_run_id),
+            )
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, "failed", summary, str(exc))
+            cur.execute(
+                "UPDATE meeting_extract_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, summary_json=%s, error_text=%s WHERE id=%s",
+                (json.dumps(summary, ensure_ascii=False), str(exc), extract_run_id),
+            )
+        raise
+
+
+def launch_minutes_sync_in_background(recent_days: int = 365) -> None:
+    def _runner() -> None:
+        try:
+            execute_minutes_sync(recent_days=recent_days)
+        except Exception:
+            app.logger.exception("Background meeting minutes sync failed")
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-minutes-sync",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
+def serialize_minutes_exchange(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": int(row["id"]),
+            "order": int(row["utterance_order"]),
+            "speakerName": row.get("speaker_name") or "",
+            "speakerTitle": row.get("speaker_title") or "",
+            "speakerRole": row.get("speaker_role") or "unknown",
+            "speechType": row.get("speech_type") or "statement",
+            "text": row.get("text") or "",
+            "pageStart": int(row.get("page_start") or 0),
+            "pageEnd": int(row.get("page_end") or 0),
+        }
+        for row in rows
+    ]
+
+
+def minutes_snippet(text: str, keywords: list[str]) -> str:
+    snippet = text_snippet(text, keywords)
+    return snippet if snippet else normalize_text(text)[:180]
+
+
+def search_minutes_items(
+    query: str = "",
+    speaker: str = "",
+    role: str = "",
+    section: str = "",
+    from_date: str = "",
+    to_date: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
+    conditions = ["1=1"]
+    params: list[Any] = []
+    for term in terms:
+        like = f"%{term}%"
+        conditions.append("(u.search_text LIKE %s OR t.search_text LIKE %s)")
+        params.extend([like, like])
+    if speaker:
+        conditions.append("(u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
+        params.extend([f"%{speaker}%", f"%{speaker}%"])
+    if role and role != "all":
+        conditions.append("u.speaker_role=%s")
+        params.append(role)
+    if section and section != "all":
+        conditions.append("s.section=%s")
+        params.append(section)
+    if from_date:
+        conditions.append("d.meeting_date >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("d.meeting_date <= %s")
+        params.append(to_date)
+    where = " AND ".join(conditions)
+    with db_cursor() as (_, cur):
+        cur.execute(
+            f"""
+            SELECT DISTINCT
+              u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
+              u.speech_type, u.text, u.page_start, u.page_end,
+              d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
+              s.section, s.meeting_name, s.title AS session_title
+            FROM meeting_utterances u
+            JOIN meeting_days d ON d.id=u.day_id
+            JOIN meeting_sessions s ON s.id=d.session_id
+            LEFT JOIN meeting_tables t ON t.day_id=d.id
+            WHERE {where}
+            ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
+            LIMIT %s
+            """,
+            tuple(params + [limit]),
+        )
+        rows = cur.fetchall() or []
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            day_id = int(row["day_id"])
+            order = int(row["utterance_order"])
+            cur.execute(
+                """
+                SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text, page_start, page_end
+                FROM meeting_utterances
+                WHERE day_id=%s AND utterance_order BETWEEN %s AND %s
+                ORDER BY utterance_order ASC
+                """,
+                (day_id, max(1, order - 2), order + 4),
+            )
+            exchange = serialize_minutes_exchange(cur.fetchall() or [])
+            results.append(
+                {
+                    "id": int(row["id"]),
+                    "dayId": day_id,
+                    "meetingDate": str(row["meeting_date"]) if row.get("meeting_date") else None,
+                    "section": row.get("section") or "",
+                    "meetingName": row.get("meeting_name") or "",
+                    "dayTitle": row.get("day_title") or "",
+                    "pdfUrl": row.get("pdf_url") or "",
+                    "pageUrl": row.get("page_url") or "",
+                    "speakerName": row.get("speaker_name") or "",
+                    "speakerTitle": row.get("speaker_title") or "",
+                    "speakerRole": row.get("speaker_role") or "unknown",
+                    "speechType": row.get("speech_type") or "statement",
+                    "order": order,
+                    "pageStart": int(row.get("page_start") or 0),
+                    "pageEnd": int(row.get("page_end") or 0),
+                    "snippet": minutes_snippet(row.get("text") or "", terms),
+                    "text": row.get("text") or "",
+                    "exchange": exchange,
+                }
+            )
+        return results
+
+
 def make_cache_key(parts: list[str]) -> str:
     payload = "\u241f".join(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -3820,6 +4332,180 @@ def api_search():
 @app.get('/api/reference/search')
 def api_reference_search():
     return api_search()
+
+
+@app.get('/api/minutes/status')
+def api_minutes_status():
+    with db_cursor() as (_, cur):
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_days WHERE extraction_status='success'")
+        day_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_utterances")
+        utterance_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_tables")
+        table_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_speakers")
+        speaker_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute(
+            """
+            SELECT id, status, started_at, finished_at, recent_days, summary_json, error_text
+            FROM meeting_extract_runs
+            ORDER BY id DESC LIMIT 1
+            """
+        )
+        run = cur.fetchone()
+        cur.execute(
+            """
+            SELECT d.id, d.meeting_date, d.title, d.pdf_url, s.section, s.meeting_name
+            FROM meeting_days d
+            JOIN meeting_sessions s ON s.id=d.session_id
+            WHERE d.extraction_status='success'
+            ORDER BY d.meeting_date DESC, d.id DESC
+            LIMIT 8
+            """
+        )
+        latest_days = cur.fetchall() or []
+    return jsonify(
+        {
+            "dayCount": day_count,
+            "utteranceCount": utterance_count,
+            "tableCount": table_count,
+            "speakerCount": speaker_count,
+            "latestRun": {
+                "id": int(run["id"]),
+                "status": run["status"],
+                "startedAt": str(run["started_at"]) if run.get("started_at") else None,
+                "finishedAt": str(run["finished_at"]) if run.get("finished_at") else None,
+                "recentDays": int(run.get("recent_days") or 0),
+                "summary": json.loads(run.get("summary_json") or "{}"),
+                "errorText": run.get("error_text"),
+            }
+            if run
+            else None,
+            "latestDays": [
+                {
+                    "id": int(row["id"]),
+                    "meetingDate": str(row["meeting_date"]) if row.get("meeting_date") else None,
+                    "section": row.get("section") or "",
+                    "meetingName": row.get("meeting_name") or "",
+                    "title": row.get("title") or "",
+                    "pdfUrl": row.get("pdf_url") or "",
+                }
+                for row in latest_days
+            ],
+        }
+    )
+
+
+@app.post('/api/minutes/sync')
+def api_minutes_sync():
+    payload = request.get_json(silent=True) or {}
+    recent_days = max(1, min(3660, int(payload.get("recentDays") or 365)))
+    launch_minutes_sync_in_background(recent_days=recent_days)
+    return jsonify({"ok": True, "started": True, "recentDays": recent_days}), 202
+
+
+@app.get('/api/minutes/search')
+def api_minutes_search():
+    query = (request.args.get("q") or "").strip()
+    speaker = (request.args.get("speaker") or "").strip()
+    role = (request.args.get("role") or "").strip()
+    section = (request.args.get("section") or "").strip()
+    from_date = (request.args.get("fromDate") or "").strip()
+    to_date = (request.args.get("toDate") or "").strip()
+    limit = max(1, min(60, int(request.args.get("limit") or "20")))
+    if not query and not speaker and not role and not section:
+        return jsonify({"items": [], "total": 0})
+    items = search_minutes_items(query, speaker, role, section, from_date, to_date, limit)
+    return jsonify({"items": items, "total": len(items)})
+
+
+@app.get('/api/minutes/speakers')
+def api_minutes_speakers():
+    with db_cursor() as (_, cur):
+        cur.execute(
+            """
+            SELECT display_name, title, role, speaker_group, COUNT(u.id) AS utterance_count
+            FROM meeting_speakers sp
+            LEFT JOIN meeting_utterances u ON u.speaker_id=sp.id
+            GROUP BY sp.id, display_name, title, role, speaker_group
+            ORDER BY utterance_count DESC, display_name ASC
+            LIMIT 500
+            """
+        )
+        rows = cur.fetchall() or []
+    return jsonify(
+        {
+            "items": [
+                {
+                    "displayName": row.get("display_name") or "",
+                    "title": row.get("title") or "",
+                    "role": row.get("role") or "unknown",
+                    "speakerGroup": row.get("speaker_group") or "",
+                    "utteranceCount": int(row.get("utterance_count") or 0),
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
+@app.get('/api/minutes/days/<int:day_id>')
+def api_minutes_day_detail(day_id: int):
+    with db_cursor() as (_, cur):
+        cur.execute(
+            """
+            SELECT d.id, d.meeting_date, d.title, d.pdf_url, d.page_url, d.page_count,
+                   s.section, s.meeting_name
+            FROM meeting_days d
+            JOIN meeting_sessions s ON s.id=d.session_id
+            WHERE d.id=%s
+            """,
+            (day_id,),
+        )
+        day = cur.fetchone()
+        if not day:
+            raise ValueError("会議録が見つかりません。")
+        cur.execute(
+            """
+            SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text, page_start, page_end
+            FROM meeting_utterances
+            WHERE day_id=%s
+            ORDER BY utterance_order ASC
+            """,
+            (day_id,),
+        )
+        utterances = serialize_minutes_exchange(cur.fetchall() or [])
+        cur.execute(
+            "SELECT id, table_key, page, caption, rows_json, html, search_text, confidence FROM meeting_tables WHERE day_id=%s ORDER BY page ASC, id ASC",
+            (day_id,),
+        )
+        table_rows = cur.fetchall() or []
+    return jsonify(
+        {
+            "id": int(day["id"]),
+            "meetingDate": str(day["meeting_date"]) if day.get("meeting_date") else None,
+            "section": day.get("section") or "",
+            "meetingName": day.get("meeting_name") or "",
+            "title": day.get("title") or "",
+            "pdfUrl": day.get("pdf_url") or "",
+            "pageUrl": day.get("page_url") or "",
+            "pageCount": int(day.get("page_count") or 0),
+            "utterances": utterances,
+            "tables": [
+                {
+                    "id": int(row["id"]),
+                    "tableKey": row.get("table_key") or "",
+                    "page": int(row.get("page") or 0),
+                    "caption": row.get("caption") or "",
+                    "rows": json.loads(row.get("rows_json") or "[]"),
+                    "html": row.get("html") or "",
+                    "searchText": row.get("search_text") or "",
+                    "confidence": float(row.get("confidence") or 0),
+                }
+                for row in table_rows
+            ],
+        }
+    )
 
 
 @app.get('/api/documents')

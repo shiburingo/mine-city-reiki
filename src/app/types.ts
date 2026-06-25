@@ -184,3 +184,96 @@ export type BrowseCategory = {
   label: string;
   trail: string;
 };
+
+export type MinutesSpeakerRole = 'questioner' | 'answerer' | 'chair' | 'secretariat' | 'other' | 'unknown';
+
+export type MinutesRun = {
+  id: number;
+  status: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  recentDays: number;
+  summary: Record<string, any>;
+  errorText: string | null;
+};
+
+export type MinutesStatus = {
+  dayCount: number;
+  utteranceCount: number;
+  tableCount: number;
+  speakerCount: number;
+  latestRun: MinutesRun | null;
+  latestDays: {
+    id: number;
+    meetingDate: string | null;
+    section: string;
+    meetingName: string;
+    title: string;
+    pdfUrl: string;
+  }[];
+};
+
+export type MinutesExchangeItem = {
+  id: number;
+  order: number;
+  speakerName: string;
+  speakerTitle: string;
+  speakerRole: MinutesSpeakerRole;
+  speechType: string;
+  text: string;
+  pageStart: number;
+  pageEnd: number;
+};
+
+export type MinutesSearchResult = {
+  id: number;
+  dayId: number;
+  meetingDate: string | null;
+  section: string;
+  meetingName: string;
+  dayTitle: string;
+  pdfUrl: string;
+  pageUrl: string;
+  speakerName: string;
+  speakerTitle: string;
+  speakerRole: MinutesSpeakerRole;
+  speechType: string;
+  order: number;
+  pageStart: number;
+  pageEnd: number;
+  snippet: string;
+  text: string;
+  exchange: MinutesExchangeItem[];
+};
+
+export type MinutesSpeaker = {
+  displayName: string;
+  title: string;
+  role: MinutesSpeakerRole;
+  speakerGroup: string;
+  utteranceCount: number;
+};
+
+export type MinutesTable = {
+  id: number;
+  tableKey: string;
+  page: number;
+  caption: string;
+  rows: string[][];
+  html: string;
+  searchText: string;
+  confidence: number;
+};
+
+export type MinutesDayDetail = {
+  id: number;
+  meetingDate: string | null;
+  section: string;
+  meetingName: string;
+  title: string;
+  pdfUrl: string;
+  pageUrl: string;
+  pageCount: number;
+  utterances: MinutesExchangeItem[];
+  tables: MinutesTable[];
+};

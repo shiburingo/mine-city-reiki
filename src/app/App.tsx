@@ -13,23 +13,29 @@ import {
   fetchDocumentHistoryDetail,
   fetchDocumentList,
   fetchLawTypes,
+  fetchMinutesDayDetail,
+  fetchMinutesSpeakers,
+  fetchMinutesStatus,
   fetchSyncRuns,
   fetchSyncStatus,
   fetchSynonyms,
+  runMinutesSync,
   runReindex,
   runSync,
   searchLaws,
   searchLawsForRelated,
+  searchMinutes,
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
   { id: 'dashboard', label: 'ダッシュボード', icon: Database },
   { id: 'browse', label: '閲覧', icon: BookOpen },
   { id: 'search', label: '例規検索', icon: Search },
+  { id: 'minutes', label: '会議録検索システム', icon: FileSearch },
   { id: 'ask', label: '質問', icon: FileSearch },
   { id: 'bookmarks', label: 'ブックマーク', icon: Bookmark },
   { id: 'settings', label: '設定', icon: Settings2 },
@@ -158,6 +164,15 @@ const EMPTY_SYNC_STATUS: SyncStatus = {
   localPublicServiceLatestRevisions: [],
 };
 
+const EMPTY_MINUTES_STATUS: MinutesStatus = {
+  dayCount: 0,
+  utteranceCount: 0,
+  tableCount: 0,
+  speakerCount: 0,
+  latestRun: null,
+  latestDays: [],
+};
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '未実行';
   const date = new Date(value);
@@ -176,6 +191,23 @@ function sourceLabel(source: string): string {
   if (source === 'egov') return '地方自治法';
   if (source === 'local-public-service') return '地方公務員法';
   return '全ソース';
+}
+
+function minutesRoleLabel(role: string): string {
+  if (role === 'questioner') return '質問者';
+  if (role === 'answerer') return '答弁者';
+  if (role === 'chair') return '議事進行';
+  if (role === 'secretariat') return '事務局';
+  if (role === 'other') return 'その他';
+  return '未分類';
+}
+
+function minutesRoleClass(role: string): string {
+  if (role === 'questioner') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
+  if (role === 'answerer') return 'border-sky-200 bg-sky-50 text-sky-800';
+  if (role === 'chair') return 'border-amber-200 bg-amber-50 text-amber-800';
+  if (role === 'secretariat') return 'border-slate-200 bg-slate-50 text-slate-700';
+  return 'border-border bg-muted text-muted-foreground';
 }
 
 function groupSearchResults(items: SearchResult[]): SearchResultGroup[] {
@@ -661,6 +693,20 @@ function AppShell() {
   const [questionHistory, setQuestionHistory] = useState<string[]>([]);
   const [expandedArticleKeys, setExpandedArticleKeys] = useState<Set<string>>(new Set());
 
+  const [minutesStatus, setMinutesStatus] = useState<MinutesStatus>(EMPTY_MINUTES_STATUS);
+  const [minutesSpeakers, setMinutesSpeakers] = useState<MinutesSpeaker[]>([]);
+  const [minutesQuery, setMinutesQuery] = useState('');
+  const [minutesSpeaker, setMinutesSpeaker] = useState('');
+  const [minutesRole, setMinutesRole] = useState('all');
+  const [minutesSection, setMinutesSection] = useState('all');
+  const [minutesResults, setMinutesResults] = useState<MinutesSearchResult[]>([]);
+  const [minutesTotal, setMinutesTotal] = useState(0);
+  const [minutesSearching, setMinutesSearching] = useState(false);
+  const [minutesSyncing, setMinutesSyncing] = useState(false);
+  const [selectedMinutesResult, setSelectedMinutesResult] = useState<MinutesSearchResult | null>(null);
+  const [minutesDayDetail, setMinutesDayDetail] = useState<MinutesDayDetail | null>(null);
+  const [minutesDetailLoading, setMinutesDetailLoading] = useState(false);
+
   const [syncForm, setSyncForm] = useState<SyncForm>({
     enabled: false,
     dayOfMonth: 1,
@@ -755,6 +801,10 @@ function AppShell() {
     if (tab === 'search' && lawTypeOptions.length === 0) {
       void loadLawTypes();
     }
+    if (tab === 'minutes') {
+      void loadMinutesStatus();
+      if (minutesSpeakers.length === 0) void loadMinutesSpeakers();
+    }
   }, [tab]);
 
   useEffect(() => {
@@ -774,6 +824,26 @@ function AppShell() {
     }, 3000);
     return () => window.clearInterval(timer);
   }, [tab, syncRuns]);
+
+  useEffect(() => {
+    if (tab !== 'minutes') return;
+    const hasRunningMinutes = syncRuns.some((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync')
+      || minutesStatus.latestRun?.status === 'running';
+    if (!hasRunningMinutes) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const [status, runs] = await Promise.all([fetchMinutesStatus(), fetchSyncRuns()]);
+          setMinutesStatus(status);
+          setSyncRuns(runs);
+          if (status.latestRun?.status !== 'running') setMinutesSyncing(false);
+        } catch {
+          // keep the existing screen state when polling fails
+        }
+      })();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [tab, syncRuns, minutesStatus.latestRun?.status]);
 
   useEffect(() => {
     if (selectedDocId == null) return;
@@ -850,6 +920,11 @@ function AppShell() {
       setPendingSelectedArticleHit(null);
     }, 0);
   }, [selectedDoc, pendingSelectedArticleHit]);
+
+  useEffect(() => {
+    if (tab !== 'minutes') return;
+    void loadMinutesDay(selectedMinutesResult);
+  }, [tab, selectedMinutesResult?.id]);
 
   async function handleLogin(username: string, password: string) {
     const loggedIn = await login(username, password);
@@ -1012,6 +1087,80 @@ function AppShell() {
       setLawTypeOptions(types);
     } catch {
       // optional
+    }
+  }
+
+  async function loadMinutesStatus() {
+    try {
+      const status = await fetchMinutesStatus();
+      setMinutesStatus(status);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録ステータス取得に失敗しました。');
+    }
+  }
+
+  async function loadMinutesSpeakers() {
+    try {
+      const speakers = await fetchMinutesSpeakers();
+      setMinutesSpeakers(speakers);
+    } catch {
+      // optional
+    }
+  }
+
+  async function triggerMinutesSync() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では会議録同期を実行できません。');
+      return;
+    }
+    setMinutesSyncing(true);
+    setGlobalError(null);
+    try {
+      await runMinutesSync(365);
+      const [status, runs] = await Promise.all([fetchMinutesStatus(), fetchSyncRuns()]);
+      setMinutesStatus(status);
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録同期の起動に失敗しました。');
+      setMinutesSyncing(false);
+    }
+  }
+
+  async function submitMinutesSearch() {
+    if (!minutesQuery.trim() && !minutesSpeaker.trim() && minutesRole === 'all' && minutesSection === 'all') return;
+    setMinutesSearching(true);
+    setGlobalError(null);
+    try {
+      const resp = await searchMinutes({
+        q: minutesQuery.trim() || undefined,
+        speaker: minutesSpeaker.trim() || undefined,
+        role: minutesRole,
+        section: minutesSection,
+        limit: 30,
+      });
+      setMinutesResults(resp.items);
+      setMinutesTotal(resp.total);
+      setSelectedMinutesResult(resp.items[0] || null);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録検索に失敗しました。');
+    } finally {
+      setMinutesSearching(false);
+    }
+  }
+
+  async function loadMinutesDay(result: MinutesSearchResult | null) {
+    if (!result) {
+      setMinutesDayDetail(null);
+      return;
+    }
+    setMinutesDetailLoading(true);
+    try {
+      const detail = await fetchMinutesDayDetail(result.dayId);
+      setMinutesDayDetail(detail);
+    } catch {
+      setMinutesDayDetail(null);
+    } finally {
+      setMinutesDetailLoading(false);
     }
   }
 
@@ -1197,6 +1346,11 @@ function AppShell() {
     [syncRuns],
   );
 
+  const runningMinutesRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync') ?? null,
+    [syncRuns],
+  );
+
   const statCards = useMemo(
     () => [
       {
@@ -1363,8 +1517,8 @@ function AppShell() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <PortalHeader
-        title="美祢市例規・法令DB"
-        subtitle="美祢市例規・地方自治法・地方公務員法を横断検索し、他システムから参照できるようにします。"
+        title="美祢市例規・法令・会議録DB"
+        subtitle="美祢市例規・地方自治法・地方公務員法・美祢市議会会議録を横断検索し、他システムから参照できるようにします。"
         syncStatusText={syncBadgeText(syncStatus)}
         syncStatusTone={toneForStatus(syncStatus)}
         onOpenSettings={() => setTab('settings')}
@@ -1432,7 +1586,7 @@ function AppShell() {
                   <h2 className="text-xl font-semibold">システム概要</h2>
                 </div>
                 <div className="mt-4 space-y-4 text-sm leading-7 text-muted-foreground">
-                  <p>このシステムは、地方自治法・地方公務員法・美祢市例規を条文単位で保存し、全文検索と簡易質問応答で参照できるようにするモジュールです。</p>
+                  <p>このシステムは、地方自治法・地方公務員法・美祢市例規を条文単位で保存し、美祢市議会会議録を発言単位で保存して、全文検索と簡易質問応答で参照できるようにするモジュールです。</p>
                   <p>他アプリからは API 経由で検索・条文参照が可能です。まずは候補条文を提示する方式で安全に運用し、その後に高度な要約や引用補助を追加できます。</p>
                   <p>更新は公開ページからの同期で行います。月次設定を有効化すると、設定した日時を過ぎた時点で定期チェックが走り、最新データを取り込みます。</p>
                 </div>
@@ -1987,6 +2141,223 @@ function AppShell() {
                     </div>
                   ) : null}
                 </>
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {tab === 'minutes' ? (
+          <section className="grid gap-6 xl:grid-cols-[0.82fr_1fr_1.25fr]">
+            <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
+              <div className="flex items-center gap-2">
+                <FileSearch className="size-5 text-primary" />
+                <h2 className="text-xl font-semibold">会議録検索</h2>
+              </div>
+              <p className="text-sm leading-6 text-muted-foreground">
+                美祢市議会の会議録PDFを発言単位で検索します。初期版は直近1年分を対象に、質問者・答弁者タグと前後発言を表示します。
+              </p>
+              <div className="grid gap-3 rounded-2xl border bg-background p-4 text-sm">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground">会議日</p>
+                    <p className="text-lg font-semibold">{minutesStatus.dayCount.toLocaleString()}件</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">発言</p>
+                    <p className="text-lg font-semibold">{minutesStatus.utteranceCount.toLocaleString()}件</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">発言者</p>
+                    <p className="text-lg font-semibold">{minutesStatus.speakerCount.toLocaleString()}人</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">表</p>
+                    <p className="text-lg font-semibold">{minutesStatus.tableCount.toLocaleString()}件</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={minutesSyncing || Boolean(runningMinutesRun)}
+                  onClick={() => void triggerMinutesSync()}
+                  className="inline-flex h-10 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
+                >
+                  {minutesSyncing || runningMinutesRun ? '直近1年分を取り込み中…' : '直近1年分を取り込む'}
+                </button>
+                <ProgressMeter title="会議録同期の進捗" run={runningMinutesRun} />
+                {minutesStatus.latestRun?.errorText ? (
+                  <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{minutesStatus.latestRun.errorText}</p>
+                ) : null}
+              </div>
+              <div className="space-y-3">
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">キーワード</span>
+                  <input
+                    className="h-11 w-full rounded-2xl border bg-input-background px-3"
+                    placeholder="例: 公共交通、会計年度任用職員"
+                    value={minutesQuery}
+                    onChange={(e) => setMinutesQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+                  />
+                </label>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">発言者</span>
+                  <input
+                    className="h-11 w-full rounded-2xl border bg-input-background px-3"
+                    list="minutes-speakers"
+                    placeholder="氏名または役職"
+                    value={minutesSpeaker}
+                    onChange={(e) => setMinutesSpeaker(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+                  />
+                  <datalist id="minutes-speakers">
+                    {minutesSpeakers.slice(0, 200).map((speaker) => (
+                      <option key={`${speaker.displayName}-${speaker.title}-${speaker.role}`} value={speaker.displayName}>
+                        {speaker.title ? `${speaker.title} / ${minutesRoleLabel(speaker.role)}` : minutesRoleLabel(speaker.role)}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium">発言区分</span>
+                    <select className="h-11 w-full rounded-2xl border bg-input-background px-3" value={minutesRole} onChange={(e) => setMinutesRole(e.target.value)}>
+                      <option value="all">すべて</option>
+                      <option value="questioner">質問者</option>
+                      <option value="answerer">答弁者</option>
+                      <option value="chair">議事進行</option>
+                      <option value="secretariat">事務局</option>
+                      <option value="unknown">未分類</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium">会議種別</span>
+                    <select className="h-11 w-full rounded-2xl border bg-input-background px-3" value={minutesSection} onChange={(e) => setMinutesSection(e.target.value)}>
+                      <option value="all">すべて</option>
+                      <option value="本会議">本会議</option>
+                      <option value="常任委員会">常任委員会</option>
+                      <option value="特別委員会">特別委員会</option>
+                    </select>
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  disabled={minutesSearching}
+                  onClick={() => void submitMinutesSearch()}
+                  className="inline-flex h-11 w-full items-center justify-center rounded-2xl bg-primary font-semibold text-primary-foreground disabled:opacity-60"
+                >
+                  {minutesSearching ? '検索中…' : '会議録を検索'}
+                </button>
+              </div>
+              {minutesStatus.latestDays.length > 0 ? (
+                <div className="border-t pt-4">
+                  <p className="mb-2 text-sm font-semibold">最近取り込んだ会議録</p>
+                  <div className="space-y-2">
+                    {minutesStatus.latestDays.slice(0, 4).map((day) => (
+                      <div key={day.id} className="rounded-xl border bg-background px-3 py-2 text-xs">
+                        <p className="font-medium">{day.meetingDate || '日付なし'} / {day.section}</p>
+                        <p className="mt-0.5 text-muted-foreground">{day.meetingName || day.title}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-3xl border bg-card p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-xl font-semibold">検索結果</h2>
+                <span className="text-sm text-muted-foreground">{minutesTotal.toLocaleString()}件</span>
+              </div>
+              <div className="mt-4 max-h-[78vh] space-y-3 overflow-auto">
+                {minutesSearching ? (
+                  <p className="text-sm text-muted-foreground">検索中…</p>
+                ) : minutesResults.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">条件を入力して検索してください。未取り込みの場合は、左の「直近1年分を取り込む」を実行してください。</p>
+                ) : (
+                  minutesResults.map((result) => (
+                    <button
+                      key={result.id}
+                      type="button"
+                      onClick={() => setSelectedMinutesResult(result)}
+                      className={`w-full rounded-2xl border p-4 text-left transition hover:bg-accent/40 ${
+                        selectedMinutesResult?.id === result.id ? 'border-primary bg-primary/5' : 'bg-background'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs text-muted-foreground">{result.meetingDate || '日付なし'} / {result.section}</p>
+                          <p className="mt-1 text-sm font-semibold leading-snug">{result.meetingName || result.dayTitle}</p>
+                        </div>
+                        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(result.speakerRole)}`}>
+                          {minutesRoleLabel(result.speakerRole)}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-sm font-medium">{result.speakerTitle} {result.speakerName}</p>
+                      <p className="mt-2 rounded-xl bg-muted/40 p-3 text-sm leading-6">{result.snippet}</p>
+                      <p className="mt-2 text-xs text-muted-foreground">発言番号 {result.order} / p.{result.pageStart}-{result.pageEnd}</p>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-3xl border bg-card p-6 shadow-sm">
+              {!selectedMinutesResult ? (
+                <p className="text-sm text-muted-foreground">検索結果を選択すると、該当発言と前後の質問・答弁を表示します。</p>
+              ) : (
+                <div className="space-y-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm text-muted-foreground">{selectedMinutesResult.section} / {selectedMinutesResult.meetingDate || '日付なし'}</p>
+                      <h2 className="mt-1 text-2xl font-semibold">{selectedMinutesResult.meetingName || selectedMinutesResult.dayTitle}</h2>
+                      <p className="mt-2 text-sm text-muted-foreground">選択発言: {selectedMinutesResult.speakerTitle} {selectedMinutesResult.speakerName} / p.{selectedMinutesResult.pageStart}</p>
+                    </div>
+                    <a
+                      href={selectedMinutesResult.pdfUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                      className="inline-flex h-10 shrink-0 items-center justify-center rounded-2xl border px-4 text-sm font-medium hover:bg-accent"
+                    >
+                      PDF原文
+                    </a>
+                  </div>
+                  <div className="max-h-[52vh] space-y-3 overflow-auto rounded-2xl border bg-background p-4">
+                    {selectedMinutesResult.exchange.map((item) => (
+                      <article
+                        key={item.id}
+                        className={`rounded-2xl border p-4 ${
+                          item.id === selectedMinutesResult.id ? 'border-primary bg-primary/10' : 'bg-card'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold">{item.speakerTitle} {item.speakerName}</p>
+                            <p className="text-xs text-muted-foreground">発言番号 {item.order} / p.{item.pageStart}-{item.pageEnd}</p>
+                          </div>
+                          <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>
+                            {minutesRoleLabel(item.speakerRole)}
+                          </span>
+                        </div>
+                        <p className="mt-3 whitespace-pre-wrap text-sm leading-7">{item.text}</p>
+                      </article>
+                    ))}
+                  </div>
+                  {minutesDetailLoading ? (
+                    <p className="text-sm text-muted-foreground">同日の表を読み込み中…</p>
+                  ) : minutesDayDetail?.tables.length ? (
+                    <div className="border-t pt-4">
+                      <p className="mb-3 text-sm font-semibold">同日PDFから抽出した表</p>
+                      <div className="max-h-72 space-y-4 overflow-auto">
+                        {minutesDayDetail.tables.slice(0, 5).map((table) => (
+                          <div key={table.id} className="rounded-2xl border bg-background p-4">
+                            <p className="mb-2 text-sm font-semibold">{table.caption} / p.{table.page}</p>
+                            <div className="overflow-auto text-sm [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-muted [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               )}
             </div>
           </section>

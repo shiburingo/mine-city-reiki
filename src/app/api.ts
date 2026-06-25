@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, SearchField, SearchResponse, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -139,4 +139,45 @@ export function buildDocumentsCsvUrl(source?: string): string {
 export async function searchLawsForRelated(fields: SearchField[], excludeDocId: number, source?: string): Promise<SearchResult[]> {
   const resp = await searchLaws({ fields, source, limit: 6, fuzzy: true });
   return resp.items.filter((r) => r.documentId !== excludeDocId).slice(0, 5);
+}
+
+export async function fetchMinutesStatus(): Promise<MinutesStatus> {
+  return apiFetch<MinutesStatus>('/minutes/status');
+}
+
+export async function runMinutesSync(recentDays = 365): Promise<{ ok: boolean; started: boolean; recentDays: number }> {
+  return apiFetch<{ ok: boolean; started: boolean; recentDays: number }>('/minutes/sync', {
+    method: 'POST',
+    body: JSON.stringify({ recentDays }),
+  });
+}
+
+export async function searchMinutes(params: {
+  q?: string;
+  speaker?: string;
+  role?: string;
+  section?: string;
+  fromDate?: string;
+  toDate?: string;
+  limit?: number;
+}): Promise<{ items: MinutesSearchResult[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  if (params.speaker) qs.set('speaker', params.speaker);
+  if (params.role && params.role !== 'all') qs.set('role', params.role);
+  if (params.section && params.section !== 'all') qs.set('section', params.section);
+  if (params.fromDate) qs.set('fromDate', params.fromDate);
+  if (params.toDate) qs.set('toDate', params.toDate);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const data = await apiFetch<{ items: MinutesSearchResult[]; total: number }>(`/minutes/search?${qs.toString()}`);
+  return { items: data.items || [], total: data.total ?? data.items?.length ?? 0 };
+}
+
+export async function fetchMinutesSpeakers(): Promise<MinutesSpeaker[]> {
+  const data = await apiFetch<{ items: MinutesSpeaker[] }>('/minutes/speakers');
+  return data.items || [];
+}
+
+export async function fetchMinutesDayDetail(dayId: number): Promise<MinutesDayDetail> {
+  return apiFetch<MinutesDayDetail>(`/minutes/days/${dayId}`);
 }
