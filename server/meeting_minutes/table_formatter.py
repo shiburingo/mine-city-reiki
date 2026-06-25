@@ -111,11 +111,19 @@ def _split_role_name_scored(cells: list[str], names: set[str]) -> tuple[int, str
         if not role or not name:
             continue
         score = 0
-        if any(token in role for token in ROLE_TOKENS):
-            score += 5
-        if name in names:
+        if role in ROLE_TOKENS:
+            score += 7
+        elif any(role.endswith(token) for token in ROLE_TOKENS):
+            score += 6
+        elif any(token in role for token in ROLE_TOKENS):
             score += 4
-        if 2 <= len(name) <= 6:
+        if name in names:
+            score += 8
+        if 3 <= len(name) <= 5:
+            score += 4
+        elif len(name) == 2:
+            score += 1
+        elif len(name) == 6:
             score += 2
         if len(role) <= 16:
             score += 1
