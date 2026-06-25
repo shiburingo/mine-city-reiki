@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart2, Bookmark, BookMarked, BookOpen, ChevronLeft, ChevronRight, Clock, Database, Download, FileSearch, Printer, RefreshCw, Search, Settings2, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader } from '@mine-troutfarm/ui';
 import {
@@ -14,6 +14,7 @@ import {
   fetchDocumentList,
   fetchLawTypes,
   fetchMinutesDayDetail,
+  fetchMinutesMeetings,
   fetchMinutesSpeakers,
   fetchMinutesStatus,
   fetchSyncRuns,
@@ -28,7 +29,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesSearchResult, MinutesSpeaker, MinutesStatus, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -695,10 +696,16 @@ function AppShell() {
 
   const [minutesStatus, setMinutesStatus] = useState<MinutesStatus>(EMPTY_MINUTES_STATUS);
   const [minutesSpeakers, setMinutesSpeakers] = useState<MinutesSpeaker[]>([]);
+  const [minutesMeetings, setMinutesMeetings] = useState<MinutesMeeting[]>([]);
   const [minutesQuery, setMinutesQuery] = useState('');
   const [minutesSpeaker, setMinutesSpeaker] = useState('');
   const [minutesRole, setMinutesRole] = useState('all');
   const [minutesSection, setMinutesSection] = useState('all');
+  const [minutesMeetingId, setMinutesMeetingId] = useState<number | null>(null);
+  const [minutesFromDate, setMinutesFromDate] = useState('');
+  const [minutesToDate, setMinutesToDate] = useState('');
+  const [minutesMode, setMinutesMode] = useState<'keyword' | 'speaker' | 'meeting'>('keyword');
+  const [minutesResultMode, setMinutesResultMode] = useState<'utterance' | 'meeting' | 'table'>('utterance');
   const [minutesResults, setMinutesResults] = useState<MinutesSearchResult[]>([]);
   const [minutesTotal, setMinutesTotal] = useState(0);
   const [minutesSearching, setMinutesSearching] = useState(false);
@@ -804,6 +811,7 @@ function AppShell() {
     if (tab === 'minutes') {
       void loadMinutesStatus();
       if (minutesSpeakers.length === 0) void loadMinutesSpeakers();
+      if (minutesMeetings.length === 0) void loadMinutesMeetings();
     }
   }, [tab]);
 
@@ -1108,6 +1116,15 @@ function AppShell() {
     }
   }
 
+  async function loadMinutesMeetings() {
+    try {
+      const meetings = await fetchMinutesMeetings();
+      setMinutesMeetings(meetings);
+    } catch {
+      // optional
+    }
+  }
+
   async function triggerMinutesSync() {
     if (user?.isGuest) {
       setGlobalError('ゲスト権限では会議録同期を実行できません。');
@@ -1117,9 +1134,11 @@ function AppShell() {
     setGlobalError(null);
     try {
       await runMinutesSync(365);
-      const [status, runs] = await Promise.all([fetchMinutesStatus(), fetchSyncRuns()]);
+      const [status, runs, speakers, meetings] = await Promise.all([fetchMinutesStatus(), fetchSyncRuns(), fetchMinutesSpeakers(), fetchMinutesMeetings()]);
       setMinutesStatus(status);
       setSyncRuns(runs);
+      setMinutesSpeakers(speakers);
+      setMinutesMeetings(meetings);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録同期の起動に失敗しました。');
       setMinutesSyncing(false);
@@ -1127,7 +1146,15 @@ function AppShell() {
   }
 
   async function submitMinutesSearch() {
-    if (!minutesQuery.trim() && !minutesSpeaker.trim() && minutesRole === 'all' && minutesSection === 'all') return;
+    if (
+      !minutesQuery.trim()
+      && !minutesSpeaker.trim()
+      && minutesRole === 'all'
+      && minutesSection === 'all'
+      && !minutesMeetingId
+      && !minutesFromDate
+      && !minutesToDate
+    ) return;
     setMinutesSearching(true);
     setGlobalError(null);
     try {
@@ -1136,6 +1163,9 @@ function AppShell() {
         speaker: minutesSpeaker.trim() || undefined,
         role: minutesRole,
         section: minutesSection,
+        meetingId: minutesMeetingId || undefined,
+        fromDate: minutesFromDate || undefined,
+        toDate: minutesToDate || undefined,
         limit: 30,
       });
       setMinutesResults(resp.items);
@@ -1384,6 +1414,38 @@ function AppShell() {
   const browseDocArticleTree = useMemo(() => buildArticleGroupTree(browseDoc?.articles || []), [browseDoc]);
   const selectedDocArticleTree = useMemo(() => buildArticleGroupTree(selectedDoc?.articles || []), [selectedDoc]);
   const groupedResults = useMemo(() => groupSearchResults(results), [results]);
+  const deferredMinutesSpeaker = useDeferredValue(minutesSpeaker);
+  const filteredMinutesSpeakers = useMemo(() => {
+    const needle = deferredMinutesSpeaker.trim();
+    return minutesSpeakers
+      .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle))
+      .slice(0, 12);
+  }, [minutesSpeakers, deferredMinutesSpeaker]);
+  const selectedMinutesMeeting = useMemo(
+    () => minutesMeetings.find((meeting) => meeting.id === minutesMeetingId) || null,
+    [minutesMeetings, minutesMeetingId],
+  );
+  const meetingGroupedMinutesResults = useMemo(() => {
+    const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
+    for (const result of minutesResults) {
+      const existing = groups.get(result.dayId);
+      if (existing) {
+        existing.count += 1;
+        existing.speakers.add(result.speakerName);
+        continue;
+      }
+      groups.set(result.dayId, {
+        dayId: result.dayId,
+        title: result.meetingName || result.dayTitle,
+        section: result.section,
+        meetingDate: result.meetingDate,
+        count: 1,
+        speakers: new Set([result.speakerName]),
+        first: result,
+      });
+    }
+    return [...groups.values()];
+  }, [minutesResults]);
 
   const renderArticleNavTree = (nodes: ArticleGroupNode[], anchorPrefix: string, depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-2' : 'mt-1 space-y-1 border-l border-border/70 pl-3'}>
@@ -2147,218 +2209,421 @@ function AppShell() {
         ) : null}
 
         {tab === 'minutes' ? (
-          <section className="grid gap-6 xl:grid-cols-[0.82fr_1fr_1.25fr]">
-            <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
-              <div className="flex items-center gap-2">
-                <FileSearch className="size-5 text-primary" />
-                <h2 className="text-xl font-semibold">会議録検索</h2>
-              </div>
-              <p className="text-sm leading-6 text-muted-foreground">
-                美祢市議会の会議録PDFを発言単位で検索します。初期版は直近1年分を対象に、質問者・答弁者タグと前後発言を表示します。
-              </p>
-              <div className="grid gap-3 rounded-2xl border bg-background p-4 text-sm">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-xs text-muted-foreground">会議日</p>
-                    <p className="text-lg font-semibold">{minutesStatus.dayCount.toLocaleString()}件</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">発言</p>
-                    <p className="text-lg font-semibold">{minutesStatus.utteranceCount.toLocaleString()}件</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">発言者</p>
-                    <p className="text-lg font-semibold">{minutesStatus.speakerCount.toLocaleString()}人</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">表</p>
-                    <p className="text-lg font-semibold">{minutesStatus.tableCount.toLocaleString()}件</p>
-                  </div>
+          <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">
+            <div className="border-b bg-[#173f36] px-5 py-4 text-white">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                <div>
+                  <h2 className="text-2xl font-semibold tracking-tight">会議録検索システム</h2>
+                  <p className="mt-1 text-sm text-white/75">発言者、会議、期間、質問者/答弁者を横断して検索し、該当発言と答弁文脈を同時に確認します。</p>
                 </div>
-                <button
-                  type="button"
-                  disabled={minutesSyncing || Boolean(runningMinutesRun)}
-                  onClick={() => void triggerMinutesSync()}
-                  className="inline-flex h-10 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
-                >
-                  {minutesSyncing || runningMinutesRun ? '直近1年分を取り込み中…' : '直近1年分を取り込む'}
-                </button>
-                <ProgressMeter title="会議録同期の進捗" run={runningMinutesRun} />
-                {minutesStatus.latestRun?.errorText ? (
-                  <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{minutesStatus.latestRun.errorText}</p>
-                ) : null}
-              </div>
-              <div className="space-y-3">
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium">キーワード</span>
-                  <input
-                    className="h-11 w-full rounded-2xl border bg-input-background px-3"
-                    placeholder="例: 公共交通、会計年度任用職員"
-                    value={minutesQuery}
-                    onChange={(e) => setMinutesQuery(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
-                  />
-                </label>
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium">発言者</span>
-                  <input
-                    className="h-11 w-full rounded-2xl border bg-input-background px-3"
-                    list="minutes-speakers"
-                    placeholder="氏名または役職"
-                    value={minutesSpeaker}
-                    onChange={(e) => setMinutesSpeaker(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
-                  />
-                  <datalist id="minutes-speakers">
-                    {minutesSpeakers.slice(0, 200).map((speaker) => (
-                      <option key={`${speaker.displayName}-${speaker.title}-${speaker.role}`} value={speaker.displayName}>
-                        {speaker.title ? `${speaker.title} / ${minutesRoleLabel(speaker.role)}` : minutesRoleLabel(speaker.role)}
-                      </option>
-                    ))}
-                  </datalist>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium">発言区分</span>
-                    <select className="h-11 w-full rounded-2xl border bg-input-background px-3" value={minutesRole} onChange={(e) => setMinutesRole(e.target.value)}>
-                      <option value="all">すべて</option>
-                      <option value="questioner">質問者</option>
-                      <option value="answerer">答弁者</option>
-                      <option value="chair">議事進行</option>
-                      <option value="secretariat">事務局</option>
-                      <option value="unknown">未分類</option>
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium">会議種別</span>
-                    <select className="h-11 w-full rounded-2xl border bg-input-background px-3" value={minutesSection} onChange={(e) => setMinutesSection(e.target.value)}>
-                      <option value="all">すべて</option>
-                      <option value="本会議">本会議</option>
-                      <option value="常任委員会">常任委員会</option>
-                      <option value="特別委員会">特別委員会</option>
-                    </select>
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  disabled={minutesSearching}
-                  onClick={() => void submitMinutesSearch()}
-                  className="inline-flex h-11 w-full items-center justify-center rounded-2xl bg-primary font-semibold text-primary-foreground disabled:opacity-60"
-                >
-                  {minutesSearching ? '検索中…' : '会議録を検索'}
-                </button>
-              </div>
-              {minutesStatus.latestDays.length > 0 ? (
-                <div className="border-t pt-4">
-                  <p className="mb-2 text-sm font-semibold">最近取り込んだ会議録</p>
-                  <div className="space-y-2">
-                    {minutesStatus.latestDays.slice(0, 4).map((day) => (
-                      <div key={day.id} className="rounded-xl border bg-background px-3 py-2 text-xs">
-                        <p className="font-medium">{day.meetingDate || '日付なし'} / {day.section}</p>
-                        <p className="mt-0.5 text-muted-foreground">{day.meetingName || day.title}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-3xl border bg-card p-6 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-xl font-semibold">検索結果</h2>
-                <span className="text-sm text-muted-foreground">{minutesTotal.toLocaleString()}件</span>
-              </div>
-              <div className="mt-4 max-h-[78vh] space-y-3 overflow-auto">
-                {minutesSearching ? (
-                  <p className="text-sm text-muted-foreground">検索中…</p>
-                ) : minutesResults.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">条件を入力して検索してください。未取り込みの場合は、左の「直近1年分を取り込む」を実行してください。</p>
-                ) : (
-                  minutesResults.map((result) => (
-                    <button
-                      key={result.id}
-                      type="button"
-                      onClick={() => setSelectedMinutesResult(result)}
-                      className={`w-full rounded-2xl border p-4 text-left transition hover:bg-accent/40 ${
-                        selectedMinutesResult?.id === result.id ? 'border-primary bg-primary/5' : 'bg-background'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-xs text-muted-foreground">{result.meetingDate || '日付なし'} / {result.section}</p>
-                          <p className="mt-1 text-sm font-semibold leading-snug">{result.meetingName || result.dayTitle}</p>
-                        </div>
-                        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(result.speakerRole)}`}>
-                          {minutesRoleLabel(result.speakerRole)}
-                        </span>
-                      </div>
-                      <p className="mt-3 text-sm font-medium">{result.speakerTitle} {result.speakerName}</p>
-                      <p className="mt-2 rounded-xl bg-muted/40 p-3 text-sm leading-6">{result.snippet}</p>
-                      <p className="mt-2 text-xs text-muted-foreground">発言番号 {result.order} / p.{result.pageStart}-{result.pageEnd}</p>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border bg-card p-6 shadow-sm">
-              {!selectedMinutesResult ? (
-                <p className="text-sm text-muted-foreground">検索結果を選択すると、該当発言と前後の質問・答弁を表示します。</p>
-              ) : (
-                <div className="space-y-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm text-muted-foreground">{selectedMinutesResult.section} / {selectedMinutesResult.meetingDate || '日付なし'}</p>
-                      <h2 className="mt-1 text-2xl font-semibold">{selectedMinutesResult.meetingName || selectedMinutesResult.dayTitle}</h2>
-                      <p className="mt-2 text-sm text-muted-foreground">選択発言: {selectedMinutesResult.speakerTitle} {selectedMinutesResult.speakerName} / p.{selectedMinutesResult.pageStart}</p>
+                <div className="grid grid-cols-4 overflow-hidden rounded-2xl border border-white/15 bg-white/10 text-center text-xs">
+                  {[
+                    ['会議日', `${minutesStatus.dayCount.toLocaleString()}件`],
+                    ['発言', `${minutesStatus.utteranceCount.toLocaleString()}件`],
+                    ['発言者', `${minutesStatus.speakerCount.toLocaleString()}人`],
+                    ['表', `${minutesStatus.tableCount.toLocaleString()}件`],
+                  ].map(([label, value]) => (
+                    <div key={label} className="border-r border-white/10 px-4 py-2 last:border-r-0">
+                      <p className="text-white/60">{label}</p>
+                      <p className="mt-0.5 text-sm font-semibold">{value}</p>
                     </div>
-                    <a
-                      href={selectedMinutesResult.pdfUrl}
-                      rel="noreferrer"
-                      target="_blank"
-                      className="inline-flex h-10 shrink-0 items-center justify-center rounded-2xl border px-4 text-sm font-medium hover:bg-accent"
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-0 xl:grid-cols-[21rem_minmax(0,22rem)_minmax(0,1fr)]">
+              <aside className="border-r bg-[#f8fbf8] p-4">
+                <div className="grid grid-cols-3 rounded-2xl bg-[#dfece5] p-1 text-xs font-semibold">
+                  {([
+                    ['keyword', '全文'],
+                    ['speaker', '発言者'],
+                    ['meeting', '会議別'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setMinutesMode(mode)}
+                      className={`rounded-xl px-3 py-2 transition ${minutesMode === mode ? 'bg-white text-[#173f36] shadow-sm' : 'text-[#4d685f] hover:bg-white/60'}`}
                     >
-                      PDF原文
-                    </a>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-4 space-y-4 rounded-2xl border bg-white p-4">
+                  <label className="space-y-2 text-sm">
+                    <span className="font-semibold text-[#173f36]">検索語</span>
+                    <input
+                      className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                      placeholder="例: 観光、公共交通、学校給食"
+                      value={minutesQuery}
+                      onChange={(e) => setMinutesQuery(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="font-semibold text-[#173f36]">発言者・役職</span>
+                    <input
+                      className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                      list="minutes-speakers"
+                      placeholder="氏名、議員番号、市長、課長など"
+                      value={minutesSpeaker}
+                      onChange={(e) => setMinutesSpeaker(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+                    />
+                    <datalist id="minutes-speakers">
+                      {minutesSpeakers.slice(0, 300).map((speaker) => (
+                        <option key={`${speaker.displayName}-${speaker.title}-${speaker.role}`} value={speaker.displayName}>
+                          {speaker.title ? `${speaker.title} / ${minutesRoleLabel(speaker.role)}` : minutesRoleLabel(speaker.role)}
+                        </option>
+                      ))}
+                    </datalist>
+                  </label>
+
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">発言区分</span>
+                      <select className="h-10 w-full rounded-xl border bg-white px-3 text-sm" value={minutesRole} onChange={(e) => setMinutesRole(e.target.value)}>
+                        <option value="all">すべて</option>
+                        <option value="questioner">質問者</option>
+                        <option value="answerer">答弁者</option>
+                        <option value="chair">議事進行</option>
+                        <option value="secretariat">事務局</option>
+                        <option value="unknown">未分類</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">会議種別</span>
+                      <select className="h-10 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSection} onChange={(e) => setMinutesSection(e.target.value)}>
+                        <option value="all">すべて</option>
+                        <option value="本会議">本会議</option>
+                        <option value="常任委員会">常任委員会</option>
+                        <option value="特別委員会">特別委員会</option>
+                      </select>
+                    </label>
                   </div>
-                  <div className="max-h-[52vh] space-y-3 overflow-auto rounded-2xl border bg-background p-4">
-                    {selectedMinutesResult.exchange.map((item) => (
-                      <article
-                        key={item.id}
-                        className={`rounded-2xl border p-4 ${
-                          item.id === selectedMinutesResult.id ? 'border-primary bg-primary/10' : 'bg-card'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold">{item.speakerTitle} {item.speakerName}</p>
-                            <p className="text-xs text-muted-foreground">発言番号 {item.order} / p.{item.pageStart}-{item.pageEnd}</p>
+
+                  <label className="space-y-2 text-sm">
+                    <span className="font-semibold text-[#173f36]">会議名</span>
+                    <select
+                      className="h-10 w-full rounded-xl border bg-white px-3 text-sm"
+                      value={minutesMeetingId ?? ''}
+                      onChange={(e) => setMinutesMeetingId(e.target.value ? Number(e.target.value) : null)}
+                    >
+                      <option value="">すべての会議</option>
+                      {minutesMeetings.map((meeting) => (
+                        <option key={meeting.id} value={meeting.id}>
+                          {meeting.toDate || meeting.fromDate || '日付なし'} / {meeting.section} / {meeting.meetingName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">開始日</span>
+                      <input className="h-10 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => setMinutesFromDate(e.target.value)} />
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">終了日</span>
+                      <input className="h-10 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => setMinutesToDate(e.target.value)} />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      disabled={minutesSearching}
+                      onClick={() => void submitMinutesSearch()}
+                      className="inline-flex h-11 items-center justify-center rounded-xl bg-[#2f765e] px-4 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+                    >
+                      {minutesSearching ? '検索中…' : '検索'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMinutesQuery('');
+                        setMinutesSpeaker('');
+                        setMinutesRole('all');
+                        setMinutesSection('all');
+                        setMinutesMeetingId(null);
+                        setMinutesFromDate('');
+                        setMinutesToDate('');
+                        setMinutesResults([]);
+                        setMinutesTotal(0);
+                        setSelectedMinutesResult(null);
+                      }}
+                      className="inline-flex h-11 items-center justify-center rounded-xl border bg-white px-4 text-sm font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+                    >
+                      条件クリア
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-[#173f36]">データ更新</p>
+                    <button
+                      type="button"
+                      disabled={minutesSyncing || Boolean(runningMinutesRun)}
+                      onClick={() => void triggerMinutesSync()}
+                      className="rounded-lg border px-3 py-1.5 text-xs font-semibold text-[#2f765e] hover:bg-[#edf6f0] disabled:opacity-60"
+                    >
+                      {minutesSyncing || runningMinutesRun ? '同期中' : '直近1年同期'}
+                    </button>
+                  </div>
+                  <ProgressMeter title="会議録同期の進捗" run={runningMinutesRun} />
+                  {minutesStatus.latestRun?.finishedAt ? <p className="mt-3 text-xs text-muted-foreground">最終同期: {formatDateTime(minutesStatus.latestRun.finishedAt)}</p> : null}
+                </div>
+              </aside>
+
+              <aside className="border-r bg-white p-4">
+                <div className="grid grid-cols-3 rounded-2xl border bg-[#f5f8f5] p-1 text-xs font-semibold">
+                  {([
+                    ['utterance', '発言'],
+                    ['meeting', '会議'],
+                    ['table', '表'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setMinutesResultMode(mode)}
+                      className={`rounded-xl px-2 py-2 transition ${minutesResultMode === mode ? 'bg-[#173f36] text-white shadow-sm' : 'text-[#4d685f] hover:bg-white'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {minutesMode === 'speaker' ? (
+                  <div className="mt-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-sm font-semibold text-[#173f36]">発言者別</p>
+                      <span className="text-xs text-muted-foreground">{filteredMinutesSpeakers.length}人表示</span>
+                    </div>
+                    <div className="max-h-56 space-y-2 overflow-auto">
+                      {filteredMinutesSpeakers.map((speaker) => (
+                        <button
+                          key={`${speaker.displayName}-${speaker.title}-${speaker.role}`}
+                          type="button"
+                          onClick={() => {
+                            setMinutesSpeaker(speaker.displayName);
+                            setMinutesRole(speaker.role);
+                          }}
+                          className="w-full rounded-xl border bg-[#fbfdfb] px-3 py-2 text-left text-xs hover:border-[#79b28d]"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-foreground">{speaker.displayName || '氏名なし'}</span>
+                            <span className={`rounded-full border px-2 py-0.5 ${minutesRoleClass(speaker.role)}`}>{minutesRoleLabel(speaker.role)}</span>
                           </div>
-                          <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>
-                            {minutesRoleLabel(item.speakerRole)}
-                          </span>
+                          <p className="mt-1 text-muted-foreground">{speaker.title || '役職なし'} / {speaker.utteranceCount.toLocaleString()}発言</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {minutesMode === 'meeting' || selectedMinutesMeeting ? (
+                  <div className="mt-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-sm font-semibold text-[#173f36]">会議別</p>
+                      <span className="text-xs text-muted-foreground">{minutesMeetings.length}会議</span>
+                    </div>
+                    <div className="max-h-64 space-y-2 overflow-auto">
+                      {minutesMeetings.slice(0, 80).map((meeting) => (
+                        <button
+                          key={meeting.id}
+                          type="button"
+                          onClick={() => {
+                            setMinutesMeetingId(meeting.id);
+                            setMinutesSection(meeting.section || 'all');
+                          }}
+                          className={`w-full rounded-xl border px-3 py-2 text-left text-xs hover:border-[#79b28d] ${
+                            minutesMeetingId === meeting.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
+                          }`}
+                        >
+                          <p className="font-semibold text-foreground">{meeting.meetingName || meeting.title}</p>
+                          <p className="mt-1 text-muted-foreground">{meeting.fromDate || '日付なし'} - {meeting.toDate || '日付なし'} / {meeting.section}</p>
+                          <p className="mt-1 text-[#4d685f]">{meeting.dayCount}日程 / {meeting.utteranceCount.toLocaleString()}発言 / 表{meeting.tableCount}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mt-4 border-t pt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-[#173f36]">検索結果</p>
+                    <span className="rounded-full bg-[#dfece5] px-2 py-1 text-xs font-semibold text-[#285344]">{minutesTotal.toLocaleString()}件</span>
+                  </div>
+                  <div className="mt-3 max-h-[48vh] space-y-2 overflow-auto">
+                    {minutesSearching ? (
+                      <p className="rounded-xl border bg-[#fbfdfb] p-3 text-sm text-muted-foreground">検索中…</p>
+                    ) : minutesResults.length === 0 ? (
+                      <p className="rounded-xl border bg-[#fbfdfb] p-3 text-sm text-muted-foreground">検索条件を指定してください。発言者名だけ、会議名だけでも検索できます。</p>
+                    ) : minutesResultMode === 'meeting' ? (
+                      meetingGroupedMinutesResults.map((group) => (
+                        <button
+                          key={group.dayId}
+                          type="button"
+                          onClick={() => setSelectedMinutesResult(group.first)}
+                          className="w-full rounded-xl border bg-[#fbfdfb] px-3 py-2 text-left text-sm hover:border-[#79b28d]"
+                        >
+                          <p className="font-semibold">{group.meetingDate || '日付なし'} / {group.section}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{group.title}</p>
+                          <p className="mt-1 text-xs text-[#2f765e]">{group.count}発言ヒット / 発言者 {group.speakers.size}人</p>
+                        </button>
+                      ))
+                    ) : minutesResultMode === 'table' ? (
+                      minutesDayDetail?.tables.length ? (
+                        minutesDayDetail.tables.map((table) => (
+                          <button
+                            key={table.id}
+                            type="button"
+                            className="w-full rounded-xl border bg-[#fbfdfb] px-3 py-2 text-left text-sm hover:border-[#79b28d]"
+                          >
+                            <p className="font-semibold">{table.caption}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">p.{table.page} / 信頼度 {Math.round(table.confidence * 100)}%</p>
+                          </button>
+                        ))
+                      ) : (
+                        <p className="rounded-xl border bg-[#fbfdfb] p-3 text-sm text-muted-foreground">発言を選択すると、同日の抽出表を確認できます。</p>
+                      )
+                    ) : (
+                      minutesResults.map((result) => (
+                        <button
+                          key={result.id}
+                          type="button"
+                          onClick={() => setSelectedMinutesResult(result)}
+                          className={`w-full rounded-xl border px-3 py-3 text-left transition hover:border-[#79b28d] ${
+                            selectedMinutesResult?.id === result.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-xs text-muted-foreground">{result.meetingDate || '日付なし'} / {result.section}</p>
+                              <p className="mt-1 text-sm font-semibold leading-snug">{result.meetingName || result.dayTitle}</p>
+                            </div>
+                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(result.speakerRole)}`}>
+                              {minutesRoleLabel(result.speakerRole)}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm font-medium">{result.speakerTitle} {result.speakerName}</p>
+                          <p className="mt-2 line-clamp-3 text-xs leading-5 text-muted-foreground">{result.snippet}</p>
+                          <p className="mt-2 text-xs text-[#2f765e]">発言{result.order} / p.{result.pageStart}-{result.pageEnd}</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </aside>
+
+              <div className="bg-[#f8fbf8] p-5">
+                {!selectedMinutesResult ? (
+                  <div className="flex min-h-[66vh] items-center justify-center rounded-3xl border border-dashed bg-white p-8 text-center">
+                    <div>
+                      <FileSearch className="mx-auto size-10 text-[#79a58a]" />
+                      <p className="mt-3 font-semibold text-[#173f36]">検索結果から発言を選択してください</p>
+                      <p className="mt-2 text-sm text-muted-foreground">選択すると、該当発言、前後の質問・答弁、同日PDFの表を同じ画面で確認できます。</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="rounded-3xl border bg-white p-5">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-[#2f765e]">{selectedMinutesResult.section} / {selectedMinutesResult.meetingDate || '日付なし'}</p>
+                          <h2 className="mt-1 text-2xl font-semibold leading-tight">{selectedMinutesResult.meetingName || selectedMinutesResult.dayTitle}</h2>
+                          <p className="mt-2 text-sm text-muted-foreground">
+                            発言{selectedMinutesResult.order} / {selectedMinutesResult.speakerTitle} {selectedMinutesResult.speakerName} / p.{selectedMinutesResult.pageStart}
+                          </p>
                         </div>
-                        <p className="mt-3 whitespace-pre-wrap text-sm leading-7">{item.text}</p>
-                      </article>
-                    ))}
-                  </div>
-                  {minutesDetailLoading ? (
-                    <p className="text-sm text-muted-foreground">同日の表を読み込み中…</p>
-                  ) : minutesDayDetail?.tables.length ? (
-                    <div className="border-t pt-4">
-                      <p className="mb-3 text-sm font-semibold">同日PDFから抽出した表</p>
-                      <div className="max-h-72 space-y-4 overflow-auto">
-                        {minutesDayDetail.tables.slice(0, 5).map((table) => (
-                          <div key={table.id} className="rounded-2xl border bg-background p-4">
-                            <p className="mb-2 text-sm font-semibold">{table.caption} / p.{table.page}</p>
-                            <div className="overflow-auto text-sm [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-muted [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
-                          </div>
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMinutesSpeaker(selectedMinutesResult.speakerName);
+                              setMinutesRole(selectedMinutesResult.speakerRole);
+                              setMinutesMode('speaker');
+                            }}
+                            className="inline-flex h-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold hover:bg-[#edf6f0]"
+                          >
+                            この発言者で検索
+                          </button>
+                          <a
+                            href={selectedMinutesResult.pdfUrl}
+                            rel="noreferrer"
+                            target="_blank"
+                            className="inline-flex h-10 items-center justify-center rounded-xl bg-[#173f36] px-4 text-sm font-semibold text-white"
+                          >
+                            PDF原文
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_20rem]">
+                      <div className="max-h-[64vh] space-y-3 overflow-auto rounded-3xl border bg-white p-4">
+                        <div className="sticky top-0 z-10 -mx-4 -mt-4 border-b bg-white/95 px-4 py-3 backdrop-blur">
+                          <p className="text-sm font-semibold text-[#173f36]">発言本文・前後文脈</p>
+                          <p className="text-xs text-muted-foreground">選択発言を中心に、直前の質問と直後の答弁を続けて確認できます。</p>
+                        </div>
+                        {selectedMinutesResult.exchange.map((item) => (
+                          <article
+                            key={item.id}
+                            className={`rounded-2xl border p-4 ${
+                              item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold">{item.speakerTitle} {item.speakerName}</p>
+                                <p className="text-xs text-muted-foreground">発言番号 {item.order} / p.{item.pageStart}-{item.pageEnd}</p>
+                              </div>
+                              <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>
+                                {minutesRoleLabel(item.speakerRole)}
+                              </span>
+                            </div>
+                            <p className="mt-3 whitespace-pre-wrap text-sm leading-7">{item.text}</p>
+                          </article>
                         ))}
                       </div>
+
+                      <aside className="space-y-4">
+                        <div className="rounded-3xl border bg-white p-4">
+                          <p className="text-sm font-semibold text-[#173f36]">会議内情報</p>
+                          <dl className="mt-3 space-y-2 text-sm">
+                            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">会議種別</dt><dd>{selectedMinutesResult.section}</dd></div>
+                            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">日付</dt><dd>{selectedMinutesResult.meetingDate || '不明'}</dd></div>
+                            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">表</dt><dd>{minutesDayDetail?.tables.length ?? 0}件</dd></div>
+                            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">ページ</dt><dd>{minutesDayDetail?.pageCount || '-'}</dd></div>
+                          </dl>
+                        </div>
+
+                        <div className="rounded-3xl border bg-white p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold text-[#173f36]">抽出表</p>
+                            {minutesDetailLoading ? <span className="text-xs text-muted-foreground">読込中</span> : null}
+                          </div>
+                          {minutesDayDetail?.tables.length ? (
+                            <div className="mt-3 max-h-80 space-y-3 overflow-auto">
+                              {minutesDayDetail.tables.slice(0, 6).map((table) => (
+                                <div key={table.id} className="rounded-2xl border bg-[#fbfdfb] p-3">
+                                  <p className="mb-2 text-xs font-semibold">{table.caption} / p.{table.page}</p>
+                                  <div className="overflow-auto text-xs [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-3 text-sm text-muted-foreground">この会議日に抽出表はありません。</p>
+                          )}
+                        </div>
+                      </aside>
                     </div>
-                  ) : null}
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         ) : null}

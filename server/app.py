@@ -3402,6 +3402,8 @@ def search_minutes_items(
     section: str = "",
     from_date: str = "",
     to_date: str = "",
+    meeting_id: int | None = None,
+    day_id: int | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
@@ -3420,6 +3422,12 @@ def search_minutes_items(
     if section and section != "all":
         conditions.append("s.section=%s")
         params.append(section)
+    if meeting_id:
+        conditions.append("s.id=%s")
+        params.append(meeting_id)
+    if day_id:
+        conditions.append("d.id=%s")
+        params.append(day_id)
     if from_date:
         conditions.append("d.meeting_date >= %s")
         params.append(from_date)
@@ -4412,11 +4420,56 @@ def api_minutes_search():
     section = (request.args.get("section") or "").strip()
     from_date = (request.args.get("fromDate") or "").strip()
     to_date = (request.args.get("toDate") or "").strip()
+    meeting_id = int(request.args.get("meetingId") or 0) or None
+    day_id = int(request.args.get("dayId") or 0) or None
     limit = max(1, min(60, int(request.args.get("limit") or "20")))
-    if not query and not speaker and not role and not section:
+    if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
-    items = search_minutes_items(query, speaker, role, section, from_date, to_date, limit)
+    items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, limit)
     return jsonify({"items": items, "total": len(items)})
+
+
+@app.get('/api/minutes/meetings')
+def api_minutes_meetings():
+    with db_cursor() as (_, cur):
+        cur.execute(
+            """
+            SELECT
+              s.id, s.section, s.meeting_name, s.title, s.source_url,
+              MIN(d.meeting_date) AS from_date,
+              MAX(d.meeting_date) AS to_date,
+              COUNT(DISTINCT d.id) AS day_count,
+              COUNT(DISTINCT u.id) AS utterance_count,
+              COUNT(DISTINCT t.id) AS table_count
+            FROM meeting_sessions s
+            LEFT JOIN meeting_days d ON d.session_id=s.id
+            LEFT JOIN meeting_utterances u ON u.day_id=d.id
+            LEFT JOIN meeting_tables t ON t.day_id=d.id
+            GROUP BY s.id, s.section, s.meeting_name, s.title, s.source_url
+            ORDER BY to_date DESC, s.section ASC, s.meeting_name ASC
+            LIMIT 500
+            """
+        )
+        rows = cur.fetchall() or []
+    return jsonify(
+        {
+            "items": [
+                {
+                    "id": int(row["id"]),
+                    "section": row.get("section") or "",
+                    "meetingName": row.get("meeting_name") or "",
+                    "title": row.get("title") or "",
+                    "sourceUrl": row.get("source_url") or "",
+                    "fromDate": str(row["from_date"]) if row.get("from_date") else None,
+                    "toDate": str(row["to_date"]) if row.get("to_date") else None,
+                    "dayCount": int(row.get("day_count") or 0),
+                    "utteranceCount": int(row.get("utterance_count") or 0),
+                    "tableCount": int(row.get("table_count") or 0),
+                }
+                for row in rows
+            ]
+        }
+    )
 
 
 @app.get('/api/minutes/speakers')

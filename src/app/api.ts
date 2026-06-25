@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -157,6 +157,8 @@ export async function searchMinutes(params: {
   speaker?: string;
   role?: string;
   section?: string;
+  meetingId?: number;
+  dayId?: number;
   fromDate?: string;
   toDate?: string;
   limit?: number;
@@ -166,6 +168,8 @@ export async function searchMinutes(params: {
   if (params.speaker) qs.set('speaker', params.speaker);
   if (params.role && params.role !== 'all') qs.set('role', params.role);
   if (params.section && params.section !== 'all') qs.set('section', params.section);
+  if (params.meetingId) qs.set('meetingId', String(params.meetingId));
+  if (params.dayId) qs.set('dayId', String(params.dayId));
   if (params.fromDate) qs.set('fromDate', params.fromDate);
   if (params.toDate) qs.set('toDate', params.toDate);
   if (params.limit) qs.set('limit', String(params.limit));
@@ -175,6 +179,11 @@ export async function searchMinutes(params: {
 
 export async function fetchMinutesSpeakers(): Promise<MinutesSpeaker[]> {
   const data = await apiFetch<{ items: MinutesSpeaker[] }>('/minutes/speakers');
+  return data.items || [];
+}
+
+export async function fetchMinutesMeetings(): Promise<MinutesMeeting[]> {
+  const data = await apiFetch<{ items: MinutesMeeting[] }>('/minutes/meetings');
   return data.items || [];
 }
 

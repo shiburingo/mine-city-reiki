@@ -254,6 +254,19 @@ export type MinutesSpeaker = {
   utteranceCount: number;
 };
 
+export type MinutesMeeting = {
+  id: number;
+  section: string;
+  meetingName: string;
+  title: string;
+  sourceUrl: string;
+  fromDate: string | null;
+  toDate: string | null;
+  dayCount: number;
+  utteranceCount: number;
+  tableCount: number;
+};
+
 export type MinutesTable = {
   id: number;
   tableKey: string;
