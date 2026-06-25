@@ -101,6 +101,7 @@ type MinutesSearchHistoryItem = {
   createdAt: string;
 };
 type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'advanced' | 'history' | 'results' | 'detail' | 'meetingDetail';
+type MinutesBrowseSectionFilter = 'all' | string;
 
 function loadMinutesSearchHistory(): MinutesSearchHistoryItem[] {
   try {
@@ -217,6 +218,38 @@ function formatDateTime(value: string | null | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+}
+
+function parseDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function fiscalYearFromDate(value: string | null | undefined): number | null {
+  const date = parseDate(value);
+  if (!date) return null;
+  const year = date.getFullYear();
+  return date.getMonth() + 1 >= 4 ? year : year - 1;
+}
+
+function fiscalYearLabel(year: number): string {
+  if (year >= 2019) return `令和${year - 2018}年度`;
+  if (year >= 1989) return `平成${year - 1988}年度`;
+  return `${year}年度`;
+}
+
+function formatMeetingDateRange(fromDate: string | null, toDate: string | null): string {
+  if (!fromDate && !toDate) return '日付なし';
+  if (!toDate || toDate === fromDate) return fromDate || toDate || '日付なし';
+  return `${fromDate} - ${toDate}`;
+}
+
+function minutesSectionOrder(section: string): number {
+  if (section === '本会議') return 0;
+  if (section === '常任委員会') return 1;
+  if (section === '特別委員会') return 2;
+  return 9;
 }
 
 function sourceLabel(source: string): string {
@@ -741,6 +774,8 @@ function AppShell() {
   const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(true);
   const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>('new');
   const [minutesPage, setMinutesPage] = useState<MinutesPage>('home');
+  const [minutesBrowseFiscalYear, setMinutesBrowseFiscalYear] = useState('');
+  const [minutesBrowseSection, setMinutesBrowseSection] = useState<MinutesBrowseSectionFilter>('all');
   const [minutesResultMode, setMinutesResultMode] = useState<'utterance' | 'meeting' | 'table'>('utterance');
   const [minutesReaderMode, setMinutesReaderMode] = useState<'unit' | 'list' | 'full' | 'toc' | 'materials'>('unit');
   const [minutesExpandedResultIds, setMinutesExpandedResultIds] = useState<Set<number>>(new Set());
@@ -1607,6 +1642,59 @@ function AppShell() {
     return minutesSpeakers
       .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle));
   }, [minutesSpeakers, deferredMinutesSpeaker]);
+  const minutesBrowseFiscalYears = useMemo(() => {
+    return [...new Set(minutesMeetings.map((meeting) => fiscalYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
+      .sort((a, b) => b - a);
+  }, [minutesMeetings]);
+  const effectiveMinutesBrowseFiscalYear = minutesBrowseFiscalYear || (minutesBrowseFiscalYears[0] ? String(minutesBrowseFiscalYears[0]) : 'all');
+  const minutesBrowseSections = useMemo(() => {
+    const counts = new Map<string, number>();
+    const selectedYear = effectiveMinutesBrowseFiscalYear === 'all' ? null : Number(effectiveMinutesBrowseFiscalYear);
+    for (const meeting of minutesMeetings) {
+      const fiscalYear = fiscalYearFromDate(meeting.fromDate || meeting.toDate);
+      if (selectedYear != null && fiscalYear !== selectedYear) continue;
+      const section = meeting.section || '未分類';
+      counts.set(section, (counts.get(section) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort(([left], [right]) => {
+        const byOrder = minutesSectionOrder(left) - minutesSectionOrder(right);
+        return byOrder || left.localeCompare(right, 'ja-JP');
+      })
+      .map(([section, count]) => ({ section, count }));
+  }, [minutesMeetings, effectiveMinutesBrowseFiscalYear]);
+  const browsedMinutesMeetings = useMemo(() => {
+    const selectedYear = effectiveMinutesBrowseFiscalYear === 'all' ? null : Number(effectiveMinutesBrowseFiscalYear);
+    return minutesMeetings
+      .filter((meeting) => {
+        const fiscalYear = fiscalYearFromDate(meeting.fromDate || meeting.toDate);
+        if (selectedYear != null && fiscalYear !== selectedYear) return false;
+        if (minutesBrowseSection !== 'all' && (meeting.section || '未分類') !== minutesBrowseSection) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const bySection = minutesSectionOrder(a.section || '') - minutesSectionOrder(b.section || '');
+        if (bySection !== 0) return bySection;
+        const left = a.fromDate || a.toDate || '';
+        const right = b.fromDate || b.toDate || '';
+        const byDate = left.localeCompare(right);
+        if (byDate !== 0) return byDate;
+        return (a.meetingName || a.title).localeCompare(b.meetingName || b.title, 'ja-JP', { numeric: true });
+      });
+  }, [minutesMeetings, effectiveMinutesBrowseFiscalYear, minutesBrowseSection]);
+  const browsedMinutesMeetingsBySection = useMemo(() => {
+    const groups = new Map<string, MinutesMeeting[]>();
+    for (const meeting of browsedMinutesMeetings) {
+      const section = meeting.section || '未分類';
+      const rows = groups.get(section) || [];
+      rows.push(meeting);
+      groups.set(section, rows);
+    }
+    return [...groups.entries()].sort(([left], [right]) => {
+      const byOrder = minutesSectionOrder(left) - minutesSectionOrder(right);
+      return byOrder || left.localeCompare(right, 'ja-JP');
+    });
+  }, [browsedMinutesMeetings]);
   const meetingGroupedMinutesResults = useMemo(() => {
     const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
     for (const result of minutesResults) {
@@ -2588,24 +2676,137 @@ function AppShell() {
           {minutesPage === 'browse' ? (
             <div className="space-y-5">
               {renderMinutesBackButton()}
-              <div className="rounded-3xl border bg-white p-6">
-                <h3 className="text-2xl font-semibold text-[#173f36]">会議録の閲覧</h3>
-                <p className="mt-2 text-sm text-muted-foreground">会議を選択すると、その会議の全日程・全発言をスクロールで閲覧できます。</p>
-                <div className="mt-6 grid gap-4 lg:grid-cols-2">
-                  {minutesMeetings.map((meeting) => (
-                    <button
-                      key={meeting.id}
-                      type="button"
-                      onClick={() => void openMinutesMeeting(meeting)}
-                      className={`rounded-2xl border px-4 py-4 text-left hover:border-[#79b28d] ${
-                        minutesMeetingId === meeting.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
-                      }`}
-                    >
-                      <p className="text-sm font-semibold text-[#2f765e]">{meeting.fromDate || '日付なし'} - {meeting.toDate || '日付なし'} / {meeting.section}</p>
-                      <h4 className="mt-1 text-lg font-semibold">{meeting.meetingName || meeting.title}</h4>
-                      <p className="mt-2 text-sm text-muted-foreground">{meeting.dayCount}日程 / {meeting.utteranceCount.toLocaleString()}発言 / 表{meeting.tableCount}</p>
-                    </button>
-                  ))}
+              <div className="overflow-hidden rounded-3xl border bg-white">
+                <div className="border-b bg-[#5f8f8f] px-5 py-4 text-white">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                    <div>
+                      <h3 className="text-2xl font-semibold">会議録の閲覧</h3>
+                      <p className="mt-1 text-sm text-white/80">年度、会議の種類、時系列で会議録を選択し、会議録全文を表示します。</p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1 text-sm font-semibold">
+                        <span>年度</span>
+                        <select
+                          className="h-10 min-w-44 rounded-lg border border-white/30 bg-white px-3 text-sm text-[#173f36]"
+                          value={effectiveMinutesBrowseFiscalYear}
+                          onChange={(e) => {
+                            setMinutesBrowseFiscalYear(e.target.value);
+                            setMinutesBrowseSection('all');
+                          }}
+                        >
+                          <option value="all">すべての年度</option>
+                          {minutesBrowseFiscalYears.map((year) => (
+                            <option key={year} value={String(year)}>{fiscalYearLabel(year)}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-sm font-semibold">
+                        <span>会議の種類</span>
+                        <select
+                          className="h-10 min-w-52 rounded-lg border border-white/30 bg-white px-3 text-sm text-[#173f36]"
+                          value={minutesBrowseSection}
+                          onChange={(e) => setMinutesBrowseSection(e.target.value)}
+                        >
+                          <option value="all">すべて</option>
+                          {minutesBrowseSections.map((item) => (
+                            <option key={item.section} value={item.section}>{item.section}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid min-h-[34rem] lg:grid-cols-[13rem_17rem_minmax(0,1fr)]">
+                  <aside className="border-r bg-[#f9fbfb]">
+                    <div className="border-b bg-[#d8e8e6] px-4 py-3 text-sm font-semibold text-[#173f36]">年度</div>
+                    <div className="space-y-1 p-3">
+                      {minutesBrowseFiscalYears.map((year) => {
+                        const active = effectiveMinutesBrowseFiscalYear === String(year);
+                        const count = minutesMeetings.filter((meeting) => fiscalYearFromDate(meeting.fromDate || meeting.toDate) === year).length;
+                        return (
+                          <button
+                            key={year}
+                            type="button"
+                            onClick={() => {
+                              setMinutesBrowseFiscalYear(String(year));
+                              setMinutesBrowseSection('all');
+                            }}
+                            className={`w-full rounded-xl px-3 py-2 text-left text-sm font-semibold transition ${
+                              active ? 'bg-[#173f36] text-white' : 'hover:bg-[#e7f0ed]'
+                            }`}
+                          >
+                            <span>{fiscalYearLabel(year)}</span>
+                            <span className={`ml-2 text-xs ${active ? 'text-white/70' : 'text-muted-foreground'}`}>{count}件</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </aside>
+
+                  <aside className="border-r bg-[#f3f6f5]">
+                    <div className="border-b bg-[#d8e8e6] px-4 py-3 text-sm font-semibold text-[#173f36]">会議の種類</div>
+                    <div className="space-y-2 p-3">
+                      <button
+                        type="button"
+                        onClick={() => setMinutesBrowseSection('all')}
+                        className={`w-full rounded-xl border px-3 py-3 text-left text-sm font-semibold transition ${
+                          minutesBrowseSection === 'all' ? 'border-[#173f36] bg-[#173f36] text-white' : 'bg-white hover:border-[#79b28d]'
+                        }`}
+                      >
+                        すべて
+                        <span className={`ml-2 text-xs ${minutesBrowseSection === 'all' ? 'text-white/70' : 'text-muted-foreground'}`}>{browsedMinutesMeetings.length}件</span>
+                      </button>
+                      {minutesBrowseSections.map((item) => (
+                        <button
+                          key={item.section}
+                          type="button"
+                          onClick={() => setMinutesBrowseSection(item.section)}
+                          className={`w-full rounded-xl border px-3 py-3 text-left text-sm font-semibold transition ${
+                            minutesBrowseSection === item.section ? 'border-[#2f765e] bg-[#d7f0dd] text-[#173f36]' : 'bg-white hover:border-[#79b28d]'
+                          }`}
+                        >
+                          <span>{item.section}</span>
+                          <span className="ml-2 text-xs text-muted-foreground">{item.count}件</span>
+                        </button>
+                      ))}
+                    </div>
+                  </aside>
+
+                  <div className="bg-white">
+                    <div className="border-b bg-[#d8e8e6] px-4 py-3 text-sm font-semibold text-[#173f36]">
+                      会議一覧（会議録表示） / {effectiveMinutesBrowseFiscalYear === 'all' ? 'すべての年度' : fiscalYearLabel(Number(effectiveMinutesBrowseFiscalYear))}
+                    </div>
+                    {browsedMinutesMeetings.length === 0 ? (
+                      <div className="p-6 text-sm text-muted-foreground">該当する会議録はありません。</div>
+                    ) : (
+                      <div className="max-h-[62vh] overflow-auto">
+                        {browsedMinutesMeetingsBySection.map(([section, meetings]) => (
+                          <section key={section} className="border-b last:border-b-0">
+                            <div className={`px-4 py-2 text-sm font-semibold ${section === '本会議' ? 'bg-[#d9d3ef]' : section.includes('委員') ? 'bg-[#ffd3df]' : 'bg-[#edf3ef]'}`}>
+                              {section}
+                            </div>
+                            <div className="divide-y">
+                              {meetings.map((meeting) => (
+                                <button
+                                  key={meeting.id}
+                                  type="button"
+                                  onClick={() => void openMinutesMeeting(meeting)}
+                                  className={`grid w-full gap-2 px-4 py-3 text-left transition hover:bg-[#edf7ef] md:grid-cols-[9rem_minmax(0,1fr)_12rem] ${
+                                    minutesMeetingId === meeting.id ? 'bg-[#edf7ef]' : 'bg-white'
+                                  }`}
+                                >
+                                  <span className="text-sm font-semibold text-[#2f765e]">{formatMeetingDateRange(meeting.fromDate, meeting.toDate)}</span>
+                                  <span className="min-w-0 text-base font-semibold text-blue-700 underline-offset-2 hover:underline">{meeting.meetingName || meeting.title}</span>
+                                  <span className="text-sm text-muted-foreground md:text-right">{meeting.dayCount}日程 / {meeting.utteranceCount.toLocaleString()}発言 / 表{meeting.tableCount}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </section>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
