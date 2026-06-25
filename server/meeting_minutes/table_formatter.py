@@ -93,7 +93,6 @@ ROLE_TOKENS = (
     "代表監査委員",
     "委員長",
     "副委員長",
-    "委員",
     "理事",
     "監",
     "管理者",
@@ -171,6 +170,9 @@ def _compact_number_roster(rows: list[list[str]]) -> list[list[str]] | None:
 
 
 def _compact_role_roster(rows: list[list[str]], names: set[str]) -> list[list[str]] | None:
+    joined_table = "".join("".join(_non_empty(row)) for row in rows)
+    if "出席委員" in joined_table or "出席議員" in joined_table:
+        return None
     compacted: list[list[str]] = [["役職", "氏名", "役職", "氏名"]]
     matched = 0
     for row in rows:
