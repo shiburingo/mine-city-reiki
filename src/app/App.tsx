@@ -788,6 +788,7 @@ function AppShell() {
   const [minutesDayDetail, setMinutesDayDetail] = useState<MinutesDayDetail | null>(null);
   const [minutesDetailLoading, setMinutesDetailLoading] = useState(false);
   const [selectedMinutesMeetingDetail, setSelectedMinutesMeetingDetail] = useState<MinutesMeetingDetail | null>(null);
+  const [selectedMinutesMeetingDayId, setSelectedMinutesMeetingDayId] = useState<number | null>(null);
   const [minutesMeetingDetailLoading, setMinutesMeetingDetailLoading] = useState(false);
 
   const [syncForm, setSyncForm] = useState<SyncForm>({
@@ -1380,10 +1381,12 @@ function AppShell() {
     setSelectedMinutesResult(null);
     setMinutesDayDetail(null);
     setSelectedMinutesMeetingDetail(null);
+    setSelectedMinutesMeetingDayId(null);
     setMinutesPage('meetingDetail');
     try {
       const detail = await fetchMinutesMeetingDetail(meeting.id);
       setSelectedMinutesMeetingDetail(detail);
+      setSelectedMinutesMeetingDayId(detail.days[0]?.id ?? null);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録の取得に失敗しました。');
       setMinutesPage('browse');
@@ -2416,6 +2419,7 @@ function AppShell() {
     const totalDays = detail?.days.length ?? 0;
     const totalUtterances = detail?.days.reduce((sum, day) => sum + day.utterances.length, 0) ?? 0;
     const totalTables = detail?.days.reduce((sum, day) => sum + day.tables.length, 0) ?? 0;
+    const selectedDay = detail?.days.find((day) => day.id === selectedMinutesMeetingDayId) || detail?.days[0] || null;
     return (
       <div className="space-y-5 p-6">
         <div className="rounded-3xl border bg-white p-5">
@@ -2429,6 +2433,7 @@ function AppShell() {
               <h3 className="mt-1 text-2xl font-semibold leading-tight">{detail?.meetingName || detail?.title || '会議録を読み込み中'}</h3>
               <p className="mt-2 text-sm text-muted-foreground">
                 {minutesMeetingDetailLoading ? '会議録を読み込んでいます。' : `${totalDays}日程 / ${totalUtterances.toLocaleString()}発言 / 表${totalTables.toLocaleString()}件`}
+                {selectedDay ? ` / 表示中: ${selectedDay.meetingDate || selectedDay.title || `日程${selectedDay.id}`}` : ''}
               </p>
             </div>
             {detail?.sourceUrl ? (
@@ -2455,38 +2460,43 @@ function AppShell() {
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="text-sm font-semibold text-[#173f36]">会議録全文</p>
-                    <p className="text-xs text-muted-foreground">この会議の全日程・全発言を、発言カードに分割せず連続して表示します。</p>
+                    <p className="text-xs text-muted-foreground">日程を選択して、1日単位で会議録全文を閲覧します。</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {detail.days.map((day) => (
-                      <a
+                      <button
                         key={day.id}
-                        href={`#minutes-day-${day.id}`}
-                        className="rounded-lg border bg-[#f5f8f5] px-3 py-1.5 text-xs font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+                        type="button"
+                        onClick={() => setSelectedMinutesMeetingDayId(day.id)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                          selectedDay?.id === day.id ? 'border-[#173f36] bg-[#173f36] text-white' : 'bg-[#f5f8f5] text-[#37564d] hover:bg-[#edf6f0]'
+                        }`}
                       >
                         {day.meetingDate || day.title || `日程${day.id}`}
-                      </a>
+                      </button>
                     ))}
                   </div>
                 </div>
               </div>
               <div className="max-h-[76vh] overflow-auto p-6">
-                {detail.days.map((day) => (
-                  <section key={day.id} id={`minutes-day-${day.id}`} className="scroll-mt-28 border-b pb-8 last:border-b-0">
+                {!selectedDay ? (
+                  <p className="text-sm text-muted-foreground">表示できる日程がありません。</p>
+                ) : (
+                  <section key={selectedDay.id} className="pb-2">
                     <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div>
-                        <p className="text-sm font-semibold text-[#2f765e]">{day.meetingDate || '日付なし'}</p>
-                        <h4 className="mt-1 text-xl font-semibold">{day.title || detail.meetingName}</h4>
-                        <p className="mt-1 text-sm text-muted-foreground">{day.utterances.length.toLocaleString()}発言 / p.{day.pageCount || '-'}</p>
+                        <p className="text-sm font-semibold text-[#2f765e]">{selectedDay.meetingDate || '日付なし'}</p>
+                        <h4 className="mt-1 text-xl font-semibold">{selectedDay.title || detail.meetingName}</h4>
+                        <p className="mt-1 text-sm text-muted-foreground">{selectedDay.utterances.length.toLocaleString()}発言 / p.{selectedDay.pageCount || '-'}</p>
                       </div>
-                      {day.pdfUrl ? (
-                        <a href={day.pdfUrl} target="_blank" rel="noreferrer" className="rounded-xl border px-3 py-2 text-sm font-semibold hover:bg-[#edf6f0]">
+                      {selectedDay.pdfUrl ? (
+                        <a href={selectedDay.pdfUrl} target="_blank" rel="noreferrer" className="rounded-xl border px-3 py-2 text-sm font-semibold hover:bg-[#edf6f0]">
                           PDF原文
                         </a>
                       ) : null}
                     </div>
                     <div className="space-y-7">
-                      {day.utterances.map((item) => (
+                      {selectedDay.utterances.map((item) => (
                         <article key={item.id} className="border-b border-dashed pb-5 last:border-b-0">
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <h5 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h5>
@@ -2497,10 +2507,10 @@ function AppShell() {
                         </article>
                       ))}
                     </div>
-                    {day.tables.length > 0 ? (
+                    {selectedDay.tables.length > 0 ? (
                       <div className="mt-8 space-y-4 rounded-2xl border bg-[#f8fbf8] p-4">
                         <p className="text-sm font-semibold text-[#173f36]">抽出表</p>
-                        {day.tables.map((table) => (
+                        {selectedDay.tables.map((table) => (
                           <div key={table.id} className="rounded-2xl border bg-white p-4">
                             <p className="mb-2 text-sm font-semibold">{table.caption} / p.{table.page}</p>
                             <div className="overflow-auto text-sm [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
@@ -2509,7 +2519,7 @@ function AppShell() {
                       </div>
                     ) : null}
                   </section>
-                ))}
+                )}
               </div>
             </div>
 
@@ -2527,10 +2537,17 @@ function AppShell() {
                 <p className="text-sm font-semibold text-[#173f36]">日程</p>
                 <div className="mt-3 space-y-2">
                   {detail.days.map((day) => (
-                    <a key={day.id} href={`#minutes-day-${day.id}`} className="block rounded-xl border bg-[#fbfdfb] px-3 py-2 text-sm hover:border-[#79b28d]">
+                    <button
+                      key={day.id}
+                      type="button"
+                      onClick={() => setSelectedMinutesMeetingDayId(day.id)}
+                      className={`block w-full rounded-xl border px-3 py-2 text-left text-sm hover:border-[#79b28d] ${
+                        selectedDay?.id === day.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
+                      }`}
+                    >
                       <span className="font-semibold">{day.meetingDate || '日付なし'}</span>
                       <span className="mt-1 block text-xs text-muted-foreground">{day.utterances.length.toLocaleString()}発言 / 表{day.tables.length}</span>
-                    </a>
+                    </button>
                   ))}
                 </div>
               </div>
