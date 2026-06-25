@@ -159,6 +159,8 @@ export async function searchMinutes(params: {
   section?: string;
   meetingId?: number;
   dayId?: number;
+  matchMode?: 'exact' | 'related';
+  op?: 'AND' | 'OR';
   fromDate?: string;
   toDate?: string;
   limit?: number;
@@ -170,6 +172,8 @@ export async function searchMinutes(params: {
   if (params.section && params.section !== 'all') qs.set('section', params.section);
   if (params.meetingId) qs.set('meetingId', String(params.meetingId));
   if (params.dayId) qs.set('dayId', String(params.dayId));
+  if (params.matchMode) qs.set('matchMode', params.matchMode);
+  if (params.op) qs.set('op', params.op);
   if (params.fromDate) qs.set('fromDate', params.fromDate);
   if (params.toDate) qs.set('toDate', params.toDate);
   if (params.limit) qs.set('limit', String(params.limit));

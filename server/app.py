@@ -3404,15 +3404,25 @@ def search_minutes_items(
     to_date: str = "",
     meeting_id: int | None = None,
     day_id: int | None = None,
+    match_mode: str = "exact",
+    op: str = "AND",
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     conditions = ["1=1"]
     params: list[Any] = []
-    for term in terms:
-        like = f"%{term}%"
+    if query and match_mode == "exact":
+        like = f"%{normalize_text(query)}%"
         conditions.append("(u.search_text LIKE %s OR t.search_text LIKE %s)")
         params.extend([like, like])
+    elif terms:
+        term_conditions: list[str] = []
+        for term in terms:
+            like = f"%{term}%"
+            term_conditions.append("(u.search_text LIKE %s OR t.search_text LIKE %s)")
+            params.extend([like, like])
+        joiner = " OR " if op == "OR" or match_mode == "related" else " AND "
+        conditions.append("(" + joiner.join(term_conditions) + ")")
     if speaker:
         conditions.append("(u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
         params.extend([f"%{speaker}%", f"%{speaker}%"])
@@ -4422,10 +4432,16 @@ def api_minutes_search():
     to_date = (request.args.get("toDate") or "").strip()
     meeting_id = int(request.args.get("meetingId") or 0) or None
     day_id = int(request.args.get("dayId") or 0) or None
+    match_mode = (request.args.get("matchMode") or "exact").strip()
+    if match_mode not in {"exact", "related"}:
+        match_mode = "exact"
+    op = (request.args.get("op") or "AND").strip().upper()
+    if op not in {"AND", "OR"}:
+        op = "AND"
     limit = max(1, min(60, int(request.args.get("limit") or "20")))
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
-    items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, limit)
+    items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, match_mode, op, limit)
     return jsonify({"items": items, "total": len(items)})
 
 
