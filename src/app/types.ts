@@ -223,6 +223,8 @@ export type MinutesExchangeItem = {
   text: string;
   pageStart: number;
   pageEnd: number;
+  positionTopStart: number;
+  positionTopEnd: number;
 };
 
 export type MinutesSearchResult = {
@@ -271,12 +273,24 @@ export type MinutesTable = {
   id: number;
   tableKey: string;
   page: number;
+  positionTop: number;
+  positionBottom: number;
   caption: string;
   rows: string[][];
   html: string;
   searchText: string;
   confidence: number;
 };
+
+export type MinutesContentItem =
+  | {
+      type: 'utterance';
+      utterance: MinutesExchangeItem;
+    }
+  | {
+      type: 'table';
+      table: MinutesTable;
+    };
 
 export type MinutesDayDetail = {
   id: number;
@@ -289,6 +303,7 @@ export type MinutesDayDetail = {
   pageCount: number;
   utterances: MinutesExchangeItem[];
   tables: MinutesTable[];
+  contentItems: MinutesContentItem[];
 };
 
 export type MinutesMeetingDetail = {

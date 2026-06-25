@@ -16,6 +16,8 @@ PERSON_TABLE_ENGINE_VERSION = "coordinate-person-table-v2"
 class FormattedTable:
     table_key: str
     page: int
+    position_top: float
+    position_bottom: float
     caption: str
     rows: list[list[str]]
     html: str
@@ -66,6 +68,19 @@ def _non_empty(row: list[str]) -> list[str]:
 
 def _is_number_cell(value: str) -> bool:
     return bool(re.fullmatch(r"\d+\s*番", _norm(value)))
+
+
+def _parse_number_prefix(value: str) -> tuple[str, str] | None:
+    normalized = re.sub(r"\s+", "", value or "")
+    match = re.fullmatch(r"(?P<number>\d+)(?:番)?(?P<name>.*)", normalized)
+    if not match:
+        return None
+    number = match.group("number")
+    name = match.group("name") or ""
+    if not number:
+        return None
+    suffix = "番" if "番" in normalized else ""
+    return f"{number}{suffix}", name
 
 
 def _name_candidates(speakers: list[Any]) -> set[str]:
@@ -147,30 +162,54 @@ def _split_role_name(cells: list[str], names: set[str]) -> tuple[str, str] | Non
     return parsed[1], parsed[2]
 
 
-def _compact_number_roster(rows: list[list[str]]) -> list[list[str]] | None:
-    compacted: list[list[str]] = [["番号", "氏名", "番号", "氏名"]]
-    matched = 0
+def _compact_number_roster(rows: list[list[str]]) -> tuple[list[list[str]], str] | None:
+    entries: list[tuple[str, str]] = []
+    has_seat_number = False
     for row in rows:
         values = _non_empty(row)
-        if len(values) < 3:
+        if len(values) < 2:
             continue
-        entries: list[tuple[str, str]] = []
         index = 0
-        while index + 2 < len(values):
+        while index < len(values):
             if _is_number_cell(values[index]):
-                name = _norm(values[index + 1] + values[index + 2])
-                if name:
+                fragments: list[str] = []
+                lookahead = index + 1
+                while lookahead < len(values) and not _parse_number_prefix(values[lookahead]):
+                    fragments.append(values[lookahead])
+                    lookahead += 1
+                name = _norm("".join(fragments))
+                if name and len(name) >= 2:
                     entries.append((_norm(values[index]), name))
-                    index += 3
+                    has_seat_number = True
+                    index = lookahead
+                    continue
+            prefixed = _parse_number_prefix(values[index])
+            if prefixed:
+                number, first_name_fragment = prefixed
+                fragments = [first_name_fragment] if first_name_fragment else []
+                lookahead = index + 1
+                while lookahead < len(values) and not _parse_number_prefix(values[lookahead]):
+                    fragments.append(values[lookahead])
+                    lookahead += 1
+                name = _norm("".join(fragments))
+                if name and len(name) >= 2:
+                    entries.append((number, name))
+                    if number.endswith("番"):
+                        has_seat_number = True
+                    index = lookahead
                     continue
             index += 1
-        if entries:
-            matched += len(entries)
-            for pair_index in range(0, len(entries), 2):
-                left = entries[pair_index]
-                right = entries[pair_index + 1] if pair_index + 1 < len(entries) else ("", "")
-                compacted.append([left[0], left[1], right[0], right[1]])
-    return compacted if matched >= 4 else None
+    if len(entries) < 3:
+        return None
+    if has_seat_number or len(entries) >= 8:
+        compacted: list[list[str]] = [["番号", "氏名", "番号", "氏名"]]
+        for pair_index in range(0, len(entries), 2):
+            left = entries[pair_index]
+            right = entries[pair_index + 1] if pair_index + 1 < len(entries) else ("", "")
+            compacted.append([left[0], left[1], right[0], right[1]])
+        return compacted, "出席者番号名簿"
+    compacted = [["番号", "氏名"], *[[number, name] for number, name in entries]]
+    return compacted, "一般質問者名簿"
 
 
 def _compact_role_roster(rows: list[list[str]], names: set[str]) -> list[list[str]] | None:
@@ -213,6 +252,8 @@ def _replace_table(table: FormattedTable, rows: list[list[str]], caption: str, c
     return FormattedTable(
         table_key=table.table_key,
         page=table.page,
+        position_top=table.position_top,
+        position_bottom=table.position_bottom,
         caption=caption,
         rows=rows,
         html=_render_html(rows, has_header=True),
@@ -231,9 +272,10 @@ def refine_person_roster_tables(tables: list[FormattedTable], speakers: list[Any
     names = _name_candidates(speakers)
     refined: list[FormattedTable] = []
     for table in tables:
-        number_rows = _compact_number_roster(table.rows)
-        if number_rows:
-            refined.append(_replace_table(table, number_rows, f"出席者番号名簿 {table.table_key}", 0.86))
+        number_result = _compact_number_roster(table.rows)
+        if number_result:
+            number_rows, caption = number_result
+            refined.append(_replace_table(table, number_rows, f"{caption} {table.table_key}", 0.86))
             continue
         role_rows = _compact_role_roster(table.rows, names)
         if role_rows:
@@ -243,7 +285,13 @@ def refine_person_roster_tables(tables: list[FormattedTable], speakers: list[Any
     return refined
 
 
-def _flush_table(table_key: str, page_no: int, rows: list[list[str]], caption_prefix: str) -> FormattedTable | None:
+def _flush_table(
+    table_key: str,
+    page_no: int,
+    rows: list[list[str]],
+    row_bounds: list[tuple[float, float]],
+    caption_prefix: str,
+) -> FormattedTable | None:
     clean_rows = [[re.sub(r"\s+", " ", cell).strip() for cell in row] for row in rows]
     clean_rows = [row for row in clean_rows if any(row)]
     if len(clean_rows) < 3 or max(len(row) for row in clean_rows) < 3:
@@ -257,6 +305,8 @@ def _flush_table(table_key: str, page_no: int, rows: list[list[str]], caption_pr
     return FormattedTable(
         table_key=table_key,
         page=page_no,
+        position_top=min((top for top, _bottom in row_bounds), default=0.0),
+        position_bottom=max((bottom for _top, bottom in row_bounds), default=0.0),
         caption=caption,
         rows=normalized,
         html=_render_html(normalized),
@@ -280,23 +330,26 @@ def extract_coordinate_tables(pages: list[ExtractedPage], document_key: str) -> 
                 continue
             grouped.setdefault(_row_key(float(word.get("top") or 0)), []).append(word)
         candidate_rows: list[list[str]] = []
+        candidate_bounds: list[tuple[float, float]] = []
         seq = 1
         for _key, words in sorted(grouped.items(), key=lambda item: min(float(w.get("top") or 0) for w in item[1])):
             ordered = sorted(words, key=lambda w: float(w.get("x0") or 0))
             if len(ordered) < 4:
-                table = _flush_table(f"{document_key}-p{page.page}-t{seq}", page.page, candidate_rows, "PDF座標表")
+                table = _flush_table(f"{document_key}-p{page.page}-t{seq}", page.page, candidate_rows, candidate_bounds, "PDF座標表")
                 if table:
                     tables.append(table)
                     seq += 1
                 candidate_rows = []
+                candidate_bounds = []
                 continue
             clusters = _cluster_x(ordered)
             if len(clusters) < 3:
-                table = _flush_table(f"{document_key}-p{page.page}-t{seq}", page.page, candidate_rows, "PDF座標表")
+                table = _flush_table(f"{document_key}-p{page.page}-t{seq}", page.page, candidate_rows, candidate_bounds, "PDF座標表")
                 if table:
                     tables.append(table)
                     seq += 1
                 candidate_rows = []
+                candidate_bounds = []
                 continue
             cells = [""] * len(clusters)
             for word in ordered:
@@ -304,7 +357,13 @@ def extract_coordinate_tables(pages: list[ExtractedPage], document_key: str) -> 
                 text = str(word.get("text") or "")
                 cells[col] = f"{cells[col]} {text}".strip() if cells[col] else text
             candidate_rows.append(cells)
-        table = _flush_table(f"{document_key}-p{page.page}-t{seq}", page.page, candidate_rows, "PDF座標表")
+            candidate_bounds.append(
+                (
+                    min(float(w.get("top") or 0) for w in ordered),
+                    max(float(w.get("bottom") or 0) for w in ordered),
+                )
+            )
+        table = _flush_table(f"{document_key}-p{page.page}-t{seq}", page.page, candidate_rows, candidate_bounds, "PDF座標表")
         if table:
             tables.append(table)
     return tables

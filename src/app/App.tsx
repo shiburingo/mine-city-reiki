@@ -30,7 +30,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -1731,6 +1731,9 @@ function AppShell() {
     return values;
   }, [minutesResults, minutesSortOrder]);
   const currentDayUtterances = minutesDayDetail?.utterances || [];
+  const currentDayContentItems = minutesDayDetail?.contentItems?.length
+    ? minutesDayDetail.contentItems
+    : currentDayUtterances.map((utterance) => ({ type: 'utterance' as const, utterance }));
   const selectedMinutesUtteranceIndex = useMemo(
     () => currentDayUtterances.findIndex((item) => item.id === selectedMinutesResult?.id),
     [currentDayUtterances, selectedMinutesResult?.id],
@@ -1764,6 +1767,18 @@ function AppShell() {
       exchange: minutesDayDetail.utterances.slice(Math.max(0, selectedMinutesUtteranceIndex + delta - 2), selectedMinutesUtteranceIndex + delta + 5),
     });
   }
+
+  const renderMinutesTableCard = (table: MinutesTable, compact = false): JSX.Element => (
+    <div key={`table-${table.id}`} className={`rounded-2xl border bg-[#fbfdfb] ${compact ? 'p-3' : 'p-4'}`}>
+      <p className={`mb-2 font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>
+        {table.caption} / p.{table.page}
+      </p>
+      <div
+        className={`overflow-auto ${compact ? 'text-xs' : 'text-sm'} [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1`}
+        dangerouslySetInnerHTML={{ __html: table.html }}
+      />
+    </div>
+  );
 
   const renderArticleNavTree = (nodes: ArticleGroupNode[], anchorPrefix: string, depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-2' : 'mt-1 space-y-1 border-l border-border/70 pl-3'}>
@@ -2337,12 +2352,18 @@ function AppShell() {
                 ) : null}
                 {minutesReaderMode === 'full' ? (
                   <div className="space-y-6">
-                    {currentDayUtterances.map((item) => (
-                      <article key={item.id} className="border-b pb-5 last:border-b-0">
-                        <h4 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h4>
-                        <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
-                      </article>
-                    ))}
+                    {currentDayContentItems.map((contentItem) => {
+                      if (contentItem.type === 'table') {
+                        return renderMinutesTableCard(contentItem.table);
+                      }
+                      const item = contentItem.utterance;
+                      return (
+                        <article key={`utterance-${item.id}`} className="border-b pb-5 last:border-b-0">
+                          <h4 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h4>
+                          <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
+                        </article>
+                      );
+                    })}
                   </div>
                 ) : null}
                 {minutesReaderMode === 'toc' ? (
@@ -2368,10 +2389,7 @@ function AppShell() {
                   minutesDayDetail?.tables.length ? (
                     <div className="space-y-4">
                       {minutesDayDetail.tables.map((table) => (
-                        <div key={table.id} className="rounded-2xl border bg-[#fbfdfb] p-4">
-                          <p className="mb-2 text-sm font-semibold">{table.caption} / p.{table.page}</p>
-                          <div className="overflow-auto text-sm [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
-                        </div>
+                        renderMinutesTableCard(table)
                       ))}
                     </div>
                   ) : <p className="text-sm text-muted-foreground">この会議日に資料・表はありません。</p>
@@ -2397,10 +2415,7 @@ function AppShell() {
                 {minutesDayDetail?.tables.length ? (
                   <div className="mt-3 max-h-96 space-y-3 overflow-auto">
                     {minutesDayDetail.tables.slice(0, 6).map((table) => (
-                      <div key={table.id} className="rounded-2xl border bg-[#fbfdfb] p-3">
-                        <p className="mb-2 text-xs font-semibold">{table.caption} / p.{table.page}</p>
-                        <div className="overflow-auto text-xs [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
-                      </div>
+                      renderMinutesTableCard(table, true)
                     ))}
                   </div>
                 ) : (
@@ -2420,6 +2435,9 @@ function AppShell() {
     const totalUtterances = detail?.days.reduce((sum, day) => sum + day.utterances.length, 0) ?? 0;
     const totalTables = detail?.days.reduce((sum, day) => sum + day.tables.length, 0) ?? 0;
     const selectedDay = detail?.days.find((day) => day.id === selectedMinutesMeetingDayId) || detail?.days[0] || null;
+    const selectedDayContentItems = selectedDay?.contentItems?.length
+      ? selectedDay.contentItems
+      : selectedDay?.utterances.map((utterance) => ({ type: 'utterance' as const, utterance })) || [];
     return (
       <div className="space-y-5 p-6">
         <div className="rounded-3xl border bg-white p-5">
@@ -2496,28 +2514,23 @@ function AppShell() {
                       ) : null}
                     </div>
                     <div className="space-y-7">
-                      {selectedDay.utterances.map((item) => (
-                        <article key={item.id} className="border-b border-dashed pb-5 last:border-b-0">
-                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <h5 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h5>
-                            <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
-                          </div>
-                          <p className="mt-1 text-xs text-muted-foreground">p.{item.pageStart}-{item.pageEnd}</p>
-                          <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
-                        </article>
-                      ))}
+                      {selectedDayContentItems.map((contentItem) => {
+                        if (contentItem.type === 'table') {
+                          return renderMinutesTableCard(contentItem.table);
+                        }
+                        const item = contentItem.utterance;
+                        return (
+                          <article key={`utterance-${item.id}`} className="border-b border-dashed pb-5 last:border-b-0">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                              <h5 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h5>
+                              <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">p.{item.pageStart}-{item.pageEnd}</p>
+                            <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
+                          </article>
+                        );
+                      })}
                     </div>
-                    {selectedDay.tables.length > 0 ? (
-                      <div className="mt-8 space-y-4 rounded-2xl border bg-[#f8fbf8] p-4">
-                        <p className="text-sm font-semibold text-[#173f36]">抽出表</p>
-                        {selectedDay.tables.map((table) => (
-                          <div key={table.id} className="rounded-2xl border bg-white p-4">
-                            <p className="mb-2 text-sm font-semibold">{table.caption} / p.{table.page}</p>
-                            <div className="overflow-auto text-sm [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
                   </section>
                 )}
               </div>

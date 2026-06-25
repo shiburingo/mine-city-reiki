@@ -40,6 +40,8 @@ class TaggedUtterance:
     text: str
     page_start: int
     page_end: int
+    position_top_start: float
+    position_top_end: float
     confidence: float
     reason: str
 
@@ -93,6 +95,8 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
                     text=body,
                     page_start=int(current["page_start"]),
                     page_end=int(current["page_end"]),
+                    position_top_start=float(current["position_top_start"]),
+                    position_top_end=float(current["position_top_end"]),
                     confidence=float(current["confidence"]),
                     reason=str(current["reason"]),
                 )
@@ -117,6 +121,8 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
                 "parts": [body] if body else [],
                 "page_start": line.page,
                 "page_end": line.page,
+                "position_top_start": line.top,
+                "position_top_end": line.top,
                 "confidence": confidence,
                 "reason": reason,
             }
@@ -124,6 +130,6 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
         if current is not None:
             current["parts"].append(text)
             current["page_end"] = line.page
+            current["position_top_end"] = line.top
     flush()
     return utterances
-

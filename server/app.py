@@ -549,6 +549,8 @@ def ensure_schema() -> None:
                   utterance_order INT UNSIGNED NOT NULL,
                   page_start INT UNSIGNED NOT NULL DEFAULT 0,
                   page_end INT UNSIGNED NOT NULL DEFAULT 0,
+                  position_top_start FLOAT NOT NULL DEFAULT 0,
+                  position_top_end FLOAT NOT NULL DEFAULT 0,
                   text LONGTEXT NOT NULL,
                   search_text LONGTEXT NOT NULL,
                   confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
@@ -574,6 +576,8 @@ def ensure_schema() -> None:
                   day_id BIGINT UNSIGNED NOT NULL,
                   table_key VARCHAR(191) NOT NULL,
                   page INT UNSIGNED NOT NULL DEFAULT 0,
+                  position_top FLOAT NOT NULL DEFAULT 0,
+                  position_bottom FLOAT NOT NULL DEFAULT 0,
                   caption VARCHAR(255) NOT NULL DEFAULT '',
                   rows_json LONGTEXT NOT NULL,
                   html LONGTEXT NOT NULL,
@@ -588,6 +592,10 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_column(cur, "meeting_utterances", "position_top_start", "position_top_start FLOAT NOT NULL DEFAULT 0 AFTER page_end")
+            ensure_column(cur, "meeting_utterances", "position_top_end", "position_top_end FLOAT NOT NULL DEFAULT 0 AFTER position_top_start")
+            ensure_column(cur, "meeting_tables", "position_top", "position_top FLOAT NOT NULL DEFAULT 0 AFTER page")
+            ensure_column(cur, "meeting_tables", "position_bottom", "position_bottom FLOAT NOT NULL DEFAULT 0 AFTER position_top")
             ensure_table(
                 cur,
                 "meeting_extract_runs",
@@ -3321,8 +3329,9 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
             """
             INSERT INTO meeting_utterances
               (day_id, speaker_id, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
-               utterance_order, page_start, page_end, text, search_text, confidence, reason, engine_version)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               utterance_order, page_start, page_end, position_top_start, position_top_end,
+               text, search_text, confidence, reason, engine_version)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 day_id,
@@ -3335,6 +3344,8 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
                 utterance.order,
                 utterance.page_start,
                 utterance.page_end,
+                utterance.position_top_start,
+                utterance.position_top_end,
                 utterance.text,
                 search_text,
                 utterance.confidence,
@@ -3346,13 +3357,15 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
         cur.execute(
             """
             INSERT INTO meeting_tables
-              (day_id, table_key, page, caption, rows_json, html, search_text, confidence, engine_version)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              (day_id, table_key, page, position_top, position_bottom, caption, rows_json, html, search_text, confidence, engine_version)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 day_id,
                 table.table_key,
                 table.page,
+                table.position_top,
+                table.position_bottom,
                 table.caption,
                 json.dumps(table.rows, ensure_ascii=False),
                 table.html,
@@ -3495,9 +3508,54 @@ def serialize_minutes_exchange(rows: list[dict[str, Any]]) -> list[dict[str, Any
             "text": row.get("text") or "",
             "pageStart": int(row.get("page_start") or 0),
             "pageEnd": int(row.get("page_end") or 0),
+            "positionTopStart": float(row.get("position_top_start") or 0),
+            "positionTopEnd": float(row.get("position_top_end") or 0),
         }
         for row in rows
     ]
+
+
+def serialize_minutes_table(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "tableKey": row.get("table_key") or "",
+        "page": int(row.get("page") or 0),
+        "positionTop": float(row.get("position_top") or 0),
+        "positionBottom": float(row.get("position_bottom") or 0),
+        "caption": row.get("caption") or "",
+        "rows": json.loads(row.get("rows_json") or "[]"),
+        "html": row.get("html") or "",
+        "searchText": row.get("search_text") or "",
+        "confidence": float(row.get("confidence") or 0),
+    }
+
+
+def serialize_minutes_content_items(utterances: list[dict[str, Any]], tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in serialize_minutes_exchange(utterances):
+        items.append(
+            {
+                "type": "utterance",
+                "sortPage": item["pageStart"],
+                "sortTop": item["positionTopStart"],
+                "utterance": item,
+            }
+        )
+    for row in tables:
+        table = serialize_minutes_table(row)
+        items.append(
+            {
+                "type": "table",
+                "sortPage": table["page"],
+                "sortTop": table["positionTop"],
+                "table": table,
+            }
+        )
+    items.sort(key=lambda item: (int(item.get("sortPage") or 0), float(item.get("sortTop") or 0), 0 if item.get("type") == "table" else 1))
+    for item in items:
+        item.pop("sortPage", None)
+        item.pop("sortTop", None)
+    return items
 
 
 def minutes_snippet(text: str, keywords: list[str]) -> str:
@@ -3560,7 +3618,7 @@ def search_minutes_items(
             f"""
             SELECT DISTINCT
               u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
-              u.speech_type, u.text, u.page_start, u.page_end,
+              u.speech_type, u.text, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
               d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
               s.section, s.meeting_name, s.title AS session_title
             FROM meeting_utterances u
@@ -3580,7 +3638,8 @@ def search_minutes_items(
             order = int(row["utterance_order"])
             cur.execute(
                 """
-                SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text, page_start, page_end
+                SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
+                       page_start, page_end, position_top_start, position_top_end
                 FROM meeting_utterances
                 WHERE day_id=%s AND utterance_order BETWEEN %s AND %s
                 ORDER BY utterance_order ASC
@@ -3605,6 +3664,8 @@ def search_minutes_items(
                     "order": order,
                     "pageStart": int(row.get("page_start") or 0),
                     "pageEnd": int(row.get("page_end") or 0),
+                    "positionTopStart": float(row.get("position_top_start") or 0),
+                    "positionTopEnd": float(row.get("position_top_end") or 0),
                     "snippet": minutes_snippet(row.get("text") or "", terms),
                     "text": row.get("text") or "",
                     "exchange": exchange,
@@ -4698,7 +4759,8 @@ def api_minutes_meeting_detail(meeting_id: int):
             placeholders = ",".join(["%s"] * len(day_ids))
             cur.execute(
                 f"""
-                SELECT day_id, id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text, page_start, page_end
+                SELECT day_id, id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
+                       page_start, page_end, position_top_start, position_top_end
                 FROM meeting_utterances
                 WHERE day_id IN ({placeholders})
                 ORDER BY day_id ASC, utterance_order ASC
@@ -4709,7 +4771,7 @@ def api_minutes_meeting_detail(meeting_id: int):
                 utterances_by_day.setdefault(int(row["day_id"]), []).append(row)
             cur.execute(
                 f"""
-                SELECT day_id, id, table_key, page, caption, rows_json, html, search_text, confidence
+                SELECT day_id, id, table_key, page, position_top, position_bottom, caption, rows_json, html, search_text, confidence
                 FROM meeting_tables
                 WHERE day_id IN ({placeholders})
                 ORDER BY day_id ASC, page ASC, id ASC
@@ -4741,19 +4803,11 @@ def api_minutes_meeting_detail(meeting_id: int):
                     "pageUrl": day.get("page_url") or "",
                     "pageCount": int(day.get("page_count") or 0),
                     "utterances": serialize_minutes_exchange(utterances_by_day.get(int(day["id"]), [])),
-                    "tables": [
-                        {
-                            "id": int(row["id"]),
-                            "tableKey": row.get("table_key") or "",
-                            "page": int(row.get("page") or 0),
-                            "caption": row.get("caption") or "",
-                            "rows": json.loads(row.get("rows_json") or "[]"),
-                            "html": row.get("html") or "",
-                            "searchText": row.get("search_text") or "",
-                            "confidence": float(row.get("confidence") or 0),
-                        }
-                        for row in tables_by_day.get(int(day["id"]), [])
-                    ],
+                    "tables": [serialize_minutes_table(row) for row in tables_by_day.get(int(day["id"]), [])],
+                    "contentItems": serialize_minutes_content_items(
+                        utterances_by_day.get(int(day["id"]), []),
+                        tables_by_day.get(int(day["id"]), []),
+                    ),
                 }
                 for day in day_rows
             ],
@@ -4779,16 +4833,18 @@ def api_minutes_day_detail(day_id: int):
             raise ValueError("会議録が見つかりません。")
         cur.execute(
             """
-            SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text, page_start, page_end
+            SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
+                   page_start, page_end, position_top_start, position_top_end
             FROM meeting_utterances
             WHERE day_id=%s
             ORDER BY utterance_order ASC
             """,
             (day_id,),
         )
-        utterances = serialize_minutes_exchange(cur.fetchall() or [])
+        utterance_rows = cur.fetchall() or []
+        utterances = serialize_minutes_exchange(utterance_rows)
         cur.execute(
-            "SELECT id, table_key, page, caption, rows_json, html, search_text, confidence FROM meeting_tables WHERE day_id=%s ORDER BY page ASC, id ASC",
+            "SELECT id, table_key, page, position_top, position_bottom, caption, rows_json, html, search_text, confidence FROM meeting_tables WHERE day_id=%s ORDER BY page ASC, position_top ASC, id ASC",
             (day_id,),
         )
         table_rows = cur.fetchall() or []
@@ -4803,19 +4859,8 @@ def api_minutes_day_detail(day_id: int):
             "pageUrl": day.get("page_url") or "",
             "pageCount": int(day.get("page_count") or 0),
             "utterances": utterances,
-            "tables": [
-                {
-                    "id": int(row["id"]),
-                    "tableKey": row.get("table_key") or "",
-                    "page": int(row.get("page") or 0),
-                    "caption": row.get("caption") or "",
-                    "rows": json.loads(row.get("rows_json") or "[]"),
-                    "html": row.get("html") or "",
-                    "searchText": row.get("search_text") or "",
-                    "confidence": float(row.get("confidence") or 0),
-                }
-                for row in table_rows
-            ],
+            "tables": [serialize_minutes_table(row) for row in table_rows],
+            "contentItems": serialize_minutes_content_items(utterance_rows, table_rows),
         }
     )
 
