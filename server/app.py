@@ -4774,7 +4774,7 @@ def api_minutes_meeting_detail(meeting_id: int):
                 SELECT day_id, id, table_key, page, position_top, position_bottom, caption, rows_json, html, search_text, confidence
                 FROM meeting_tables
                 WHERE day_id IN ({placeholders})
-                ORDER BY day_id ASC, page ASC, id ASC
+                ORDER BY day_id ASC, page ASC, position_top ASC, id ASC
                 """,
                 tuple(day_ids),
             )
