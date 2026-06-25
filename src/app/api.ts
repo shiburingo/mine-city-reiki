@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -202,6 +202,10 @@ export async function fetchMinutesSpeakers(params: {
 export async function fetchMinutesMeetings(): Promise<MinutesMeeting[]> {
   const data = await apiFetch<{ items: MinutesMeeting[] }>('/minutes/meetings');
   return data.items || [];
+}
+
+export async function fetchMinutesMeetingDetail(meetingId: number): Promise<MinutesMeetingDetail> {
+  return apiFetch<MinutesMeetingDetail>(`/minutes/meetings/${meetingId}`);
 }
 
 export async function fetchMinutesDayDetail(dayId: number): Promise<MinutesDayDetail> {

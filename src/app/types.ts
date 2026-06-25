@@ -290,3 +290,16 @@ export type MinutesDayDetail = {
   utterances: MinutesExchangeItem[];
   tables: MinutesTable[];
 };
+
+export type MinutesMeetingDetail = {
+  id: number;
+  section: string;
+  meetingName: string;
+  title: string;
+  sourceUrl: string;
+  fromDate: string | null;
+  toDate: string | null;
+  utteranceCount: number;
+  tableCount: number;
+  days: MinutesDayDetail[];
+};

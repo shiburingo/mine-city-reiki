@@ -14,6 +14,7 @@ import {
   fetchDocumentList,
   fetchLawTypes,
   fetchMinutesDayDetail,
+  fetchMinutesMeetingDetail,
   fetchMinutesMeetings,
   fetchMinutesSpeakers,
   fetchMinutesStatus,
@@ -29,7 +30,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesSearchResult, MinutesSpeaker, MinutesStatus, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -99,7 +100,7 @@ type MinutesSearchHistoryItem = {
   includeReplies: boolean;
   createdAt: string;
 };
-type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'advanced' | 'history' | 'results' | 'detail';
+type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'advanced' | 'history' | 'results' | 'detail' | 'meetingDetail';
 
 function loadMinutesSearchHistory(): MinutesSearchHistoryItem[] {
   try {
@@ -751,6 +752,8 @@ function AppShell() {
   const [selectedMinutesResult, setSelectedMinutesResult] = useState<MinutesSearchResult | null>(null);
   const [minutesDayDetail, setMinutesDayDetail] = useState<MinutesDayDetail | null>(null);
   const [minutesDetailLoading, setMinutesDetailLoading] = useState(false);
+  const [selectedMinutesMeetingDetail, setSelectedMinutesMeetingDetail] = useState<MinutesMeetingDetail | null>(null);
+  const [minutesMeetingDetailLoading, setMinutesMeetingDetailLoading] = useState(false);
 
   const [syncForm, setSyncForm] = useState<SyncForm>({
     enabled: false,
@@ -1330,6 +1333,28 @@ function AppShell() {
     setSelectedMinutesResult(result);
     setMinutesReaderMode('unit');
     setMinutesPage('detail');
+  }
+
+  async function openMinutesMeeting(meeting: MinutesMeeting) {
+    setMinutesMeetingDetailLoading(true);
+    setGlobalError(null);
+    setMinutesMeetingId(meeting.id);
+    setMinutesSection(meeting.section || 'all');
+    setMinutesQuery('');
+    setMinutesSpeaker('');
+    setSelectedMinutesResult(null);
+    setMinutesDayDetail(null);
+    setSelectedMinutesMeetingDetail(null);
+    setMinutesPage('meetingDetail');
+    try {
+      const detail = await fetchMinutesMeetingDetail(meeting.id);
+      setSelectedMinutesMeetingDetail(detail);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録の取得に失敗しました。');
+      setMinutesPage('browse');
+    } finally {
+      setMinutesMeetingDetailLoading(false);
+    }
   }
 
   function toggleMinutesResultExpanded(id: number) {
@@ -2298,9 +2323,140 @@ function AppShell() {
     </div>
   );
 
+  const renderMinutesMeetingDetailPage = (): JSX.Element => {
+    const detail = selectedMinutesMeetingDetail;
+    const totalDays = detail?.days.length ?? 0;
+    const totalUtterances = detail?.days.reduce((sum, day) => sum + day.utterances.length, 0) ?? 0;
+    const totalTables = detail?.days.reduce((sum, day) => sum + day.tables.length, 0) ?? 0;
+    return (
+      <div className="space-y-5 p-6">
+        <div className="rounded-3xl border bg-white p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <button type="button" onClick={() => setMinutesPage('browse')} className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-[#2f765e] hover:underline">
+                <ChevronLeft className="size-4" />
+                会議録一覧へ戻る
+              </button>
+              <p className="text-sm font-semibold text-[#2f765e]">{detail?.section || '会議録'} / {detail?.fromDate || '日付なし'}{detail?.toDate && detail.toDate !== detail.fromDate ? ` - ${detail.toDate}` : ''}</p>
+              <h3 className="mt-1 text-2xl font-semibold leading-tight">{detail?.meetingName || detail?.title || '会議録を読み込み中'}</h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {minutesMeetingDetailLoading ? '会議録を読み込んでいます。' : `${totalDays}日程 / ${totalUtterances.toLocaleString()}発言 / 表${totalTables.toLocaleString()}件`}
+              </p>
+            </div>
+            {detail?.sourceUrl ? (
+              <a
+                href={detail.sourceUrl}
+                rel="noreferrer"
+                target="_blank"
+                className="inline-flex h-10 items-center justify-center rounded-xl bg-[#173f36] px-4 text-sm font-semibold text-white"
+              >
+                元ページ
+              </a>
+            ) : null}
+          </div>
+        </div>
+
+        {minutesMeetingDetailLoading ? (
+          <div className="rounded-3xl border bg-white p-8 text-center text-muted-foreground">会議録を読み込み中です…</div>
+        ) : !detail ? (
+          <div className="rounded-3xl border bg-white p-8 text-center text-muted-foreground">会議録を取得できませんでした。</div>
+        ) : (
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
+            <div className="rounded-3xl border bg-white">
+              <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-[#173f36]">会議録全文</p>
+                    <p className="text-xs text-muted-foreground">この会議の全日程・全発言を、発言カードに分割せず連続して表示します。</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {detail.days.map((day) => (
+                      <a
+                        key={day.id}
+                        href={`#minutes-day-${day.id}`}
+                        className="rounded-lg border bg-[#f5f8f5] px-3 py-1.5 text-xs font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+                      >
+                        {day.meetingDate || day.title || `日程${day.id}`}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="max-h-[76vh] overflow-auto p-6">
+                {detail.days.map((day) => (
+                  <section key={day.id} id={`minutes-day-${day.id}`} className="scroll-mt-28 border-b pb-8 last:border-b-0">
+                    <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-[#2f765e]">{day.meetingDate || '日付なし'}</p>
+                        <h4 className="mt-1 text-xl font-semibold">{day.title || detail.meetingName}</h4>
+                        <p className="mt-1 text-sm text-muted-foreground">{day.utterances.length.toLocaleString()}発言 / p.{day.pageCount || '-'}</p>
+                      </div>
+                      {day.pdfUrl ? (
+                        <a href={day.pdfUrl} target="_blank" rel="noreferrer" className="rounded-xl border px-3 py-2 text-sm font-semibold hover:bg-[#edf6f0]">
+                          PDF原文
+                        </a>
+                      ) : null}
+                    </div>
+                    <div className="space-y-7">
+                      {day.utterances.map((item) => (
+                        <article key={item.id} className="border-b border-dashed pb-5 last:border-b-0">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <h5 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h5>
+                            <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">p.{item.pageStart}-{item.pageEnd}</p>
+                          <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
+                        </article>
+                      ))}
+                    </div>
+                    {day.tables.length > 0 ? (
+                      <div className="mt-8 space-y-4 rounded-2xl border bg-[#f8fbf8] p-4">
+                        <p className="text-sm font-semibold text-[#173f36]">抽出表</p>
+                        {day.tables.map((table) => (
+                          <div key={table.id} className="rounded-2xl border bg-white p-4">
+                            <p className="mb-2 text-sm font-semibold">{table.caption} / p.{table.page}</p>
+                            <div className="overflow-auto text-sm [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1" dangerouslySetInnerHTML={{ __html: table.html }} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+                ))}
+              </div>
+            </div>
+
+            <aside className="space-y-4">
+              <div className="rounded-3xl border bg-white p-4">
+                <p className="text-sm font-semibold text-[#173f36]">会議内情報</p>
+                <dl className="mt-3 space-y-2 text-sm">
+                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">会議種別</dt><dd>{detail.section}</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">日程</dt><dd>{totalDays}日</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">発言</dt><dd>{totalUtterances.toLocaleString()}件</dd></div>
+                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">表</dt><dd>{totalTables.toLocaleString()}件</dd></div>
+                </dl>
+              </div>
+              <div className="rounded-3xl border bg-white p-4">
+                <p className="text-sm font-semibold text-[#173f36]">日程</p>
+                <div className="mt-3 space-y-2">
+                  {detail.days.map((day) => (
+                    <a key={day.id} href={`#minutes-day-${day.id}`} className="block rounded-xl border bg-[#fbfdfb] px-3 py-2 text-sm hover:border-[#79b28d]">
+                      <span className="font-semibold">{day.meetingDate || '日付なし'}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">{day.utterances.length.toLocaleString()}発言 / 表{day.tables.length}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </aside>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderMinutesWorkspace = (): JSX.Element => {
     if (minutesPage === 'results') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
     if (minutesPage === 'detail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
+    if (minutesPage === 'meetingDetail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
 
     return (
       <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">
@@ -2434,25 +2590,13 @@ function AppShell() {
               {renderMinutesBackButton()}
               <div className="rounded-3xl border bg-white p-6">
                 <h3 className="text-2xl font-semibold text-[#173f36]">会議録の閲覧</h3>
-                <p className="mt-2 text-sm text-muted-foreground">会議を選択すると、その会議に絞り込んで検索・閲覧できます。</p>
+                <p className="mt-2 text-sm text-muted-foreground">会議を選択すると、その会議の全日程・全発言をスクロールで閲覧できます。</p>
                 <div className="mt-6 grid gap-4 lg:grid-cols-2">
                   {minutesMeetings.map((meeting) => (
                     <button
                       key={meeting.id}
                       type="button"
-                      onClick={() => {
-                        setMinutesMeetingId(meeting.id);
-                        setMinutesSection(meeting.section || 'all');
-                        setMinutesQuery('');
-                        setMinutesSpeaker('');
-                        void submitMinutesSearch({
-                          query: '',
-                          speaker: '',
-                          role: 'all',
-                          section: meeting.section || 'all',
-                          meetingId: meeting.id,
-                        });
-                      }}
+                      onClick={() => void openMinutesMeeting(meeting)}
                       className={`rounded-2xl border px-4 py-4 text-left hover:border-[#79b28d] ${
                         minutesMeetingId === meeting.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
                       }`}

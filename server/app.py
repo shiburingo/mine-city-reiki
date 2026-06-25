@@ -4545,6 +4545,112 @@ def api_minutes_speakers():
     )
 
 
+@app.get('/api/minutes/meetings/<int:meeting_id>')
+def api_minutes_meeting_detail(meeting_id: int):
+    with db_cursor() as (_, cur):
+        cur.execute(
+            """
+            SELECT
+              s.id, s.section, s.meeting_name, s.title, s.source_url,
+              MIN(d.meeting_date) AS from_date,
+              MAX(d.meeting_date) AS to_date,
+              COUNT(DISTINCT u.id) AS utterance_count,
+              COUNT(DISTINCT t.id) AS table_count
+            FROM meeting_sessions s
+            LEFT JOIN meeting_days d ON d.session_id=s.id
+            LEFT JOIN meeting_utterances u ON u.day_id=d.id
+            LEFT JOIN meeting_tables t ON t.day_id=d.id
+            WHERE s.id=%s
+            GROUP BY s.id, s.section, s.meeting_name, s.title, s.source_url
+            """,
+            (meeting_id,),
+        )
+        meeting = cur.fetchone()
+        if not meeting:
+            raise ValueError("会議録が見つかりません。")
+
+        cur.execute(
+            """
+            SELECT d.id, d.meeting_date, d.title, d.pdf_url, d.page_url, d.page_count,
+                   s.section, s.meeting_name
+            FROM meeting_days d
+            JOIN meeting_sessions s ON s.id=d.session_id
+            WHERE d.session_id=%s
+            ORDER BY d.meeting_date ASC, d.id ASC
+            """,
+            (meeting_id,),
+        )
+        day_rows = cur.fetchall() or []
+        day_ids = [int(row["id"]) for row in day_rows]
+        utterances_by_day: dict[int, list[dict[str, Any]]] = {day_id: [] for day_id in day_ids}
+        tables_by_day: dict[int, list[dict[str, Any]]] = {day_id: [] for day_id in day_ids}
+        if day_ids:
+            placeholders = ",".join(["%s"] * len(day_ids))
+            cur.execute(
+                f"""
+                SELECT day_id, id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text, page_start, page_end
+                FROM meeting_utterances
+                WHERE day_id IN ({placeholders})
+                ORDER BY day_id ASC, utterance_order ASC
+                """,
+                tuple(day_ids),
+            )
+            for row in cur.fetchall() or []:
+                utterances_by_day.setdefault(int(row["day_id"]), []).append(row)
+            cur.execute(
+                f"""
+                SELECT day_id, id, table_key, page, caption, rows_json, html, search_text, confidence
+                FROM meeting_tables
+                WHERE day_id IN ({placeholders})
+                ORDER BY day_id ASC, page ASC, id ASC
+                """,
+                tuple(day_ids),
+            )
+            for row in cur.fetchall() or []:
+                tables_by_day.setdefault(int(row["day_id"]), []).append(row)
+
+    return jsonify(
+        {
+            "id": int(meeting["id"]),
+            "section": meeting.get("section") or "",
+            "meetingName": meeting.get("meeting_name") or "",
+            "title": meeting.get("title") or "",
+            "sourceUrl": meeting.get("source_url") or "",
+            "fromDate": str(meeting["from_date"]) if meeting.get("from_date") else None,
+            "toDate": str(meeting["to_date"]) if meeting.get("to_date") else None,
+            "utteranceCount": int(meeting.get("utterance_count") or 0),
+            "tableCount": int(meeting.get("table_count") or 0),
+            "days": [
+                {
+                    "id": int(day["id"]),
+                    "meetingDate": str(day["meeting_date"]) if day.get("meeting_date") else None,
+                    "section": day.get("section") or "",
+                    "meetingName": day.get("meeting_name") or "",
+                    "title": day.get("title") or "",
+                    "pdfUrl": day.get("pdf_url") or "",
+                    "pageUrl": day.get("page_url") or "",
+                    "pageCount": int(day.get("page_count") or 0),
+                    "utterances": serialize_minutes_exchange(utterances_by_day.get(int(day["id"]), [])),
+                    "tables": [
+                        {
+                            "id": int(row["id"]),
+                            "tableKey": row.get("table_key") or "",
+                            "page": int(row.get("page") or 0),
+                            "caption": row.get("caption") or "",
+                            "rows": json.loads(row.get("rows_json") or "[]"),
+                            "html": row.get("html") or "",
+                            "searchText": row.get("search_text") or "",
+                            "confidence": float(row.get("confidence") or 0),
+                        }
+                        for row in tables_by_day.get(int(day["id"]), [])
+                    ],
+                }
+                for day in day_rows
+            ],
+        }
+    )
+
+
 @app.get('/api/minutes/days/<int:day_id>')
 def api_minutes_day_detail(day_id: int):
     with db_cursor() as (_, cur):
