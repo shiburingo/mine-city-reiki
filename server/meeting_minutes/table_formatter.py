@@ -113,6 +113,54 @@ ROLE_TOKENS = (
     "管理者",
 )
 
+NAME_FIRST_ROLE_TOKENS = (
+    "副委員長",
+    "委員長",
+    "委員",
+    "副市長",
+    "市長",
+    "教育長",
+    "病院事業管理者",
+    "代表監査委員",
+    "会計管理者",
+    "事務局長",
+    "部長",
+    "次長",
+    "課長",
+    "局長",
+    "消防長",
+    "主幹",
+    "理事",
+    "監",
+    "管理者",
+)
+
+ROLE_START_HINTS = (
+    "委",
+    "副",
+    "市",
+    "教育",
+    "病院",
+    "代表",
+    "会計",
+    "議会",
+    "デジタル",
+    "総務",
+    "市民",
+    "建設",
+    "観光",
+    "地方",
+    "上下",
+    "消防",
+    "学校",
+    "生涯",
+    "福祉",
+    "健康",
+    "子育て",
+    "農林",
+    "監査",
+)
+
 
 def _split_role_name_scored(cells: list[str], names: set[str]) -> tuple[int, str, str] | None:
     values = _non_empty(cells)
@@ -160,6 +208,84 @@ def _split_role_name(cells: list[str], names: set[str]) -> tuple[str, str] | Non
     if not parsed:
         return None
     return parsed[1], parsed[2]
+
+
+def _looks_name_first_role(role: str) -> bool:
+    if not role or len(role) > 24:
+        return False
+    return any(role == token or role.endswith(token) for token in NAME_FIRST_ROLE_TOKENS)
+
+
+def _role_hint_score(role: str) -> int:
+    if role == "副委員長":
+        return 12
+    if role == "委員長":
+        return 11
+    if role == "委員":
+        return 6
+    if any(role.startswith(prefix) for prefix in ROLE_START_HINTS):
+        return 5
+    return 0
+
+
+def _name_length_score(name: str) -> int:
+    if len(name) in {4, 5}:
+        return 5
+    if len(name) == 3:
+        return 4
+    if len(name) == 2:
+        return 1
+    return 0
+
+
+def _strip_roster_label(text: str) -> str:
+    return re.sub(r"^[0-9０-９一二三四五六七八九十]+\s*(出席委員|説明のため出席した者の職氏名|出席した事務局職員)", "", text)
+
+
+def _parse_name_first_role_text(text: str, names: set[str]) -> list[tuple[str, str]] | None:
+    value = _strip_roster_label(_norm(text))
+    if len(value) < 5:
+        return None
+    memo: dict[int, tuple[int, list[tuple[str, str]]] | None] = {}
+
+    def parse_from(pos: int) -> tuple[int, list[tuple[str, str]]] | None:
+        if pos >= len(value):
+            return 0, []
+        if pos in memo:
+            return memo[pos]
+        best: tuple[int, list[tuple[str, str]]] | None = None
+        for name_len in range(2, 6):
+            name_end = pos + name_len
+            if name_end >= len(value):
+                continue
+            name = value[pos:name_end]
+            name_score = (10 if name in names else 0) + _name_length_score(name)
+            if name_score <= 0:
+                continue
+            for role_end in range(name_end + 2, min(len(value), name_end + 24) + 1):
+                role = value[name_end:role_end]
+                if not _looks_name_first_role(role):
+                    continue
+                role_score = _role_hint_score(role)
+                if role_score <= 0:
+                    continue
+                rest = parse_from(role_end)
+                if rest is None:
+                    continue
+                rest_score, rest_entries = rest
+                score = 20 + name_score + role_score + rest_score
+                entries = [(name, role), *rest_entries]
+                candidate = (score, entries)
+                if best is None or len(candidate[1]) > len(best[1]) or (len(candidate[1]) == len(best[1]) and candidate[0] > best[0]):
+                    best = candidate
+        memo[pos] = best
+        return best
+
+    parsed = parse_from(0)
+    if not parsed:
+        return None
+    entries = parsed[1]
+    return entries if entries else None
 
 
 def _compact_number_roster(rows: list[list[str]]) -> tuple[list[list[str]], str] | None:
@@ -245,6 +371,33 @@ def _compact_role_roster(rows: list[list[str]], names: set[str]) -> list[list[st
     return compacted if matched >= 4 else None
 
 
+def _compact_name_first_role_roster(rows: list[list[str]], names: set[str]) -> tuple[list[list[str]], str] | None:
+    joined_table = "".join("".join(_non_empty(row)) for row in rows)
+    all_entries: list[tuple[str, str]] = []
+    for row in rows:
+        row_text = "".join(_non_empty(row))
+        parsed = _parse_name_first_role_text(row_text, names)
+        if parsed:
+            all_entries.extend(parsed)
+    if len(all_entries) < 3:
+        return None
+    committee_roles = {"委員", "委員長", "副委員長"}
+    committee_count = sum(1 for _name, role in all_entries if role in committee_roles)
+    executive_count = len(all_entries) - committee_count
+    if "出席委員" in joined_table and committee_count >= 3:
+        caption = "出席委員名簿"
+    elif executive_count >= 4:
+        caption = "説明員名簿"
+    else:
+        return None
+    compacted: list[list[str]] = [["氏名", "役職", "氏名", "役職"]]
+    for pair_index in range(0, len(all_entries), 2):
+        left = all_entries[pair_index]
+        right = all_entries[pair_index + 1] if pair_index + 1 < len(all_entries) else ("", "")
+        compacted.append([left[0], left[1], right[0], right[1]])
+    return compacted, caption
+
+
 def _replace_table(table: FormattedTable, rows: list[list[str]], caption: str, confidence: float) -> FormattedTable:
     search_parts = [caption]
     for row in rows:
@@ -276,6 +429,11 @@ def refine_person_roster_tables(tables: list[FormattedTable], speakers: list[Any
         if number_result:
             number_rows, caption = number_result
             refined.append(_replace_table(table, number_rows, f"{caption} {table.table_key}", 0.86))
+            continue
+        name_first_role_result = _compact_name_first_role_roster(table.rows, names)
+        if name_first_role_result:
+            name_first_role_rows, caption = name_first_role_result
+            refined.append(_replace_table(table, name_first_role_rows, f"{caption} {table.table_key}", 0.84))
             continue
         role_rows = _compact_role_roster(table.rows, names)
         if role_rows:

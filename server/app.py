@@ -3371,7 +3371,9 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
                 table.html,
                 table.search_text,
                 table.confidence,
-                PERSON_TABLE_ENGINE_VERSION if table.caption.startswith(("出席者番号名簿", "役職者名簿")) else TABLE_ENGINE_VERSION,
+                PERSON_TABLE_ENGINE_VERSION
+                if table.caption.startswith(("出席者番号名簿", "一般質問者名簿", "出席委員名簿", "説明員名簿", "役職者名簿"))
+                else TABLE_ENGINE_VERSION,
             ),
         )
     rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year_for_date(item.meeting_date))
