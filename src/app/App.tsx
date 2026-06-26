@@ -226,17 +226,15 @@ function parseDate(value: string | null | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function fiscalYearFromDate(value: string | null | undefined): number | null {
+function calendarYearFromDate(value: string | null | undefined): number | null {
   const date = parseDate(value);
-  if (!date) return null;
-  const year = date.getFullYear();
-  return date.getMonth() + 1 >= 4 ? year : year - 1;
+  return date ? date.getFullYear() : null;
 }
 
-function fiscalYearLabel(year: number): string {
-  if (year >= 2019) return `令和${year - 2018}年度`;
-  if (year >= 1989) return `平成${year - 1988}年度`;
-  return `${year}年度`;
+function calendarYearLabel(year: number): string {
+  if (year >= 2019) return `令和${toFullWidthNumber(year - 2018)}年`;
+  if (year >= 1989) return `平成${toFullWidthNumber(year - 1988)}年`;
+  return `${toFullWidthNumber(year)}年`;
 }
 
 function toFullWidthNumber(value: number | string): string {
@@ -795,6 +793,7 @@ function AppShell() {
   const [minutesRole, setMinutesRole] = useState('all');
   const [minutesSection, setMinutesSection] = useState('all');
   const [minutesMeetingId, setMinutesMeetingId] = useState<number | null>(null);
+  const [minutesSearchYear, setMinutesSearchYear] = useState('');
   const [minutesFromDate, setMinutesFromDate] = useState('');
   const [minutesToDate, setMinutesToDate] = useState('');
   const [minutesMatchMode, setMinutesMatchMode] = useState<'exact' | 'related'>('exact');
@@ -1360,6 +1359,7 @@ function AppShell() {
     setMinutesMeetingId(item.meetingId);
     setMinutesFromDate(item.fromDate);
     setMinutesToDate(item.toDate);
+    setMinutesSearchYear(item.fromDate && item.toDate && item.fromDate.slice(0, 4) === item.toDate.slice(0, 4) && item.fromDate.endsWith('-01-01') && item.toDate.endsWith('-12-31') ? item.fromDate.slice(0, 4) : '');
     setMinutesMatchMode(item.matchMode);
     setMinutesOp(item.op);
     setMinutesIncludeReplies(item.includeReplies);
@@ -1385,12 +1385,25 @@ function AppShell() {
     setMinutesRole('all');
     setMinutesSection('all');
     setMinutesMeetingId(null);
+    setMinutesSearchYear('');
     setMinutesFromDate('');
     setMinutesToDate('');
     setMinutesResults([]);
     setMinutesTotal(0);
     setSelectedMinutesResult(null);
     setMinutesPage('home');
+  }
+
+  function setMinutesSearchYearRange(value: string) {
+    setMinutesSearchYear(value);
+    setMinutesMeetingId(null);
+    if (!value) {
+      setMinutesFromDate('');
+      setMinutesToDate('');
+      return;
+    }
+    setMinutesFromDate(`${value}-01-01`);
+    setMinutesToDate(`${value}-12-31`);
   }
 
   function selectMinutesResult(result: MinutesSearchResult) {
@@ -1674,7 +1687,7 @@ function AppShell() {
       .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle));
   }, [minutesSpeakers, deferredMinutesSpeaker]);
   const minutesBrowseFiscalYears = useMemo(() => {
-    return [...new Set(minutesMeetings.map((meeting) => fiscalYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
+    return [...new Set(minutesMeetings.map((meeting) => calendarYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
       .sort((a, b) => b - a);
   }, [minutesMeetings]);
   const effectiveMinutesBrowseFiscalYear = minutesBrowseFiscalYear || (minutesBrowseFiscalYears[0] ? String(minutesBrowseFiscalYears[0]) : 'all');
@@ -1682,8 +1695,8 @@ function AppShell() {
     const counts = new Map<string, number>();
     const selectedYear = effectiveMinutesBrowseFiscalYear === 'all' ? null : Number(effectiveMinutesBrowseFiscalYear);
     for (const meeting of minutesMeetings) {
-      const fiscalYear = fiscalYearFromDate(meeting.fromDate || meeting.toDate);
-      if (selectedYear != null && fiscalYear !== selectedYear) continue;
+      const calendarYear = calendarYearFromDate(meeting.fromDate || meeting.toDate);
+      if (selectedYear != null && calendarYear !== selectedYear) continue;
       const section = meeting.section || '未分類';
       counts.set(section, (counts.get(section) || 0) + 1);
     }
@@ -1698,8 +1711,8 @@ function AppShell() {
     const selectedYear = effectiveMinutesBrowseFiscalYear === 'all' ? null : Number(effectiveMinutesBrowseFiscalYear);
     return minutesMeetings
       .filter((meeting) => {
-        const fiscalYear = fiscalYearFromDate(meeting.fromDate || meeting.toDate);
-        if (selectedYear != null && fiscalYear !== selectedYear) return false;
+        const calendarYear = calendarYearFromDate(meeting.fromDate || meeting.toDate);
+        if (selectedYear != null && calendarYear !== selectedYear) return false;
         if (minutesBrowseSection !== 'all' && (meeting.section || '未分類') !== minutesBrowseSection) return false;
         return true;
       })
@@ -1713,6 +1726,14 @@ function AppShell() {
         return (a.meetingName || a.title).localeCompare(b.meetingName || b.title, 'ja-JP', { numeric: true });
       });
   }, [minutesMeetings, effectiveMinutesBrowseFiscalYear, minutesBrowseSection]);
+  const searchMinutesMeetingOptions = useMemo(() => {
+    const selectedYear = minutesSearchYear ? Number(minutesSearchYear) : null;
+    return minutesMeetings.filter((meeting) => {
+      if (minutesSection !== 'all' && (meeting.section || '未分類') !== minutesSection) return false;
+      if (selectedYear != null && calendarYearFromDate(meeting.fromDate || meeting.toDate) !== selectedYear) return false;
+      return true;
+    });
+  }, [minutesMeetings, minutesSearchYear, minutesSection]);
   const browsedMinutesMeetingsBySection = useMemo(() => {
     const groups = new Map<string, MinutesMeeting[]>();
     for (const meeting of browsedMinutesMeetings) {
@@ -2046,7 +2067,7 @@ function AppShell() {
       </label>
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">会議種別</span>
-        <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSection} onChange={(e) => setMinutesSection(e.target.value)}>
+        <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSection} onChange={(e) => { setMinutesSection(e.target.value); setMinutesMeetingId(null); }}>
           <option value="all">すべて</option>
           <option value="本会議">本会議</option>
           <option value="常任委員会">常任委員会</option>
@@ -2061,20 +2082,29 @@ function AppShell() {
           onChange={(e) => setMinutesMeetingId(e.target.value ? Number(e.target.value) : null)}
         >
           <option value="">すべての会議</option>
-          {minutesMeetings.map((meeting) => (
+          {searchMinutesMeetingOptions.map((meeting) => (
             <option key={meeting.id} value={meeting.id}>
-              {meeting.toDate || meeting.fromDate || '日付なし'} / {meeting.section} / {meeting.meetingName}
+              {meeting.section} / {formatMinutesMeetingBrowseTitle(meeting)}
             </option>
           ))}
         </select>
       </label>
       <label className="space-y-2 text-sm">
+        <span className="font-semibold text-[#173f36]">年</span>
+        <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSearchYear} onChange={(e) => setMinutesSearchYearRange(e.target.value)}>
+          <option value="">すべての年</option>
+          {minutesBrowseFiscalYears.map((year) => (
+            <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
+          ))}
+        </select>
+      </label>
+      <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">開始日</span>
-        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => setMinutesFromDate(e.target.value)} />
+        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesFromDate(e.target.value); }} />
       </label>
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">終了日</span>
-        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => setMinutesToDate(e.target.value)} />
+        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesToDate(e.target.value); }} />
       </label>
     </div>
   );
@@ -2739,11 +2769,11 @@ function AppShell() {
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                     <div>
                       <h3 className="text-2xl font-semibold">会議録の閲覧</h3>
-                      <p className="mt-1 text-sm text-white/80">年度、会議の種類、時系列で会議録を選択し、会議録全文を表示します。</p>
+                      <p className="mt-1 text-sm text-white/80">年、会議の種類、時系列で会議録を選択し、会議録全文を表示します。</p>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="space-y-1 text-sm font-semibold">
-                        <span>年度</span>
+                        <span>年</span>
                         <select
                           className="h-10 min-w-44 rounded-lg border border-white/30 bg-white px-3 text-sm text-[#173f36]"
                           value={effectiveMinutesBrowseFiscalYear}
@@ -2752,9 +2782,9 @@ function AppShell() {
                             setMinutesBrowseSection('all');
                           }}
                         >
-                          <option value="all">すべての年度</option>
+                          <option value="all">すべての年</option>
                           {minutesBrowseFiscalYears.map((year) => (
-                            <option key={year} value={String(year)}>{fiscalYearLabel(year)}</option>
+                            <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
                           ))}
                         </select>
                       </label>
@@ -2777,11 +2807,11 @@ function AppShell() {
 
                 <div className="grid min-h-[34rem] lg:grid-cols-[13rem_17rem_minmax(0,1fr)]">
                   <aside className="border-r bg-[#f9fbfb]">
-                    <div className="border-b bg-[#d8e8e6] px-4 py-3 text-sm font-semibold text-[#173f36]">年度</div>
+                    <div className="border-b bg-[#d8e8e6] px-4 py-3 text-sm font-semibold text-[#173f36]">年</div>
                     <div className="space-y-1 p-3">
                       {minutesBrowseFiscalYears.map((year) => {
                         const active = effectiveMinutesBrowseFiscalYear === String(year);
-                        const count = minutesMeetings.filter((meeting) => fiscalYearFromDate(meeting.fromDate || meeting.toDate) === year).length;
+                        const count = minutesMeetings.filter((meeting) => calendarYearFromDate(meeting.fromDate || meeting.toDate) === year).length;
                         return (
                           <button
                             key={year}
@@ -2794,7 +2824,7 @@ function AppShell() {
                               active ? 'bg-[#173f36] text-white' : 'hover:bg-[#e7f0ed]'
                             }`}
                           >
-                            <span>{fiscalYearLabel(year)}</span>
+                            <span>{calendarYearLabel(year)}</span>
                             <span className={`ml-2 text-xs ${active ? 'text-white/70' : 'text-muted-foreground'}`}>{count}件</span>
                           </button>
                         );
@@ -2833,7 +2863,7 @@ function AppShell() {
 
                   <div className="bg-white">
                     <div className="border-b bg-[#d8e8e6] px-4 py-3 text-sm font-semibold text-[#173f36]">
-                      会議一覧（会議録表示） / {effectiveMinutesBrowseFiscalYear === 'all' ? 'すべての年度' : fiscalYearLabel(Number(effectiveMinutesBrowseFiscalYear))}
+                      会議一覧（会議録表示） / {effectiveMinutesBrowseFiscalYear === 'all' ? 'すべての年' : calendarYearLabel(Number(effectiveMinutesBrowseFiscalYear))}
                     </div>
                     {browsedMinutesMeetings.length === 0 ? (
                       <div className="p-6 text-sm text-muted-foreground">該当する会議録はありません。</div>
