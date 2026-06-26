@@ -251,6 +251,15 @@ function formatJapaneseEraYearMonth(value: string | null | undefined): string {
   return `${toFullWidthNumber(year)}年${toFullWidthNumber(month)}月`;
 }
 
+function formatJapaneseEraYear(value: string | null | undefined): string {
+  const date = parseDate(value);
+  if (!date) return '';
+  const year = date.getFullYear();
+  if (year >= 2019) return `令和${toFullWidthNumber(year - 2018)}年`;
+  if (year >= 1989) return `平成${toFullWidthNumber(year - 1988)}年`;
+  return `${toFullWidthNumber(year)}年`;
+}
+
 function stripMeetingDatePrefix(value: string): string {
   return value
     .replace(/^\s*(令和|平成|昭和)[0-9０-９元]+年[0-9０-９]+月[0-9０-９]+日\s*/u, '')
@@ -260,7 +269,10 @@ function stripMeetingDatePrefix(value: string): string {
 
 function formatMinutesMeetingBrowseTitle(meeting: MinutesMeeting): string {
   const title = stripMeetingDatePrefix(meeting.meetingName || meeting.title || '会議録');
-  if ((meeting.section || '').includes('委員')) return title;
+  if ((meeting.section || '').includes('委員')) {
+    const yearLabel = formatJapaneseEraYear(meeting.fromDate || meeting.toDate);
+    return [yearLabel, title].filter(Boolean).join('　');
+  }
   const dateLabel = formatJapaneseEraYearMonth(meeting.fromDate || meeting.toDate);
   return [dateLabel, title].filter(Boolean).join('　');
 }
