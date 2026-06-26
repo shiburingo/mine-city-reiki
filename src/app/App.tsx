@@ -239,10 +239,31 @@ function fiscalYearLabel(year: number): string {
   return `${year}年度`;
 }
 
-function formatMeetingDateRange(fromDate: string | null, toDate: string | null): string {
-  if (!fromDate && !toDate) return '日付なし';
-  if (!toDate || toDate === fromDate) return fromDate || toDate || '日付なし';
-  return `${fromDate} - ${toDate}`;
+function toFullWidthNumber(value: number | string): string {
+  return String(value).replace(/[0-9]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0));
+}
+
+function formatJapaneseEraYearMonth(value: string | null | undefined): string {
+  const date = parseDate(value);
+  if (!date) return '';
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  if (year >= 2019) return `令和${toFullWidthNumber(year - 2018)}年${toFullWidthNumber(month)}月`;
+  if (year >= 1989) return `平成${toFullWidthNumber(year - 1988)}年${toFullWidthNumber(month)}月`;
+  return `${toFullWidthNumber(year)}年${toFullWidthNumber(month)}月`;
+}
+
+function stripMeetingDatePrefix(value: string): string {
+  return value
+    .replace(/^\s*(令和|平成|昭和)[0-9０-９元]+年[0-9０-９]+月[0-9０-９]+日\s*/u, '')
+    .replace(/^\s*[0-9０-９]{4}年[0-9０-９]+月[0-9０-９]+日\s*/u, '')
+    .trim();
+}
+
+function formatMinutesMeetingBrowseTitle(meeting: MinutesMeeting): string {
+  const dateLabel = formatJapaneseEraYearMonth(meeting.fromDate || meeting.toDate);
+  const title = stripMeetingDatePrefix(meeting.meetingName || meeting.title || '会議録');
+  return [dateLabel, title].filter(Boolean).join('　');
 }
 
 function minutesSectionOrder(section: string): number {
@@ -2822,12 +2843,11 @@ function AppShell() {
                                   key={meeting.id}
                                   type="button"
                                   onClick={() => void openMinutesMeeting(meeting)}
-                                  className={`grid w-full gap-2 px-4 py-3 text-left transition hover:bg-[#edf7ef] md:grid-cols-[9rem_minmax(0,1fr)_12rem] ${
+                                  className={`grid w-full gap-2 px-4 py-3 text-left transition hover:bg-[#edf7ef] md:grid-cols-[minmax(0,1fr)_12rem] ${
                                     minutesMeetingId === meeting.id ? 'bg-[#edf7ef]' : 'bg-white'
                                   }`}
                                 >
-                                  <span className="text-sm font-semibold text-[#2f765e]">{formatMeetingDateRange(meeting.fromDate, meeting.toDate)}</span>
-                                  <span className="min-w-0 text-base font-semibold text-blue-700 underline-offset-2 hover:underline">{meeting.meetingName || meeting.title}</span>
+                                  <span className="min-w-0 text-base font-semibold text-blue-700 underline-offset-2 hover:underline">{formatMinutesMeetingBrowseTitle(meeting)}</span>
                                   <span className="text-sm text-muted-foreground md:text-right">{meeting.dayCount}日程 / {meeting.utteranceCount.toLocaleString()}発言 / 表{meeting.tableCount}</span>
                                 </button>
                               ))}
