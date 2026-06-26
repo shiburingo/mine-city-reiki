@@ -2469,8 +2469,8 @@ function AppShell() {
                 <ChevronLeft className="size-4" />
                 会議録一覧へ戻る
               </button>
-              <p className="text-sm font-semibold text-[#2f765e]">{detail?.section || '会議録'} / {detail?.fromDate || '日付なし'}{detail?.toDate && detail.toDate !== detail.fromDate ? ` - ${detail.toDate}` : ''}</p>
-              <h3 className="mt-1 text-2xl font-semibold leading-tight">{detail?.meetingName || detail?.title || '会議録を読み込み中'}</h3>
+              <p className="text-sm font-semibold text-[#2f765e]">{detail?.section || '会議録'}</p>
+              <h3 className="mt-1 text-2xl font-semibold leading-tight">{detail ? formatMinutesMeetingBrowseTitle(detail) : '会議録を読み込み中'}</h3>
               <p className="mt-2 text-sm text-muted-foreground">
                 {minutesMeetingDetailLoading ? '会議録を読み込んでいます。' : `${totalDays}日程 / ${totalUtterances.toLocaleString()}発言 / 表${totalTables.toLocaleString()}件`}
                 {selectedDay ? ` / 表示中: ${selectedDay.meetingDate || selectedDay.title || `日程${selectedDay.id}`}` : ''}
