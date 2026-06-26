@@ -1759,6 +1759,47 @@ function AppShell() {
     return minutesSpeakers
       .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle));
   }, [minutesSpeakers, deferredMinutesSpeaker]);
+  const groupedMinutesSpeakers = useMemo(() => {
+    const groups = new Map<string, {
+      displayName: string;
+      title: string;
+      roleSummary: string;
+      utteranceCount: number;
+      roles: Set<string>;
+      titles: Set<string>;
+    }>();
+    for (const speaker of filteredMinutesSpeakers) {
+      const displayName = (speaker.displayName || '氏名なし').trim();
+      const key = displayName.replace(/\s+/g, '');
+      const existing = groups.get(key);
+      if (existing) {
+        existing.utteranceCount += speaker.utteranceCount;
+        if (speaker.role) existing.roles.add(speaker.role);
+        if (speaker.title) existing.titles.add(speaker.title);
+        continue;
+      }
+      groups.set(key, {
+        displayName,
+        title: speaker.title || '',
+        roleSummary: minutesRoleLabel(speaker.role),
+        utteranceCount: speaker.utteranceCount,
+        roles: new Set(speaker.role ? [speaker.role] : []),
+        titles: new Set(speaker.title ? [speaker.title] : []),
+      });
+    }
+    return [...groups.values()]
+      .map((speaker) => {
+        const titles = [...speaker.titles].filter(Boolean);
+        const roles = [...speaker.roles].filter(Boolean);
+        return {
+          displayName: speaker.displayName,
+          title: titles.slice(0, 2).join(' / '),
+          roleSummary: roles.length === 1 ? minutesRoleLabel(roles[0]) : '複数区分',
+          utteranceCount: speaker.utteranceCount,
+        };
+      })
+      .sort((a, b) => b.utteranceCount - a.utteranceCount || a.displayName.localeCompare(b.displayName, 'ja-JP'));
+  }, [filteredMinutesSpeakers]);
   const minutesBrowseFiscalYears = useMemo(() => {
     return [...new Set(minutesMeetings.map((meeting) => calendarYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
       .sort((a, b) => b - a);
@@ -2874,9 +2915,9 @@ function AppShell() {
                         onChange={(e) => setMinutesSpeaker(e.target.value)}
                       >
                         <option value="">発言者を選択</option>
-                        {filteredMinutesSpeakers.slice(0, 300).map((speaker) => (
-                          <option key={`${speaker.displayName}-${speaker.title}-${speaker.role}`} value={speaker.displayName}>
-                            {speaker.displayName || '氏名なし'}{speaker.title ? ` / ${speaker.title}` : ''}（{minutesRoleLabel(speaker.role)}・{speaker.utteranceCount.toLocaleString()}発言）
+                        {groupedMinutesSpeakers.slice(0, 300).map((speaker) => (
+                          <option key={speaker.displayName} value={speaker.displayName}>
+                            {speaker.displayName}{speaker.title ? ` / ${speaker.title}` : ''}（{speaker.roleSummary}・{speaker.utteranceCount.toLocaleString()}発言）
                           </option>
                         ))}
                       </select>
@@ -2967,18 +3008,15 @@ function AppShell() {
                       <p className="mt-1 text-sm text-muted-foreground">条件に対応する発言者を選択して検索します。</p>
                     </div>
                     <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
-                      {filteredMinutesSpeakers.length.toLocaleString()}人
+                      {groupedMinutesSpeakers.length.toLocaleString()}人
                     </span>
                   </div>
                   <div className="mt-4 flex flex-wrap gap-2">
-                    {filteredMinutesSpeakers.slice(0, 18).map((speaker) => (
+                    {groupedMinutesSpeakers.slice(0, 18).map((speaker) => (
                       <button
-                        key={`${speaker.displayName}-${speaker.title}-${speaker.role}`}
+                        key={speaker.displayName}
                         type="button"
-                        onClick={() => {
-                          setMinutesSpeaker(speaker.displayName);
-                          setMinutesRole(speaker.role);
-                        }}
+                        onClick={() => setMinutesSpeaker(speaker.displayName)}
                         className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
                           minutesSpeaker === speaker.displayName ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-[#fbfdfb] text-[#37564d] hover:border-[#79b28d]'
                         }`}
@@ -2987,8 +3025,8 @@ function AppShell() {
                         <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
                       </button>
                     ))}
-                    {filteredMinutesSpeakers.length > 18 ? (
-                      <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(filteredMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
+                    {groupedMinutesSpeakers.length > 18 ? (
+                      <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(groupedMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
                     ) : null}
                   </div>
                 </div>
