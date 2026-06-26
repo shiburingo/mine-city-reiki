@@ -1680,12 +1680,16 @@ function AppShell() {
         ],
       },
       {
-        label: '同期実行',
-        total: `${syncStatus.runCount.toLocaleString()}回`,
-        rows: [{ label: '最終成功', value: formatDateTime(syncStatus.lastSuccessAt) }],
+        label: '会議録',
+        total: `${minutesStatus.dayCount.toLocaleString()}件`,
+        rows: [
+          { label: '発言', value: `${minutesStatus.utteranceCount.toLocaleString()}件` },
+          { label: '発言者', value: `${minutesStatus.speakerCount.toLocaleString()}人` },
+          { label: '表', value: `${minutesStatus.tableCount.toLocaleString()}件` },
+        ],
       },
     ],
-    [syncStatus],
+    [minutesStatus, syncStatus],
   );
 
   const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
