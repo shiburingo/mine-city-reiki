@@ -267,6 +267,12 @@ function formatMinutesMeetingBrowseTitle(meeting: MinutesMeeting): string {
   return [dateLabel, title].filter(Boolean).join('　');
 }
 
+function formatMinutesTableCaption(table: MinutesTable): string {
+  return (table.caption || '表')
+    .replace(/\s+minutes-\d+-p\d+-t\d+$/u, '')
+    .trim() || '表';
+}
+
 function minutesSectionOrder(section: string): number {
   if (section === '本会議') return 0;
   if (section === '常任委員会') return 1;
@@ -1793,7 +1799,7 @@ function AppShell() {
   const renderMinutesTableCard = (table: MinutesTable, compact = false): JSX.Element => (
     <div key={`table-${table.id}`} className={`rounded-2xl border bg-[#fbfdfb] ${compact ? 'p-3' : 'p-4'}`}>
       <p className={`mb-2 font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>
-        {table.caption} / p.{table.page}
+        {formatMinutesTableCaption(table)}
       </p>
       <div
         className={`overflow-auto ${compact ? 'text-xs' : 'text-sm'} [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1`}
