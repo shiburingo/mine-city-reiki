@@ -868,9 +868,14 @@ function AppShell() {
           return;
         }
       }
-      const [status, runs] = await Promise.all([fetchSyncStatus(), fetchSyncRuns()]);
+      const [status, runs, minutes] = await Promise.all([
+        fetchSyncStatus(),
+        fetchSyncRuns(),
+        fetchMinutesStatus().catch(() => EMPTY_MINUTES_STATUS),
+      ]);
       setSyncStatus(status);
       setSyncRuns(runs);
+      setMinutesStatus(minutes);
       setSyncForm({
         enabled: status.enabled,
         dayOfMonth: status.dayOfMonth,
