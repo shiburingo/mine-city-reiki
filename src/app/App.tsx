@@ -2369,7 +2369,7 @@ function AppShell() {
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</span>
+                            <span className="font-semibold">{item.speakerTitle} {item.speakerName}</span>
                             <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.text}</p>
@@ -2387,7 +2387,7 @@ function AppShell() {
                       const item = contentItem.utterance;
                       return (
                         <article key={`utterance-${item.id}`} className="border-b pb-5 last:border-b-0">
-                          <h4 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h4>
+                          <h4 className="text-base font-semibold">{item.speakerTitle} {item.speakerName}</h4>
                           <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
                         </article>
                       );
@@ -2550,7 +2550,7 @@ function AppShell() {
                         return (
                           <article key={`utterance-${item.id}`} className="border-b border-dashed pb-5 last:border-b-0">
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                              <h5 className="text-base font-semibold">{item.order}. {item.speakerTitle} {item.speakerName}</h5>
+                              <h5 className="text-base font-semibold">{item.speakerTitle} {item.speakerName}</h5>
                               <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                             </div>
                             <p className="mt-1 text-xs text-muted-foreground">p.{item.pageStart}-{item.pageEnd}</p>
