@@ -1841,6 +1841,23 @@ function AppShell() {
     </div>
   );
 
+  const isMinutesStructuralLine = (line: string): boolean => {
+    return /^(日程第|〔|【|（|第[0-9０-９一二三四五六七八九十]+[、 　]|[0-9０-９]+[、.．)]|[（(][0-9０-９一二三四五六七八九十]+[）)])/.test(line.trim());
+  };
+
+  const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8'): JSX.Element => {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    return (
+      <div className={className}>
+        {lines.map((line, index) => (
+          <p key={`${index}-${line.slice(0, 16)}`} className="m-0" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
+            {line}
+          </p>
+        ))}
+      </div>
+    );
+  };
+
   const renderArticleNavTree = (nodes: ArticleGroupNode[], anchorPrefix: string, depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-2' : 'mt-1 space-y-1 border-l border-border/70 pl-3'}>
       {nodes.map((node) => (
@@ -2190,7 +2207,7 @@ function AppShell() {
         </div>
         {expanded ? (
           <div className="mt-4 rounded-2xl border bg-[#f8fbf8] p-4 text-sm leading-7">
-            <p className="whitespace-pre-wrap">{result.text}</p>
+            {renderMinutesText(result.text, 'text-sm leading-7')}
           </div>
         ) : null}
       </article>
@@ -2376,7 +2393,7 @@ function AppShell() {
                           {minutesRoleLabel(item.speakerRole)}
                         </span>
                       </div>
-                      <p className="mt-4 whitespace-pre-wrap text-base leading-8">{item.text}</p>
+                      {renderMinutesText(item.text, 'mt-4 text-base leading-8')}
                     </article>
                   ))
                 ) : null}
@@ -2430,7 +2447,7 @@ function AppShell() {
                       return (
                         <article key={`utterance-${item.id}`} className="border-b pb-5 last:border-b-0">
                           <h4 className="text-base font-semibold">{item.speakerTitle} {item.speakerName}</h4>
-                          <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
+                          {renderMinutesText(item.text)}
                         </article>
                       );
                     })}
@@ -2596,7 +2613,7 @@ function AppShell() {
                               <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                             </div>
                             <p className="mt-1 text-xs text-muted-foreground">p.{item.pageStart}-{item.pageEnd}</p>
-                            <p className="mt-3 whitespace-pre-wrap text-base leading-8">{item.text}</p>
+                            {renderMinutesText(item.text)}
                           </article>
                         );
                       })}
