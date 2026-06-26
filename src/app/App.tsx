@@ -261,8 +261,9 @@ function stripMeetingDatePrefix(value: string): string {
 }
 
 function formatMinutesMeetingBrowseTitle(meeting: MinutesMeeting): string {
-  const dateLabel = formatJapaneseEraYearMonth(meeting.fromDate || meeting.toDate);
   const title = stripMeetingDatePrefix(meeting.meetingName || meeting.title || '会議録');
+  if ((meeting.section || '').includes('委員')) return title;
+  const dateLabel = formatJapaneseEraYearMonth(meeting.fromDate || meeting.toDate);
   return [dateLabel, title].filter(Boolean).join('　');
 }
 
