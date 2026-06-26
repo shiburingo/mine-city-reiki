@@ -1886,9 +1886,9 @@ function AppShell() {
   const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8', highlightTerms: string[] = []): JSX.Element => {
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     return (
-      <div className={className}>
+      <div className={`${className} min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere]`}>
         {lines.map((line, index) => (
-          <p key={`${index}-${line.slice(0, 16)}`} className="m-0" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
+          <p key={`${index}-${line.slice(0, 16)}`} className="m-0 min-w-0 max-w-full break-words [overflow-wrap:anywhere]" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
             {renderHighlightedText(line, highlightTerms)}
           </p>
         ))}
@@ -2387,8 +2387,8 @@ function AppShell() {
             </div>
           </div>
 
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-            <div className="rounded-3xl border bg-white">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="min-w-0 overflow-hidden rounded-3xl border bg-white">
               <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
@@ -2415,12 +2415,12 @@ function AppShell() {
                   </div>
                 </div>
               </div>
-              <div className="max-h-[72vh] overflow-auto p-5">
+              <div className="max-h-[72vh] min-w-0 overflow-auto p-4 sm:p-5">
                 {minutesReaderMode === 'unit' ? (
                   (minutesIncludeReplies ? selectedMinutesResult.exchange : [selectedMinutesResult]).map((item) => (
                     <article
                       key={item.id}
-                      className={`mb-4 rounded-2xl border p-5 last:mb-0 ${
+                      className={`mb-4 min-w-0 rounded-2xl border p-4 last:mb-0 sm:p-5 ${
                         item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
                       }`}
                     >
@@ -2488,7 +2488,7 @@ function AppShell() {
                       const item = contentItem.utterance;
                       return (
                         <article key={`utterance-${item.id}`} className="border-b pb-5 last:border-b-0">
-                          <h4 className="text-base font-semibold">{item.speakerTitle} {item.speakerName}</h4>
+                          <h4 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h4>
                           {renderMinutesText(item.text, 'mt-3 text-base leading-8', minutesHighlightTerms)}
                         </article>
                       );
@@ -2601,8 +2601,8 @@ function AppShell() {
         ) : !detail ? (
           <div className="rounded-3xl border bg-white p-8 text-center text-muted-foreground">会議録を取得できませんでした。</div>
         ) : (
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
-            <div className="rounded-3xl border bg-white">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
+            <div className="min-w-0 overflow-hidden rounded-3xl border bg-white">
               <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
@@ -2625,7 +2625,7 @@ function AppShell() {
                   </div>
                 </div>
               </div>
-              <div className="max-h-[76vh] overflow-auto p-6">
+              <div className="max-h-[76vh] min-w-0 overflow-auto p-4 sm:p-6">
                 {!selectedDay ? (
                   <p className="text-sm text-muted-foreground">表示できる日程がありません。</p>
                 ) : (
@@ -2649,9 +2649,9 @@ function AppShell() {
                         }
                         const item = contentItem.utterance;
                         return (
-                          <article key={`utterance-${item.id}`} className="border-b border-dashed pb-5 last:border-b-0">
+                          <article key={`utterance-${item.id}`} className="min-w-0 border-b border-dashed pb-5 last:border-b-0">
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                              <h5 className="text-base font-semibold">{item.speakerTitle} {item.speakerName}</h5>
+                              <h5 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h5>
                               <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                             </div>
                             <p className="mt-1 text-xs text-muted-foreground">p.{item.pageStart}-{item.pageEnd}</p>
