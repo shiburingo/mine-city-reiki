@@ -237,6 +237,11 @@ function calendarYearLabel(year: number): string {
   return `${toFullWidthNumber(year)}年`;
 }
 
+function calendarYearLabelFromDate(value: string | null | undefined): string {
+  const year = calendarYearFromDate(value);
+  return year ? calendarYearLabel(year) : '年不明';
+}
+
 function toFullWidthNumber(value: number | string): string {
   return String(value).replace(/[0-9]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0));
 }
@@ -841,6 +846,7 @@ function AppShell() {
   const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(true);
   const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>('new');
   const [minutesPage, setMinutesPage] = useState<MinutesPage>('home');
+  const [minutesSearchReturnPage, setMinutesSearchReturnPage] = useState<MinutesPage>('home');
   const [minutesBrowseFiscalYear, setMinutesBrowseFiscalYear] = useState('');
   const [minutesBrowseSection, setMinutesBrowseSection] = useState<MinutesBrowseSectionFilter>('all');
   const [minutesResultMode, setMinutesResultMode] = useState<'utterance' | 'meeting' | 'table'>('utterance');
@@ -1388,6 +1394,8 @@ function AppShell() {
       setMinutesTotal(resp.total);
       setSelectedMinutesResult(resp.items[0] || null);
       setMinutesExpandedResultIds(new Set());
+      setMinutesResultMode((speaker || role !== 'all') ? 'meeting' : 'utterance');
+      setMinutesSearchReturnPage(minutesPage);
       setMinutesPage('results');
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録検索に失敗しました。');
@@ -1437,6 +1445,22 @@ function AppShell() {
     setMinutesTotal(0);
     setSelectedMinutesResult(null);
     setMinutesPage('home');
+  }
+
+  function clearMinutesSpeakerSearch() {
+    setMinutesQuery('');
+    setMinutesSpeaker('');
+    setMinutesRole('all');
+    setMinutesSection('all');
+    setMinutesMeetingId(null);
+    setMinutesSearchYear('');
+    setMinutesFromDate('');
+    setMinutesToDate('');
+    setMinutesResults([]);
+    setMinutesTotal(0);
+    setSelectedMinutesResult(null);
+    setMinutesResultMode('meeting');
+    setMinutesPage('speaker');
   }
 
   function setMinutesSearchYearRange(value: string) {
@@ -2258,7 +2282,14 @@ function AppShell() {
     <div className="space-y-5 p-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
-          {renderMinutesBackButton('検索条件へ戻る')}
+          <button
+            type="button"
+            onClick={() => setMinutesPage(minutesSearchReturnPage)}
+            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+          >
+            <ChevronLeft className="size-4" />
+            検索条件へ戻る
+          </button>
           <div>
             <p className="text-sm font-semibold text-[#2f765e]">検索結果</p>
             <h3 className="text-2xl font-semibold">{minutesTotal.toLocaleString()}件</h3>
@@ -2298,17 +2329,33 @@ function AppShell() {
         ) : minutesResults.length === 0 ? (
           <p className="rounded-2xl border bg-white p-6 text-muted-foreground">検索結果がありません。検索方法へ戻り、条件を変更してください。</p>
         ) : minutesResultMode === 'meeting' ? (
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="overflow-hidden rounded-2xl border bg-white">
+            <div className="hidden grid-cols-[9rem_minmax(0,1.4fr)_minmax(0,1fr)_8rem] border-b bg-[#5f8f8f] px-4 py-3 text-sm font-semibold text-white md:grid">
+              <span>年</span>
+              <span>会議名</span>
+              <span>日程</span>
+              <span className="text-right">ヒット数</span>
+            </div>
             {meetingGroupedMinutesResults.map((group) => (
               <button
                 key={group.dayId}
                 type="button"
                 onClick={() => selectMinutesResult(group.first)}
-                className="rounded-2xl border bg-white p-4 text-left hover:border-[#79b28d]"
+                className="grid w-full gap-2 border-b px-4 py-4 text-left transition last:border-b-0 hover:bg-[#edf7ef] md:grid-cols-[9rem_minmax(0,1.4fr)_minmax(0,1fr)_8rem] md:items-center"
               >
-                <p className="text-sm font-semibold text-[#2f765e]">{group.meetingDate || '日付なし'} / {group.section}</p>
-                <h4 className="mt-1 text-lg font-semibold">{group.title}</h4>
-                <p className="mt-2 text-sm text-muted-foreground">{group.count}発言ヒット / 発言者 {group.speakers.size}人</p>
+                <span className="text-sm font-semibold text-[#2f765e]">
+                  {calendarYearLabelFromDate(group.meetingDate)}
+                </span>
+                <span className="min-w-0 font-semibold text-blue-700 underline-offset-2 hover:underline">
+                  {group.title}
+                </span>
+                <span className="text-sm text-muted-foreground">
+                  {group.meetingDate || '日付なし'} / {group.section}
+                </span>
+                <span className="text-sm font-semibold text-red-600 md:text-right">
+                  {group.count.toLocaleString()}件
+                  <span className="ml-2 text-xs font-medium text-muted-foreground">発言者{group.speakers.size}人</span>
+                </span>
               </button>
             ))}
           </div>
@@ -2791,25 +2838,140 @@ function AppShell() {
           ) : null}
 
           {minutesPage === 'speaker' ? (
-            <div className="space-y-5">
+            <div className="mx-auto max-w-6xl space-y-5">
               {renderMinutesBackButton()}
-              <div className="grid gap-5 xl:grid-cols-[24rem_minmax(0,1fr)]">
-                <div className="rounded-3xl border bg-white p-5">
-                  <h3 className="text-2xl font-semibold text-[#173f36]">発言者から検索</h3>
-                  <p className="mt-2 text-sm text-muted-foreground">発言者名や役職で絞り込み、対象者を選択して検索します。</p>
-                  <div className="mt-5 space-y-5">
-                    {renderMinutesCommonFilters(false, true)}
+              <div className="overflow-hidden rounded-3xl border bg-white shadow-sm">
+                <div className="border-b bg-[#5f8f8f] px-5 py-4 text-white">
+                  <h3 className="text-center text-xl font-semibold">質問者や答弁者から会議録を探します。</h3>
+                </div>
+
+                <div className="border-b bg-[#f3f7f5] p-5">
+                  <p className="text-sm font-semibold text-[#173f36]">発言者</p>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:items-end">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">発言区分</span>
+                      <select
+                        className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                        value={minutesRole}
+                        onChange={(e) => {
+                          setMinutesRole(e.target.value);
+                          setMinutesSpeaker('');
+                        }}
+                      >
+                        <option value="all">すべて</option>
+                        <option value="questioner">質問者</option>
+                        <option value="answerer">答弁者</option>
+                        <option value="chair">議事進行</option>
+                        <option value="secretariat">事務局</option>
+                        <option value="unknown">未分類</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">発言者名</span>
+                      <select
+                        className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                        value={minutesSpeaker}
+                        onChange={(e) => setMinutesSpeaker(e.target.value)}
+                      >
+                        <option value="">発言者を選択</option>
+                        {filteredMinutesSpeakers.slice(0, 300).map((speaker) => (
+                          <option key={`${speaker.displayName}-${speaker.title}-${speaker.role}`} value={speaker.displayName}>
+                            {speaker.displayName || '氏名なし'}{speaker.title ? ` / ${speaker.title}` : ''}（{minutesRoleLabel(speaker.role)}・{speaker.utteranceCount.toLocaleString()}発言）
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-3">
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">年</span>
+                      <select
+                        className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                        value={minutesSearchYear}
+                        onChange={(e) => {
+                          setMinutesSearchYearRange(e.target.value);
+                          setMinutesSpeaker('');
+                        }}
+                      >
+                        <option value="">すべての年</option>
+                        {minutesBrowseFiscalYears.map((year) => (
+                          <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">会議種別</span>
+                      <select
+                        className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                        value={minutesSection}
+                        onChange={(e) => {
+                          setMinutesSection(e.target.value);
+                          setMinutesMeetingId(null);
+                          setMinutesSpeaker('');
+                        }}
+                      >
+                        <option value="all">すべて</option>
+                        <option value="本会議">本会議</option>
+                        <option value="常任委員会">常任委員会</option>
+                        <option value="特別委員会">特別委員会</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-sm">
+                      <span className="font-semibold text-[#173f36]">会議名</span>
+                      <select
+                        className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+                        value={minutesMeetingId ?? ''}
+                        onChange={(e) => {
+                          setMinutesMeetingId(e.target.value ? Number(e.target.value) : null);
+                          setMinutesSpeaker('');
+                        }}
+                      >
+                        <option value="">すべての会議</option>
+                        {searchMinutesMeetingOptions.map((meeting) => (
+                          <option key={meeting.id} value={meeting.id}>
+                            {meeting.section} / {formatMinutesMeetingBrowseTitle(meeting)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border bg-white p-4">
                     {renderMinutesSearchOptions(true)}
-                    {renderMinutesSearchActions()}
+                  </div>
+
+                  <div className="mt-5 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-center">
+                    <button
+                      type="button"
+                      disabled={minutesSearching}
+                      onClick={() => void submitMinutesSearch()}
+                      className="inline-flex h-11 min-w-40 items-center justify-center rounded-xl bg-[#2f765e] px-6 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+                    >
+                      {minutesSearching ? '検索中…' : '検索'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearMinutesSpeakerSearch}
+                      className="inline-flex h-11 min-w-36 items-center justify-center rounded-xl border bg-white px-5 text-sm font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+                    >
+                      クリア
+                    </button>
                   </div>
                 </div>
-                <div className="rounded-3xl border bg-white p-5">
-                  <div className="mb-4 flex items-center justify-between">
-                    <p className="text-sm font-semibold text-[#173f36]">発言者一覧</p>
-                    <span className="text-xs text-muted-foreground">{filteredMinutesSpeakers.length}人表示 / 条件内{minutesSpeakers.length}人</span>
+
+                <div className="p-5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-lg font-semibold text-[#173f36]">発言者候補</p>
+                      <p className="mt-1 text-sm text-muted-foreground">条件に対応する発言者を選択して検索します。</p>
+                    </div>
+                    <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
+                      {filteredMinutesSpeakers.length.toLocaleString()}人
+                    </span>
                   </div>
-                  <div className="grid max-h-[64vh] gap-3 overflow-auto md:grid-cols-2">
-                    {filteredMinutesSpeakers.map((speaker) => (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {filteredMinutesSpeakers.slice(0, 18).map((speaker) => (
                       <button
                         key={`${speaker.displayName}-${speaker.title}-${speaker.role}`}
                         type="button"
@@ -2817,15 +2979,17 @@ function AppShell() {
                           setMinutesSpeaker(speaker.displayName);
                           setMinutesRole(speaker.role);
                         }}
-                        className="rounded-2xl border bg-[#fbfdfb] px-4 py-3 text-left text-sm hover:border-[#79b28d]"
+                        className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+                          minutesSpeaker === speaker.displayName ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-[#fbfdfb] text-[#37564d] hover:border-[#79b28d]'
+                        }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold text-foreground">{speaker.displayName || '氏名なし'}</span>
-                          <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(speaker.role)}`}>{minutesRoleLabel(speaker.role)}</span>
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{speaker.title || '役職なし'} / {speaker.utteranceCount.toLocaleString()}発言</p>
+                        {speaker.displayName || '氏名なし'}
+                        <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
                       </button>
                     ))}
+                    {filteredMinutesSpeakers.length > 18 ? (
+                      <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(filteredMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
+                    ) : null}
                   </div>
                 </div>
               </div>
