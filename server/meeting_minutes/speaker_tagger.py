@@ -9,6 +9,7 @@ from .pdf_extractor import ExtractedLine
 
 ENGINE_VERSION = "speaker-rules-v1"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
+PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 ANSWERER_TITLES = (
     "市長",
     "副市長",
@@ -74,6 +75,21 @@ def speech_type_from_role(role: str) -> str:
     return "statement"
 
 
+def is_printed_page_number(text: str) -> bool:
+    return bool(PRINTED_PAGE_NUMBER_RE.fullmatch(re.sub(r"\s+", "", text or "")))
+
+
+def append_body_line(current: dict[str, object], text: str) -> None:
+    parts = current["parts"]
+    if not isinstance(parts, list):
+        return
+    if current.get("join_next") and parts and not re.search(r"[。！？）」』]$", str(parts[-1])):
+        parts[-1] = f"{parts[-1]}{text}"
+    else:
+        parts.append(text)
+    current["join_next"] = False
+
+
 def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
     utterances: list[TaggedUtterance] = []
     current: dict[str, object] | None = None
@@ -105,6 +121,12 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
 
     for line in lines:
         text = line.text.strip()
+        if is_printed_page_number(text):
+            if current is not None:
+                current["join_next"] = True
+                current["page_end"] = line.page
+                current["position_top_end"] = line.top
+            continue
         match = SPEAKER_RE.match(text)
         if match:
             flush()
@@ -123,12 +145,13 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
                 "page_end": line.page,
                 "position_top_start": line.top,
                 "position_top_end": line.top,
+                "join_next": False,
                 "confidence": confidence,
                 "reason": reason,
             }
             continue
         if current is not None:
-            current["parts"].append(text)
+            append_body_line(current, text)
             current["page_end"] = line.page
             current["position_top_end"] = line.top
     flush()
