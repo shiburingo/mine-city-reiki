@@ -10,6 +10,10 @@ from .pdf_extractor import ExtractedLine
 ENGINE_VERSION = "speaker-rules-v1"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
+SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
+STRUCTURAL_LINE_RE = re.compile(
+    r"^(日程第|〔|【|（|第[0-9０-９一二三四五六七八九十]+[、 　]|[0-9０-９]+[、.．)]|[（(][0-9０-９一二三四五六七八九十]+[）)])"
+)
 ANSWERER_TITLES = (
     "市長",
     "副市長",
@@ -79,11 +83,36 @@ def is_printed_page_number(text: str) -> bool:
     return bool(PRINTED_PAGE_NUMBER_RE.fullmatch(re.sub(r"\s+", "", text or "")))
 
 
+def should_keep_line_break(previous: str, current: str) -> bool:
+    previous = previous.strip()
+    current = current.strip()
+    if not previous or not current:
+        return True
+    if STRUCTURAL_LINE_RE.match(current):
+        return True
+    if SENTENCE_END_RE.search(previous):
+        return True
+    return False
+
+
+def normalize_body_lines(parts: list[object]) -> str:
+    lines = [str(part).strip() for part in parts if str(part).strip()]
+    if not lines:
+        return ""
+    normalized = lines[0]
+    for line in lines[1:]:
+        if should_keep_line_break(normalized, line):
+            normalized = f"{normalized}\n{line}"
+        else:
+            normalized = f"{normalized}{line}"
+    return normalized.strip()
+
+
 def append_body_line(current: dict[str, object], text: str) -> None:
     parts = current["parts"]
     if not isinstance(parts, list):
         return
-    if current.get("join_next") and parts and not re.search(r"[。！？）」』]$", str(parts[-1])):
+    if current.get("join_next") and parts and not SENTENCE_END_RE.search(str(parts[-1])):
         parts[-1] = f"{parts[-1]}{text}"
     else:
         parts.append(text)
@@ -98,7 +127,8 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
         nonlocal current
         if not current:
             return
-        body = "\n".join(str(part) for part in current["parts"]).strip()
+        parts = current["parts"]
+        body = normalize_body_lines(parts) if isinstance(parts, list) else ""
         if body:
             utterances.append(
                 TaggedUtterance(
