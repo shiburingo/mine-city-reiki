@@ -484,6 +484,34 @@ function cleanSearchSnippet(text: string): string {
     .trim();
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildHighlightTerms(query: string): string[] {
+  const phrase = query.trim().replace(/\s+/g, ' ');
+  const terms = new Set<string>();
+  if (phrase) terms.add(phrase);
+  for (const part of phrase.split(/\s+/)) {
+    const term = part.trim();
+    if (term) terms.add(term);
+  }
+  return [...terms].sort((a, b) => b.length - a.length);
+}
+
+function renderHighlightedText(text: string, terms: string[]): Array<string | JSX.Element> {
+  if (!terms.length || !text) return [text];
+  const pattern = new RegExp(`(${terms.map(escapeRegExp).join('|')})`, 'gi');
+  const lowerTerms = new Set(terms.map((term) => term.toLocaleLowerCase()));
+  return text.split(pattern).map((part, index) => (
+    lowerTerms.has(part.toLocaleLowerCase()) ? (
+      <mark key={`${index}-${part}`} className="rounded bg-yellow-200/90 px-0.5 text-inherit">
+        {part}
+      </mark>
+    ) : part
+  ));
+}
+
 function buildArticleGroupTree(articles: DocumentDetail['articles']): ArticleGroupNode[] {
   const roots: ArticleGroupNode[] = [];
   const nodeIndex = new Map<string, ArticleGroupNode>();
@@ -1800,6 +1828,7 @@ function AppShell() {
     });
     return values;
   }, [minutesResults, minutesSortOrder]);
+  const minutesHighlightTerms = useMemo(() => buildHighlightTerms(minutesQuery), [minutesQuery]);
   const currentDayUtterances = minutesDayDetail?.utterances || [];
   const currentDayContentItems = minutesDayDetail?.contentItems?.length
     ? minutesDayDetail.contentItems
@@ -1854,13 +1883,13 @@ function AppShell() {
     return /^(日程第|〔|【|（|第[0-9０-９一二三四五六七八九十]+[、 　]|[0-9０-９]+[、.．)]|[（(][0-9０-９一二三四五六七八九十]+[）)])/.test(line.trim());
   };
 
-  const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8'): JSX.Element => {
+  const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8', highlightTerms: string[] = []): JSX.Element => {
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     return (
       <div className={className}>
         {lines.map((line, index) => (
           <p key={`${index}-${line.slice(0, 16)}`} className="m-0" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
-            {line}
+            {renderHighlightedText(line, highlightTerms)}
           </p>
         ))}
       </div>
@@ -2196,7 +2225,9 @@ function AppShell() {
               {minutesRoleLabel(result.speakerRole)}
             </span>
           </div>
-          <p className="mt-4 line-clamp-3 text-sm leading-7 text-muted-foreground">{result.snippet}</p>
+          <p className="mt-4 line-clamp-3 text-sm leading-7 text-muted-foreground">
+            {renderHighlightedText(result.snippet, minutesHighlightTerms)}
+          </p>
         </button>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
           <button
@@ -2216,7 +2247,7 @@ function AppShell() {
         </div>
         {expanded ? (
           <div className="mt-4 rounded-2xl border bg-[#f8fbf8] p-4 text-sm leading-7">
-            {renderMinutesText(result.text, 'text-sm leading-7')}
+            {renderMinutesText(result.text, 'text-sm leading-7', minutesHighlightTerms)}
           </div>
         ) : null}
       </article>
@@ -2402,7 +2433,7 @@ function AppShell() {
                           {minutesRoleLabel(item.speakerRole)}
                         </span>
                       </div>
-                      {renderMinutesText(item.text, 'mt-4 text-base leading-8')}
+                      {renderMinutesText(item.text, 'mt-4 text-base leading-8', minutesHighlightTerms)}
                     </article>
                   ))
                 ) : null}
@@ -2440,7 +2471,9 @@ function AppShell() {
                             <span className="font-semibold">{item.speakerTitle} {item.speakerName}</span>
                             <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                           </div>
-                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.text}</p>
+                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                            {renderHighlightedText(item.text, minutesHighlightTerms)}
+                          </p>
                         </button>
                       ))}
                     </div>
@@ -2456,7 +2489,7 @@ function AppShell() {
                       return (
                         <article key={`utterance-${item.id}`} className="border-b pb-5 last:border-b-0">
                           <h4 className="text-base font-semibold">{item.speakerTitle} {item.speakerName}</h4>
-                          {renderMinutesText(item.text)}
+                          {renderMinutesText(item.text, 'mt-3 text-base leading-8', minutesHighlightTerms)}
                         </article>
                       );
                     })}
