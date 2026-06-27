@@ -2072,7 +2072,7 @@ function AppShell() {
   function scrollMinutesUtteranceIntoView(utteranceId: number | null | undefined) {
     if (!utteranceId) return;
     window.setTimeout(() => {
-      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'center');
+      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start');
     }, 0);
   }
 
