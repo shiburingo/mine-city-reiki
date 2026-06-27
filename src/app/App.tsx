@@ -2086,10 +2086,14 @@ function AppShell() {
   }
 
   useEffect(() => {
-    if (minutesPage !== 'detail' || minutesReaderMode !== 'full') return;
+    if (minutesPage !== 'detail' || !['unit', 'full'].includes(minutesReaderMode)) return;
     if (!currentDayUtterances.length) return;
     const selectedId = selectedMinutesResult?.id ?? null;
-    const targetId = selectedId && selectedDayMinutesHitIds.has(selectedId) ? selectedId : firstSelectedDayMinutesHitId;
+    const targetId = minutesReaderMode === 'unit'
+      ? selectedId
+      : selectedId && selectedDayMinutesHitIds.has(selectedId)
+        ? selectedId
+        : firstSelectedDayMinutesHitId;
     scrollMinutesUtteranceIntoView(targetId);
   }, [
     minutesPage,
