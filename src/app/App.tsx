@@ -415,6 +415,22 @@ function minutesExecutiveTitleRank(title: string): number {
   return 999;
 }
 
+function isMinutesCouncilTitle(title: string): boolean {
+  const normalized = normalizeOrderText(title).replace(/\s+/g, '');
+  return /^(議長|副議長|委員長|副委員長|議員|委員|[0-9０-９]+番)$/.test(normalized);
+}
+
+function minutesSpeakerCandidateRank(roles: Set<string>, titles: Set<string>): number {
+  const normalizedTitles = [...titles].map((title) => normalizeOrderText(title).replace(/\s+/g, '')).filter(Boolean);
+  if (roles.has('questioner') || roles.has('chair') || normalizedTitles.some(isMinutesCouncilTitle)) return 0;
+  if (normalizedTitles.includes('市長')) return 10;
+  if (normalizedTitles.includes('副市長')) return 20;
+  if (roles.has('answerer')) return 30;
+  if (roles.has('secretariat')) return 40;
+  if (roles.has('report')) return 50;
+  return 90;
+}
+
 function groupSearchResults(items: SearchResult[]): SearchResultGroup[] {
   const groups = new Map<number, SearchResultGroup>();
   for (const item of items) {
@@ -1945,6 +1961,7 @@ function AppShell() {
       title: string;
       roleSummary: string;
       utteranceCount: number;
+      candidateRank: number;
       roles: Set<string>;
       titles: Set<string>;
     }>();
@@ -1976,9 +1993,13 @@ function AppShell() {
           title: titles.slice(0, 2).join(' / '),
           roleSummary: roles.length === 1 ? minutesRoleLabel(roles[0]) : '複数区分',
           utteranceCount: speaker.utteranceCount,
+          candidateRank: minutesSpeakerCandidateRank(speaker.roles, speaker.titles),
         };
       })
-      .sort((a, b) => b.utteranceCount - a.utteranceCount || a.displayName.localeCompare(b.displayName, 'ja-JP'));
+      .sort((a, b) => {
+        if (a.candidateRank !== b.candidateRank) return a.candidateRank - b.candidateRank;
+        return b.utteranceCount - a.utteranceCount || a.displayName.localeCompare(b.displayName, 'ja-JP');
+      });
   }, [filteredMinutesSpeakers]);
   const minutesExecutiveTitleFilters = useMemo(() => {
     const counts = new Map<string, number>();
