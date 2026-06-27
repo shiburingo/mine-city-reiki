@@ -454,6 +454,11 @@ function firstContentLine(value: string | null | undefined): string {
     .trim();
 }
 
+function previewText(value: string | null | undefined, maxLength = 110): string {
+  const text = firstContentLine(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 function compareDocumentSummary(a: DocumentSummary, b: DocumentSummary): number {
   const byLawNumber = compareOrderText(a.lawNumber, b.lawNumber);
   if (byLawNumber !== 0) return byLawNumber;
@@ -2719,7 +2724,7 @@ function AppShell() {
                 ) : null}
                 {minutesReaderMode === 'list' ? (
                   currentDayUtterances.length > 0 ? (
-                    <div className="space-y-2">
+                    <div className="flex flex-col gap-2">
                       {currentDayUtterances.map((item) => (
                         <button
                           id={`minutes-utterance-${item.id}`}
@@ -2744,7 +2749,7 @@ function AppShell() {
                             });
                             setMinutesReaderMode('unit');
                           }}
-                          className={`w-full rounded-xl border px-4 py-3 text-left text-sm hover:border-[#79b28d] ${
+                          className={`block w-full rounded-xl border px-4 py-3 text-left text-sm hover:border-[#79b28d] ${
                             item.id === selectedMinutesResult.id
                               ? 'border-[#2f765e] bg-[#edf7ef] ring-2 ring-[#2f765e]/10'
                               : selectedDayMinutesHitIds.has(item.id)
@@ -2756,8 +2761,8 @@ function AppShell() {
                             <span className="font-semibold">{item.speakerTitle} {item.speakerName}</span>
                             <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                           </div>
-                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                            {renderHighlightedText(item.text, minutesHighlightTerms)}
+                          <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">
+                            {renderHighlightedText(previewText(item.text), minutesHighlightTerms)}
                           </p>
                         </button>
                       ))}
