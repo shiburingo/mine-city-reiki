@@ -941,6 +941,7 @@ function AppShell() {
 
   const [minutesStatus, setMinutesStatus] = useState<MinutesStatus>(EMPTY_MINUTES_STATUS);
   const [minutesSpeakers, setMinutesSpeakers] = useState<MinutesSpeaker[]>([]);
+  const [allMinutesSpeakers, setAllMinutesSpeakers] = useState<MinutesSpeaker[]>([]);
   const [minutesMeetings, setMinutesMeetings] = useState<MinutesMeeting[]>([]);
   const [minutesQuery, setMinutesQuery] = useState('');
   const [minutesSpeaker, setMinutesSpeaker] = useState('');
@@ -1075,6 +1076,7 @@ function AppShell() {
     if (tab === 'minutes') {
       void loadMinutesStatus();
       if (minutesSpeakers.length === 0) void loadMinutesSpeakers();
+      if (allMinutesSpeakers.length === 0) void loadAllMinutesSpeakers();
       if (minutesMeetings.length === 0) void loadMinutesMeetings();
     }
   }, [tab]);
@@ -1397,6 +1399,15 @@ function AppShell() {
     }
   }
 
+  async function loadAllMinutesSpeakers() {
+    try {
+      const speakers = await fetchMinutesSpeakers();
+      setAllMinutesSpeakers(speakers);
+    } catch {
+      // optional
+    }
+  }
+
   async function loadMinutesMeetings() {
     try {
       const meetings = await fetchMinutesMeetings();
@@ -1419,6 +1430,7 @@ function AppShell() {
       setMinutesStatus(status);
       setSyncRuns(runs);
       setMinutesSpeakers(speakers);
+      setAllMinutesSpeakers(speakers);
       setMinutesMeetings(meetings);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録同期の起動に失敗しました。');
@@ -1924,7 +1936,8 @@ function AppShell() {
   }, [filteredMinutesSpeakers]);
   const minutesExecutiveTitleFilters = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const speaker of minutesSpeakers) {
+    const sourceSpeakers = allMinutesSpeakers.length > 0 ? allMinutesSpeakers : minutesSpeakers;
+    for (const speaker of sourceSpeakers) {
       if (speaker.role !== 'answerer') continue;
       const title = (speaker.title || '').trim();
       if (!title) continue;
@@ -1942,7 +1955,7 @@ function AppShell() {
         if (byTitle !== 0) return byTitle;
         return b.count - a.count;
       });
-  }, [minutesSpeakers]);
+  }, [allMinutesSpeakers, minutesSpeakers]);
   const minutesBrowseFiscalYears = useMemo(() => {
     return [...new Set(minutesMeetings.map((meeting) => calendarYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
       .sort((a, b) => b - a);
