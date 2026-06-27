@@ -299,7 +299,12 @@ def ensure_index(cur, table: str, index_name: str, definition: str) -> None:
     )
     exists = int((cur.fetchone() or {}).get("cnt") or 0) > 0
     if not exists:
-        cur.execute(f"ALTER TABLE `{table}` ADD INDEX `{index_name}` {definition}")
+        try:
+            cur.execute(f"ALTER TABLE `{table}` ADD INDEX `{index_name}` {definition}")
+        except pymysql.err.OperationalError as exc:
+            if exc.args and exc.args[0] == 1061:
+                return
+            raise
 
 
 def ensure_enum_values(cur, table: str, column: str, values: list[str]) -> None:
