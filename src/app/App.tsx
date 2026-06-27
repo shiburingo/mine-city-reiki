@@ -2787,20 +2787,19 @@ function AppShell() {
                       setSelectedMinutesResult(hit);
                       setMinutesReaderMode('unit');
                     }}
-                    className={`block w-full min-h-0 rounded-2xl border px-3 py-2.5 text-left transition hover:border-[#79b28d] ${
+                    className={`block w-full rounded-2xl border px-3 py-2 text-left transition hover:border-[#79b28d] ${
                       hit.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-[#2f765e]">発言{hit.order} / p.{hit.pageStart}-{hit.pageEnd}</p>
-                        <p className="mt-1 truncate text-sm font-semibold">{hit.speakerTitle} {hit.speakerName}</p>
-                      </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="min-w-0 truncate text-sm font-semibold text-[#2f765e]">発言{hit.order} / p.{hit.pageStart}-{hit.pageEnd}</p>
                       <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${minutesRoleClass(hit.speakerRole)}`}>
                         {minutesRoleLabel(hit.speakerRole)}
                       </span>
                     </div>
-                    <p className="mt-2 line-clamp-1 text-xs leading-6 text-muted-foreground">
+                    <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">
+                      <span className="font-semibold text-foreground">{hit.speakerTitle} {hit.speakerName}</span>
+                      <span className="mx-1 text-muted-foreground">/</span>
                       {renderHighlightedText(firstContentLine(hit.snippet || hit.text), minutesHighlightTerms)}
                     </p>
                   </button>
