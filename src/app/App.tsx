@@ -3112,6 +3112,36 @@ function AppShell() {
                   </div>
 
                   <div className="mt-5 rounded-2xl border bg-white p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-lg font-semibold text-[#173f36]">発言者候補</p>
+                        <p className="mt-1 text-sm text-muted-foreground">条件に対応する発言者を選択して検索します。</p>
+                      </div>
+                      <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
+                        {groupedMinutesSpeakers.length.toLocaleString()}人
+                      </span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {groupedMinutesSpeakers.slice(0, 18).map((speaker) => (
+                        <button
+                          key={speaker.displayName}
+                          type="button"
+                          onClick={() => setMinutesSpeaker(speaker.displayName)}
+                          className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+                            minutesSpeaker === speaker.displayName ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-[#fbfdfb] text-[#37564d] hover:border-[#79b28d]'
+                          }`}
+                        >
+                          {speaker.displayName || '氏名なし'}
+                          <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
+                        </button>
+                      ))}
+                      {groupedMinutesSpeakers.length > 18 ? (
+                        <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(groupedMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-5 rounded-2xl border bg-white p-4">
                     {renderMinutesSearchOptions(true)}
                   </div>
 
@@ -3131,36 +3161,6 @@ function AppShell() {
                     >
                       クリア
                     </button>
-                  </div>
-                </div>
-
-                <div className="p-5">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="text-lg font-semibold text-[#173f36]">発言者候補</p>
-                      <p className="mt-1 text-sm text-muted-foreground">条件に対応する発言者を選択して検索します。</p>
-                    </div>
-                    <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
-                      {groupedMinutesSpeakers.length.toLocaleString()}人
-                    </span>
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {groupedMinutesSpeakers.slice(0, 18).map((speaker) => (
-                      <button
-                        key={speaker.displayName}
-                        type="button"
-                        onClick={() => setMinutesSpeaker(speaker.displayName)}
-                        className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
-                          minutesSpeaker === speaker.displayName ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-[#fbfdfb] text-[#37564d] hover:border-[#79b28d]'
-                        }`}
-                      >
-                        {speaker.displayName || '氏名なし'}
-                        <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
-                      </button>
-                    ))}
-                    {groupedMinutesSpeakers.length > 18 ? (
-                      <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(groupedMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
-                    ) : null}
                   </div>
                 </div>
               </div>
