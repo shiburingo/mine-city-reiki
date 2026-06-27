@@ -2778,7 +2778,7 @@ function AppShell() {
                   {selectedDayMinutesHits.length.toLocaleString()}件
                 </span>
               </div>
-              <div className="mt-4 max-h-[64vh] space-y-2 overflow-auto pr-1">
+              <div className="mt-4 flex max-h-[64vh] flex-col gap-2 overflow-auto pr-1">
                 {selectedDayMinutesHits.map((hit) => (
                   <button
                     key={hit.id}
@@ -2787,7 +2787,7 @@ function AppShell() {
                       setSelectedMinutesResult(hit);
                       setMinutesReaderMode('unit');
                     }}
-                    className={`w-full rounded-2xl border px-3 py-3 text-left transition hover:border-[#79b28d] ${
+                    className={`block w-full min-h-0 rounded-2xl border px-3 py-2.5 text-left transition hover:border-[#79b28d] ${
                       hit.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
                     }`}
                   >
