@@ -2131,7 +2131,35 @@ function AppShell() {
         positionTopStart: 0,
         positionTopEnd: 0,
       };
-      const sourceItems = minutesIncludeReplies && result.exchange.length > 0 ? result.exchange : [baseItem];
+      let sourceItems = minutesIncludeReplies && result.exchange.length > 0 ? result.exchange : [baseItem];
+      if (minutesIncludeReplies && sourceItems.length > 1) {
+        const hitIndex = sourceItems.findIndex((item) => item.id === result.id);
+        if (hitIndex >= 0) {
+          let startIndex = hitIndex;
+          if (result.speakerRole !== 'questioner') {
+            for (let i = hitIndex - 1; i >= 0; i -= 1) {
+              if (sourceItems[i].speakerRole === 'questioner') {
+                startIndex = i;
+                break;
+              }
+            }
+          }
+          let endIndex = sourceItems.length - 1;
+          for (let i = hitIndex + 1; i < sourceItems.length; i += 1) {
+            const next = sourceItems[i];
+            const nextIsTarget = targetSpeaker
+              ? next.speakerName === targetSpeaker || next.speakerTitle === targetSpeaker
+              : next.id === result.id;
+            if (next.speakerRole === 'questioner' && !nextIsTarget) {
+              endIndex = i - 1;
+              break;
+            }
+          }
+          sourceItems = sourceItems.slice(startIndex, endIndex + 1);
+        } else {
+          sourceItems = [baseItem];
+        }
+      }
       for (const item of sourceItems) {
         if (item.speakerRole === 'chair') continue;
         const isHit = item.id === result.id;
