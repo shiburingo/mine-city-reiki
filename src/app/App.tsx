@@ -912,6 +912,7 @@ function AppShell() {
   const searchHistoryRef = useRef<string[]>(loadSearchHistory());
   const selectedArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
+  const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
   const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
   const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
@@ -2057,6 +2058,42 @@ function AppShell() {
     }
     return [...deduped.values()].sort((a, b) => a.order - b.order);
   }, [selectedMinutesResult, sortedMinutesResults]);
+  const selectedDayMinutesHitIds = useMemo(
+    () => new Set(selectedDayMinutesHits.map((hit) => hit.id)),
+    [selectedDayMinutesHits],
+  );
+  const firstSelectedDayMinutesHitId = selectedDayMinutesHits[0]?.id ?? null;
+
+  function scrollMinutesUtteranceIntoView(utteranceId: number | null | undefined) {
+    if (!utteranceId) return;
+    window.setTimeout(() => {
+      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'center');
+    }, 0);
+  }
+
+  function selectMinutesHit(hit: MinutesSearchResult) {
+    setSelectedMinutesResult(hit);
+    if (minutesReaderMode === 'full' || minutesReaderMode === 'list') {
+      scrollMinutesUtteranceIntoView(hit.id);
+    } else {
+      setMinutesReaderMode('unit');
+    }
+  }
+
+  useEffect(() => {
+    if (minutesPage !== 'detail' || minutesReaderMode !== 'full') return;
+    if (!currentDayUtterances.length) return;
+    const selectedId = selectedMinutesResult?.id ?? null;
+    const targetId = selectedId && selectedDayMinutesHitIds.has(selectedId) ? selectedId : firstSelectedDayMinutesHitId;
+    scrollMinutesUtteranceIntoView(targetId);
+  }, [
+    minutesPage,
+    minutesReaderMode,
+    currentDayUtterances.length,
+    selectedMinutesResult?.id,
+    selectedDayMinutesHitIds,
+    firstSelectedDayMinutesHitId,
+  ]);
 
   function moveSelectedMinutesUtterance(delta: number) {
     if (!minutesDayDetail || selectedMinutesUtteranceIndex < 0) return;
@@ -2657,10 +2694,11 @@ function AppShell() {
                   </div>
                 </div>
               </div>
-              <div className="max-h-[72vh] min-w-0 overflow-auto p-4 sm:p-5">
+              <div ref={minutesReaderScrollRef} className="max-h-[72vh] min-w-0 overflow-auto p-4 sm:p-5">
                 {minutesReaderMode === 'unit' ? (
                   (minutesIncludeReplies ? selectedMinutesResult.exchange : [selectedMinutesResult]).map((item) => (
                     <article
+                      id={`minutes-utterance-${item.id}`}
                       key={item.id}
                       className={`mb-4 min-w-0 rounded-2xl border p-4 last:mb-0 sm:p-5 ${
                         item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
@@ -2684,6 +2722,7 @@ function AppShell() {
                     <div className="space-y-2">
                       {currentDayUtterances.map((item) => (
                         <button
+                          id={`minutes-utterance-${item.id}`}
                           key={item.id}
                           type="button"
                           onClick={() => {
@@ -2706,7 +2745,11 @@ function AppShell() {
                             setMinutesReaderMode('unit');
                           }}
                           className={`w-full rounded-xl border px-4 py-3 text-left text-sm hover:border-[#79b28d] ${
-                            item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
+                            item.id === selectedMinutesResult.id
+                              ? 'border-[#2f765e] bg-[#edf7ef] ring-2 ring-[#2f765e]/10'
+                              : selectedDayMinutesHitIds.has(item.id)
+                                ? 'border-[#79b28d] bg-[#f0faf3]'
+                                : 'bg-[#fbfdfb]'
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -2728,9 +2771,23 @@ function AppShell() {
                         return renderMinutesTableCard(contentItem.table);
                       }
                       const item = contentItem.utterance;
+                      const isHit = selectedDayMinutesHitIds.has(item.id);
                       return (
-                        <article key={`utterance-${item.id}`} className="border-b pb-5 last:border-b-0">
-                          <h4 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h4>
+                        <article
+                          id={`minutes-utterance-${item.id}`}
+                          key={`utterance-${item.id}`}
+                          className={`rounded-2xl border p-4 ${
+                            item.id === selectedMinutesResult.id
+                              ? 'border-[#2f765e] bg-[#edf7ef] ring-2 ring-[#2f765e]/10'
+                              : isHit
+                                ? 'border-[#79b28d] bg-[#f0faf3]'
+                                : 'border-transparent'
+                          }`}
+                        >
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <h4 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h4>
+                            {isHit ? <span className="w-fit rounded-full bg-[#dff2e5] px-2 py-0.5 text-xs font-semibold text-[#2f765e]">検索ヒット</span> : null}
+                          </div>
                           {renderMinutesText(item.text, 'mt-3 text-base leading-8', minutesHighlightTerms)}
                         </article>
                       );
@@ -2784,8 +2841,7 @@ function AppShell() {
                     key={hit.id}
                     type="button"
                     onClick={() => {
-                      setSelectedMinutesResult(hit);
-                      setMinutesReaderMode('unit');
+                      selectMinutesHit(hit);
                     }}
                     className={`block w-full rounded-2xl border px-3 py-2 text-left transition hover:border-[#79b28d] ${
                       hit.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
