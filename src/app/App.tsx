@@ -30,7 +30,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -100,7 +100,7 @@ type MinutesSearchHistoryItem = {
   includeReplies: boolean;
   createdAt: string;
 };
-type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'history' | 'results' | 'detail' | 'meetingDetail';
+type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'collectionResults' | 'history' | 'results' | 'detail' | 'meetingDetail';
 type MinutesBrowseSectionFilter = 'all' | string;
 
 function loadMinutesSearchHistory(): MinutesSearchHistoryItem[] {
@@ -1451,6 +1451,7 @@ function AppShell() {
     includeReplies: boolean;
     limit: number;
     resultMode: 'utterance' | 'meeting' | 'table';
+    destinationPage: MinutesPage;
   }> = {}) {
     const query = (overrides.query ?? minutesQuery).trim();
     const speaker = (overrides.speaker ?? minutesSpeaker).trim();
@@ -1464,6 +1465,7 @@ function AppShell() {
     const includeReplies = overrides.includeReplies ?? minutesIncludeReplies;
     const limit = overrides.limit ?? 30;
     const resultMode = overrides.resultMode;
+    const destinationPage = overrides.destinationPage ?? 'results';
     const meeting = meetingId ? minutesMeetings.find((item) => item.id === meetingId) || null : null;
     if (
       !query
@@ -1521,7 +1523,7 @@ function AppShell() {
       setMinutesExpandedResultIds(new Set());
       setMinutesResultMode(resultMode ?? ((speaker || role !== 'all') ? 'meeting' : 'utterance'));
       setMinutesSearchReturnPage(minutesPage);
-      setMinutesPage('results');
+      setMinutesPage(destinationPage);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録検索に失敗しました。');
     } finally {
@@ -1624,6 +1626,7 @@ function AppShell() {
       return;
     }
     setMinutesQuery('');
+    setMinutesSortOrder('old');
     void submitMinutesSearch({
       query: '',
       speaker,
@@ -1632,6 +1635,7 @@ function AppShell() {
       includeReplies: minutesIncludeReplies,
       limit: 200,
       resultMode: 'utterance',
+      destinationPage: 'collectionResults',
     });
   }
 
@@ -2087,6 +2091,79 @@ function AppShell() {
     });
     return values;
   }, [minutesResults, minutesSortOrder]);
+  const minutesCollectionGroups = useMemo(() => {
+    type CollectionItem = MinutesExchangeItem & {
+      isHit: boolean;
+      isTargetSpeaker: boolean;
+    };
+    const groups = new Map<number, {
+      dayId: number;
+      meetingDate: string | null;
+      section: string;
+      meetingName: string;
+      dayTitle: string;
+      pdfUrl: string;
+      items: CollectionItem[];
+      seen: Set<number>;
+    }>();
+    const targetSpeaker = minutesSpeaker.trim();
+    for (const result of sortedMinutesResults) {
+      const group = groups.get(result.dayId) || {
+        dayId: result.dayId,
+        meetingDate: result.meetingDate,
+        section: result.section,
+        meetingName: result.meetingName,
+        dayTitle: result.dayTitle,
+        pdfUrl: result.pdfUrl,
+        items: [],
+        seen: new Set<number>(),
+      };
+      const baseItem: MinutesExchangeItem = {
+        id: result.id,
+        order: result.order,
+        speakerName: result.speakerName,
+        speakerTitle: result.speakerTitle,
+        speakerRole: result.speakerRole,
+        speechType: result.speechType,
+        text: result.text,
+        pageStart: result.pageStart,
+        pageEnd: result.pageEnd,
+        positionTopStart: 0,
+        positionTopEnd: 0,
+      };
+      const sourceItems = minutesIncludeReplies && result.exchange.length > 0 ? result.exchange : [baseItem];
+      for (const item of sourceItems) {
+        if (item.speakerRole === 'chair') continue;
+        const isHit = item.id === result.id;
+        const isTargetSpeaker = targetSpeaker ? item.speakerName === targetSpeaker || item.speakerTitle === targetSpeaker : isHit;
+        if (group.seen.has(item.id)) {
+          const existing = group.items.find((entry) => entry.id === item.id);
+          if (existing) {
+            existing.isHit = existing.isHit || isHit;
+            existing.isTargetSpeaker = existing.isTargetSpeaker || isTargetSpeaker;
+          }
+          continue;
+        }
+        group.seen.add(item.id);
+        group.items.push({
+          ...item,
+          isHit,
+          isTargetSpeaker,
+        });
+      }
+      groups.set(result.dayId, group);
+    }
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        items: group.items.sort((a, b) => a.order - b.order),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [minutesIncludeReplies, minutesSpeaker, sortedMinutesResults]);
+  const minutesCollectionItemCount = useMemo(
+    () => minutesCollectionGroups.reduce((sum, group) => sum + group.items.length, 0),
+    [minutesCollectionGroups],
+  );
   const minutesHighlightTerms = useMemo(() => buildHighlightTerms(minutesQuery), [minutesQuery]);
   const currentDayUtterances = minutesDayDetail?.utterances || [];
   const currentDayContentItems = minutesDayDetail?.contentItems?.length
@@ -2569,6 +2646,89 @@ function AppShell() {
       </article>
     );
   };
+
+  const renderMinutesCollectionResultsPage = (): JSX.Element => (
+    <div className="space-y-5 p-6">
+      <div className="rounded-3xl border bg-white p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <button type="button" onClick={() => setMinutesPage('collection')} className="mb-3 inline-flex items-center gap-2 text-sm font-semibold text-[#2f765e] hover:underline">
+              <ChevronLeft className="size-4" />
+              発言集作成へ戻る
+            </button>
+            <p className="text-sm font-semibold text-[#2f765e]">発言集</p>
+            <h3 className="mt-1 text-2xl font-semibold leading-tight">{minutesSpeaker || '発言者未指定'}の発言集</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {minutesTotal.toLocaleString()}件ヒット / 表示発言 {minutesCollectionItemCount.toLocaleString()}件
+              {minutesIncludeReplies ? ' / 関連する質問・答弁を含む' : ' / 指定発言者のみ'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setMinutesIncludeReplies((prev) => !prev)}
+              className="inline-flex h-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold hover:bg-[#edf6f0]"
+            >
+              {minutesIncludeReplies ? '関連発言を非表示' : '関連発言も表示'}
+            </button>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="inline-flex h-10 items-center justify-center rounded-xl bg-[#173f36] px-4 text-sm font-semibold text-white"
+            >
+              印刷
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-3xl border bg-white p-5 sm:p-8">
+        {minutesSearching ? (
+          <p className="text-sm text-muted-foreground">発言集を作成中です…</p>
+        ) : minutesResults.length === 0 ? (
+          <p className="text-sm text-muted-foreground">発言が見つかりませんでした。発言者や期間を変更してください。</p>
+        ) : minutesCollectionGroups.length === 0 ? (
+          <p className="text-sm text-muted-foreground">表示できる発言がありません。議事進行のみの場合は発言集から除外されます。</p>
+        ) : (
+          <div className="mx-auto max-w-6xl">
+            {minutesCollectionGroups.map((group) => (
+              <section key={group.dayId} className="border-b border-dashed py-6 first:pt-0 last:border-b-0 last:pb-0">
+                <div className="mb-5">
+                  <p className="text-sm font-semibold text-[#2f765e]">
+                    {calendarYearLabelFromDate(group.meetingDate)} / {group.meetingDate || '日付なし'} / {group.section}
+                  </p>
+                  <h4 className="mt-1 text-xl font-semibold leading-tight">{group.meetingName || group.dayTitle}</h4>
+                </div>
+                <div className="space-y-5">
+                  {group.items.map((item) => (
+                    <article
+                      key={`${group.dayId}-${item.id}`}
+                      className={`min-w-0 border-l-4 py-1 pl-4 ${
+                        item.isTargetSpeaker ? 'border-[#2f765e]' : 'border-[#c7ddd3]'
+                      }`}
+                    >
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">
+                            {item.speakerTitle} {item.speakerName}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">発言{item.order} / p.{item.pageStart}-{item.pageEnd}</p>
+                        </div>
+                        <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>
+                          {minutesRoleLabel(item.speakerRole)}
+                        </span>
+                      </div>
+                      {renderMinutesText(item.text, 'mt-2 text-[15px] leading-8', item.isHit ? minutesHighlightTerms : [])}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   const renderMinutesResultsPage = (): JSX.Element => (
     <div className="space-y-5 p-6">
@@ -3071,6 +3231,7 @@ function AppShell() {
   };
 
   const renderMinutesWorkspace = (): JSX.Element => {
+    if (minutesPage === 'collectionResults') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
     if (minutesPage === 'results') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
     if (minutesPage === 'detail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
     if (minutesPage === 'meetingDetail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
@@ -3521,7 +3682,7 @@ function AppShell() {
                     {minutesResults.length > 0 ? (
                       <button
                         type="button"
-                        onClick={() => setMinutesPage('results')}
+                        onClick={() => setMinutesPage('collectionResults')}
                         className="inline-flex h-12 min-w-36 items-center justify-center rounded-xl border bg-white px-5 text-sm font-semibold text-[#37564d] hover:bg-[#edf6f0]"
                       >
                         前回の結果へ
