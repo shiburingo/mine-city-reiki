@@ -153,12 +153,12 @@ def build_domain_pairs(cur) -> tuple[set[tuple[str, str]], dict[str, Any]]:
         for segment in re.split(r"[/>／｜|]+", category_path):
             add_pair(pairs, title, segment)
 
-    cur.execute("SELECT article_title, body_text FROM law_articles")
+    cur.execute("SELECT article_title, text FROM law_articles")
     articles = cur.fetchall() or []
     for row in articles:
         for term in split_title_terms(row.get("article_title") or ""):
             term_counts[term] += 1
-        body = row.get("body_text") or ""
+        body = row.get("text") or ""
         for term in re.findall(r"[一-龯ぁ-んァ-ヴー]{2,20}(?:制度|計画|委員会|職員|手当|給与|費用|管理|事業|施設|会計|議会|条例|規則)", body):
             normalized = normalize_term(term)
             if is_good_term(normalized):
