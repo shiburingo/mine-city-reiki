@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine
 
 
-ENGINE_VERSION = "speaker-rules-v1"
+ENGINE_VERSION = "speaker-rules-v2"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
@@ -60,8 +60,10 @@ def classify_speaker(title: str, name: str) -> tuple[str, str, float, str]:
     title = re.sub(r"\s+", "", title or "")
     if "議長" in title or "委員長" in title:
         return "chair", "議事進行", 0.98, "title includes chair alias"
-    if "議会事務局" in title or "事務局" in title or "書記" in title:
+    if "議会事務局" in title or "書記" in title:
         return "secretariat", "事務局", 0.95, "title includes secretariat alias"
+    if "事務局" in title:
+        return "answerer", "執行部", 0.9, "non-council secretariat title is executive staff"
     if re.search(r"\d+番|[一二三四五六七八九十]+番", title) or "議員" in title or title in {"委員", "部会長", "副委員長"}:
         return "questioner", "議員・委員", 0.9, "title indicates elected member or committee member"
     if any(token in title for token in ANSWERER_TITLES):
