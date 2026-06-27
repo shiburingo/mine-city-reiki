@@ -99,9 +99,9 @@ def iter_internal_links(soup: BeautifulSoup, base_url: str, section: str) -> Ite
             yield url
 
 
-def crawl_minutes_pdfs(recent_days: int = 365, today: date | None = None, max_pages_per_section: int = 300) -> list[MinutesPdfItem]:
+def crawl_minutes_pdfs(recent_days: int | None = 365, today: date | None = None, max_pages_per_section: int = 300) -> list[MinutesPdfItem]:
     today = today or date.today()
-    cutoff = today - timedelta(days=max(1, recent_days))
+    cutoff = today - timedelta(days=max(1, recent_days)) if recent_days and recent_days > 0 else None
     items: dict[str, MinutesPdfItem] = {}
 
     for section, start_url in SECTION_URLS.items():
@@ -126,7 +126,7 @@ def crawl_minutes_pdfs(recent_days: int = 365, today: date | None = None, max_pa
                     continue
                 link_label = link.get_text(" ", strip=True) or title
                 date_value = parse_japanese_date(link_label) or parse_japanese_date(title)
-                if date_value is None or date_value < cutoff or date_value > today:
+                if date_value is None or (cutoff is not None and date_value < cutoff) or date_value > today:
                     continue
                 meeting_name = infer_meeting_name(title, link_label)
                 item_title = re.sub(r"\s+", " ", link_label).strip() or meeting_name
@@ -140,4 +140,3 @@ def crawl_minutes_pdfs(recent_days: int = 365, today: date | None = None, max_pa
                     meeting_date=date_value,
                 )
     return sorted(items.values(), key=lambda item: (item.meeting_date or date.min, item.section, item.title))
-

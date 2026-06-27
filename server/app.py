@@ -27,7 +27,7 @@ from pymysql.cursors import DictCursor
 from werkzeug.exceptions import HTTPException
 
 from meeting_minutes.crawler import crawl_minutes_pdfs
-from meeting_minutes.pdf_extractor import extract_pdf_from_url
+from meeting_minutes.pdf_extractor import download_pdf, extract_pdf_from_bytes
 from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERSION
 from meeting_minutes.speaker_tagger import tag_utterances
 from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSION
@@ -3475,14 +3475,16 @@ def update_minutes_run_summary(run_id: int, extract_run_id: int | None, summary:
             )
 
 
-def execute_minutes_sync(recent_days: int = 365) -> dict[str, Any]:
-    recent_days = max(1, min(3660, int(recent_days or 365)))
+def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
+    raw_recent_days = int(recent_days if recent_days is not None else 365)
+    recent_days = 0 if raw_recent_days <= 0 else max(1, min(36600, raw_recent_days))
     with db_cursor(commit=True) as (_, cur):
         summary: dict[str, Any] = {
             "operation": "minutes-sync",
             "recentDays": recent_days,
             "discovered": 0,
             "processed": 0,
+            "skipped": 0,
             "failed": 0,
             "utterances": 0,
             "tables": 0,
@@ -3522,13 +3524,26 @@ def execute_minutes_sync(recent_days: int = 365) -> dict[str, Any]:
                 with db_cursor(commit=True) as (_, cur):
                     session_id = upsert_meeting_session(cur, item)
                     day_id = upsert_meeting_day(cur, item, session_id)
-                    cur.execute("UPDATE meeting_days SET extraction_status='running', error_text=NULL WHERE id=%s", (day_id,))
-                extracted = extract_pdf_from_url(item.pdf_url)
-                with db_cursor(commit=True) as (_, cur):
-                    counts = persist_meeting_day_content(cur, day_id, item, extracted)
-                summary["processed"] += 1
-                summary["utterances"] += counts["utterances"]
-                summary["tables"] += counts["tables"]
+                pdf_bytes = download_pdf(item.pdf_url)
+                pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+                with db_cursor() as (_, cur):
+                    cur.execute(
+                        "SELECT pdf_hash, extraction_status FROM meeting_days WHERE id=%s",
+                        (day_id,),
+                    )
+                    existing_day = cur.fetchone() or {}
+                if existing_day.get("pdf_hash") == pdf_hash and existing_day.get("extraction_status") == "success":
+                    summary["skipped"] += 1
+                    summary["processed"] += 1
+                else:
+                    with db_cursor(commit=True) as (_, cur):
+                        cur.execute("UPDATE meeting_days SET extraction_status='running', error_text=NULL WHERE id=%s", (day_id,))
+                    extracted = extract_pdf_from_bytes(pdf_bytes)
+                    with db_cursor(commit=True) as (_, cur):
+                        counts = persist_meeting_day_content(cur, day_id, item, extracted)
+                    summary["processed"] += 1
+                    summary["utterances"] += counts["utterances"]
+                    summary["tables"] += counts["tables"]
             except Exception as exc:
                 summary["failed"] += 1
                 if day_id:
@@ -3542,6 +3557,8 @@ def execute_minutes_sync(recent_days: int = 365) -> dict[str, Any]:
             update_minutes_run_summary(run_id, extract_run_id, summary)
         with db_cursor(commit=True) as (_, cur):
             summary["progressLabel"] = "会議録同期が完了しました"
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, "success", summary, None)
             cur.execute(
                 "UPDATE meeting_extract_runs SET status='success', finished_at=CURRENT_TIMESTAMP, summary_json=%s WHERE id=%s",
@@ -3558,7 +3575,7 @@ def execute_minutes_sync(recent_days: int = 365) -> dict[str, Any]:
         raise
 
 
-def launch_minutes_sync_in_background(recent_days: int = 365) -> None:
+def launch_minutes_sync_in_background(recent_days: int | None = 365) -> None:
     def _runner() -> None:
         try:
             execute_minutes_sync(recent_days=recent_days)
@@ -4948,7 +4965,8 @@ def api_minutes_status():
 @app.post('/api/minutes/sync')
 def api_minutes_sync():
     payload = request.get_json(silent=True) or {}
-    recent_days = max(1, min(3660, int(payload.get("recentDays") or 365)))
+    requested_recent_days = int(payload.get("recentDays") if payload.get("recentDays") is not None else 365)
+    recent_days = 0 if requested_recent_days <= 0 else max(1, min(36600, requested_recent_days))
     launch_minutes_sync_in_background(recent_days=recent_days)
     return jsonify({"ok": True, "started": True, "recentDays": recent_days}), 202
 
