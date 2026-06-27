@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import itertools
+import json
 import re
 import shutil
 import sqlite3
@@ -12,8 +13,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 
-WORDNET_VERSION = "1.1"
-WORDNET_SQLITE_URL = "https://github.com/bond-lab/wnja/releases/download/v1.1/wnjpn.db.gz"
+WORDNET_FALLBACK_VERSION = "1.1"
+WORDNET_RELEASE_API = "https://api.github.com/repos/bond-lab/wnja/releases/latest"
+WORDNET_SQLITE_ASSET = "wnjpn.db.gz"
+WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/download/v{WORDNET_FALLBACK_VERSION}/{WORDNET_SQLITE_ASSET}"
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 
 MIN_TERM_LEN = 2
@@ -78,16 +81,37 @@ def add_pair(pairs: set[tuple[str, str]], left: str | None, right: str | None) -
     pairs.add((a, b))
 
 
-def download_wordnet_sqlite(work_dir: Path, url: str = WORDNET_SQLITE_URL) -> Path:
+def resolve_wordnet_release() -> tuple[str, str]:
+    request = urllib.request.Request(
+        WORDNET_RELEASE_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "mine-city-reiki-dictionary-engine",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        version = str(payload.get("tag_name") or f"v{WORDNET_FALLBACK_VERSION}").removeprefix("v")
+        for asset in payload.get("assets") or []:
+            if asset.get("name") == WORDNET_SQLITE_ASSET and asset.get("browser_download_url"):
+                return version, str(asset["browser_download_url"])
+    except Exception:
+        pass
+    return WORDNET_FALLBACK_VERSION, WORDNET_SQLITE_FALLBACK_URL
+
+
+def download_wordnet_sqlite(work_dir: Path) -> tuple[Path, str]:
+    version, url = resolve_wordnet_release()
     gz_path = work_dir / "wnjpn.db.gz"
     db_path = work_dir / "wnjpn.db"
     urllib.request.urlretrieve(url, gz_path)
     with gzip.open(gz_path, "rb") as src, db_path.open("wb") as dst:
         shutil.copyfileobj(src, dst)
-    return db_path
+    return db_path, version
 
 
-def build_wordnet_pairs(db_path: Path, max_pairs: int = 30000) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+def build_wordnet_pairs(db_path: Path, max_pairs: int = 30000, wordnet_version: str = WORDNET_FALLBACK_VERSION) -> tuple[set[tuple[str, str]], dict[str, Any]]:
     pairs: set[tuple[str, str]] = set()
     conn = sqlite3.connect(str(db_path))
     try:
@@ -117,8 +141,8 @@ def build_wordnet_pairs(db_path: Path, max_pairs: int = 30000) -> tuple[set[tupl
         for left, right in itertools.combinations(sorted(terms), 2):
             add_pair(pairs, left, right)
             if len(pairs) >= max_pairs:
-                return pairs, {"wordnetVersion": WORDNET_VERSION, "synsetsUsed": used_synsets, "pairs": len(pairs), "truncated": True}
-    return pairs, {"wordnetVersion": WORDNET_VERSION, "synsetsUsed": used_synsets, "pairs": len(pairs), "truncated": False}
+                return pairs, {"wordnetVersion": wordnet_version, "synsetsUsed": used_synsets, "pairs": len(pairs), "truncated": True}
+    return pairs, {"wordnetVersion": wordnet_version, "synsetsUsed": used_synsets, "pairs": len(pairs), "truncated": False}
 
 
 def split_title_terms(value: str | None) -> list[str]:
@@ -247,14 +271,14 @@ def build_hybrid_dictionary(
         if progress:
             progress("日本語 WordNet を取得しています", current, summary["progressTotal"])
         with tempfile.TemporaryDirectory(prefix="mine-city-reiki-wordnet-") as tmp:
-            db_path = download_wordnet_sqlite(Path(tmp))
-            wordnet_pairs, wordnet_stats = build_wordnet_pairs(db_path, max_pairs=max_wordnet_pairs)
+            db_path, wordnet_version = download_wordnet_sqlite(Path(tmp))
+            wordnet_pairs, wordnet_stats = build_wordnet_pairs(db_path, max_pairs=max_wordnet_pairs, wordnet_version=wordnet_version)
         current += 1
         summary.update({f"wordnet{key[0].upper()}{key[1:]}": value for key, value in wordnet_stats.items()})
         summary["wordnetPairs"] = len(wordnet_pairs)
         if progress:
             progress(f"日本語 WordNet 関連語 {len(wordnet_pairs):,}件を登録しています", current, summary["progressTotal"])
-        inserted += insert_pairs(cur, wordnet_pairs, "wordnet", f"wnja-{WORDNET_VERSION}", 5)
+        inserted += insert_pairs(cur, wordnet_pairs, "wordnet", f"wnja-{wordnet_version}", 5)
 
     if include_domain:
         if progress:
