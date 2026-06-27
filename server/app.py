@@ -3851,13 +3851,18 @@ def build_minutes_where(
     match_mode: str,
     op: str,
     use_fulltext: bool,
+    speaker_exact_only: bool = True,
 ) -> tuple[str, list[Any]]:
     conditions = ["1=1"]
     params: list[Any] = []
     append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext)
     if speaker:
-        conditions.append("(u.speaker_name=%s OR u.speaker_title=%s OR u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
-        params.extend([speaker, speaker, f"%{speaker}%", f"%{speaker}%"])
+        if speaker_exact_only:
+            conditions.append("(u.speaker_name=%s OR u.speaker_title=%s)")
+            params.extend([speaker, speaker])
+        else:
+            conditions.append("(u.speaker_name=%s OR u.speaker_title=%s OR u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
+            params.extend([speaker, speaker, f"%{speaker}%", f"%{speaker}%"])
     append_minutes_role_filter(conditions, params, role, "u.speaker_role", "u.speaker_title")
     if section and section != "all":
         conditions.append("s.section=%s")
@@ -3951,8 +3956,14 @@ def search_minutes_items(
             return cached
 
         rows: list[dict[str, Any]] = []
-        attempts = [True, False] if match_mode != "exact" and normalize_text(query) and minutes_boolean_query(terms, query) else [False]
-        for use_fulltext in attempts:
+        use_fulltext_options = [True, False] if normalize_text(query) and minutes_boolean_query(terms, query) else [False]
+        speaker_exact_options = [True, False] if speaker else [True]
+        attempts = [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
+        seen_attempts: set[tuple[bool, bool]] = set()
+        for use_fulltext, speaker_exact_only in attempts:
+            if (use_fulltext, speaker_exact_only) in seen_attempts:
+                continue
+            seen_attempts.add((use_fulltext, speaker_exact_only))
             where, params = build_minutes_where(
                 query,
                 terms,
@@ -3966,6 +3977,7 @@ def search_minutes_items(
                 match_mode,
                 op,
                 use_fulltext,
+                speaker_exact_only=speaker_exact_only,
             )
             try:
                 cur.execute(
@@ -3990,7 +4002,7 @@ def search_minutes_items(
                     continue
                 raise
             rows = cur.fetchall() or []
-            if rows or not use_fulltext:
+            if len(rows) >= limit or (not use_fulltext and (rows or not speaker_exact_only)):
                 break
 
         exchange_windows = fetch_minutes_exchange_windows(cur, rows)
