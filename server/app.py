@@ -143,6 +143,7 @@ ASK_CACHE_TTL_SECONDS = 60 * 60 * 6
 LOCAL_CACHE_TTL_SECONDS = 120
 LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+LOCAL_MINUTES_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
 SYNC_THREAD_LOCK = threading.Lock()
 BUILTIN_SYNONYM_GROUPS = [
@@ -601,6 +602,11 @@ def ensure_schema() -> None:
             ensure_column(cur, "meeting_utterances", "position_top_end", "position_top_end FLOAT NOT NULL DEFAULT 0 AFTER position_top_start")
             ensure_column(cur, "meeting_tables", "position_top", "position_top FLOAT NOT NULL DEFAULT 0 AFTER page")
             ensure_column(cur, "meeting_tables", "position_bottom", "position_bottom FLOAT NOT NULL DEFAULT 0 AFTER position_top")
+            ensure_index(cur, "meeting_days", "idx_meeting_days_session_date", "(session_id, meeting_date)")
+            ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_speaker_name_title", "(speaker_name, speaker_title, day_id)")
+            ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_role_title", "(speaker_role, speaker_title, day_id)")
+            ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_day_page_order", "(day_id, page_start, utterance_order)")
+            ensure_index(cur, "meeting_tables", "idx_meeting_tables_day_page", "(day_id, page, position_top, id)")
             ensure_table(
                 cur,
                 "meeting_extract_runs",
@@ -925,6 +931,7 @@ def prune_expired_caches(cur) -> None:
 def clear_local_caches() -> None:
     LOCAL_SEARCH_CACHE.clear()
     LOCAL_ASK_CACHE.clear()
+    LOCAL_MINUTES_SEARCH_CACHE.clear()
     global LOCAL_SYNONYM_CACHE
     LOCAL_SYNONYM_CACHE = None
 
@@ -3729,37 +3736,106 @@ def append_minutes_role_filter(
     params.append(role)
 
 
-def search_minutes_items(
-    query: str = "",
-    speaker: str = "",
-    role: str = "",
-    section: str = "",
-    from_date: str = "",
-    to_date: str = "",
-    meeting_id: int | None = None,
-    day_id: int | None = None,
-    match_mode: str = "exact",
-    op: str = "AND",
-    limit: int = 20,
-) -> list[dict[str, Any]]:
-    terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
+def minutes_boolean_query(terms: list[str], fallback: str) -> str:
+    tokens = terms or ([normalize_text(fallback)] if normalize_text(fallback) else [])
+    safe_tokens: list[str] = []
+    for token in tokens:
+        value = re.sub(r'[+\-<>()~*"@]+', " ", token).strip()
+        if len(value) >= 2:
+            safe_tokens.append(f"+{value}*")
+    return " ".join(safe_tokens)
+
+
+def append_minutes_query_filter(
+    conditions: list[str],
+    params: list[Any],
+    query: str,
+    terms: list[str],
+    match_mode: str,
+    op: str,
+    use_fulltext: bool,
+) -> None:
+    normalized_query = normalize_text(query)
+    if not normalized_query:
+        return
+    if use_fulltext:
+        boolean_query = minutes_boolean_query(terms, normalized_query)
+        if not boolean_query:
+            return
+        conditions.append(
+            """
+            (
+              MATCH(u.search_text) AGAINST (%s IN BOOLEAN MODE)
+              OR EXISTS (
+                SELECT 1 FROM meeting_tables mt
+                WHERE mt.day_id=d.id
+                  AND MATCH(mt.search_text) AGAINST (%s IN BOOLEAN MODE)
+              )
+            )
+            """
+        )
+        params.extend([boolean_query, boolean_query])
+        return
+
+    if match_mode == "exact":
+        like = f"%{normalized_query}%"
+        conditions.append(
+            """
+            (
+              u.search_text LIKE %s
+              OR EXISTS (
+                SELECT 1 FROM meeting_tables mt
+                WHERE mt.day_id=d.id
+                  AND mt.search_text LIKE %s
+              )
+            )
+            """
+        )
+        params.extend([like, like])
+        return
+
+    if not terms:
+        return
+    term_conditions: list[str] = []
+    for term in terms:
+        like = f"%{term}%"
+        term_conditions.append(
+            """
+            (
+              u.search_text LIKE %s
+              OR EXISTS (
+                SELECT 1 FROM meeting_tables mt
+                WHERE mt.day_id=d.id
+                  AND mt.search_text LIKE %s
+              )
+            )
+            """
+        )
+        params.extend([like, like])
+    joiner = " OR " if op == "OR" or match_mode == "related" else " AND "
+    conditions.append("(" + joiner.join(term_conditions) + ")")
+
+
+def build_minutes_where(
+    query: str,
+    terms: list[str],
+    speaker: str,
+    role: str,
+    section: str,
+    from_date: str,
+    to_date: str,
+    meeting_id: int | None,
+    day_id: int | None,
+    match_mode: str,
+    op: str,
+    use_fulltext: bool,
+) -> tuple[str, list[Any]]:
     conditions = ["1=1"]
     params: list[Any] = []
-    if query and match_mode == "exact":
-        like = f"%{normalize_text(query)}%"
-        conditions.append("(u.search_text LIKE %s OR t.search_text LIKE %s)")
-        params.extend([like, like])
-    elif terms:
-        term_conditions: list[str] = []
-        for term in terms:
-            like = f"%{term}%"
-            term_conditions.append("(u.search_text LIKE %s OR t.search_text LIKE %s)")
-            params.extend([like, like])
-        joiner = " OR " if op == "OR" or match_mode == "related" else " AND "
-        conditions.append("(" + joiner.join(term_conditions) + ")")
+    append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext)
     if speaker:
-        conditions.append("(u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
-        params.extend([f"%{speaker}%", f"%{speaker}%"])
+        conditions.append("(u.speaker_name=%s OR u.speaker_title=%s OR u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
+        params.extend([speaker, speaker, f"%{speaker}%", f"%{speaker}%"])
     append_minutes_role_filter(conditions, params, role, "u.speaker_role", "u.speaker_title")
     if section and section != "all":
         conditions.append("s.section=%s")
@@ -3776,41 +3852,136 @@ def search_minutes_items(
     if to_date:
         conditions.append("d.meeting_date <= %s")
         params.append(to_date)
-    where = " AND ".join(conditions)
+    return " AND ".join(conditions), params
+
+
+def fetch_minutes_exchange_windows(cur, rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    if not rows:
+        return {}
+    windows: dict[int, tuple[int, int]] = {}
+    for row in rows:
+        day_id = int(row["day_id"])
+        order = int(row["utterance_order"])
+        start = max(1, order - 2)
+        end = order + 4
+        if day_id in windows:
+            prev_start, prev_end = windows[day_id]
+            windows[day_id] = (min(prev_start, start), max(prev_end, end))
+        else:
+            windows[day_id] = (start, end)
+
+    predicates: list[str] = []
+    params: list[Any] = []
+    for day_id, (start, end) in windows.items():
+        predicates.append("(day_id=%s AND utterance_order BETWEEN %s AND %s)")
+        params.extend([day_id, start, end])
+    cur.execute(
+        f"""
+        SELECT id, day_id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
+               page_start, page_end, position_top_start, position_top_end
+        FROM meeting_utterances
+        WHERE {" OR ".join(predicates)}
+        ORDER BY day_id ASC, utterance_order ASC
+        """,
+        tuple(params),
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in cur.fetchall() or []:
+        grouped.setdefault(int(row["day_id"]), []).append(row)
+    return grouped
+
+
+def search_minutes_items(
+    query: str = "",
+    speaker: str = "",
+    role: str = "",
+    section: str = "",
+    from_date: str = "",
+    to_date: str = "",
+    meeting_id: int | None = None,
+    day_id: int | None = None,
+    match_mode: str = "exact",
+    op: str = "AND",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
-        cur.execute(
-            f"""
-            SELECT DISTINCT
-              u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
-              u.speech_type, u.text, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
-              d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
-              s.section, s.meeting_name, s.title AS session_title
-            FROM meeting_utterances u
-            JOIN meeting_days d ON d.id=u.day_id
-            JOIN meeting_sessions s ON s.id=d.session_id
-            LEFT JOIN meeting_tables t ON t.day_id=d.id
-            WHERE {where}
-            ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
-            LIMIT %s
-            """,
-            tuple(params + [limit]),
+        generation = get_cache_generation(cur)
+        cache_key = make_cache_key(
+            [
+                "minutes-search",
+                normalize_text(query),
+                speaker,
+                role,
+                section,
+                str(from_date),
+                str(to_date),
+                str(meeting_id or ""),
+                str(day_id or ""),
+                match_mode,
+                op,
+                str(limit),
+                str(generation),
+            ]
         )
-        rows = cur.fetchall() or []
+        cached = get_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key)
+        if cached is not None:
+            return cached
+
+        rows: list[dict[str, Any]] = []
+        attempts = [True, False] if match_mode != "exact" and normalize_text(query) and minutes_boolean_query(terms, query) else [False]
+        for use_fulltext in attempts:
+            where, params = build_minutes_where(
+                query,
+                terms,
+                speaker,
+                role,
+                section,
+                from_date,
+                to_date,
+                meeting_id,
+                day_id,
+                match_mode,
+                op,
+                use_fulltext,
+            )
+            try:
+                cur.execute(
+                    f"""
+                    SELECT
+                      u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
+                      u.speech_type, u.text, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+                      d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
+                      s.section, s.meeting_name, s.title AS session_title
+                    FROM meeting_utterances u
+                    JOIN meeting_days d ON d.id=u.day_id
+                    JOIN meeting_sessions s ON s.id=d.session_id
+                    WHERE {where}
+                    ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
+                    LIMIT %s
+                    """,
+                    tuple(params + [limit]),
+                )
+            except pymysql.err.OperationalError:
+                if use_fulltext:
+                    app.logger.warning("Minutes FULLTEXT search unavailable; falling back to LIKE search", exc_info=True)
+                    continue
+                raise
+            rows = cur.fetchall() or []
+            if rows or not use_fulltext:
+                break
+
+        exchange_windows = fetch_minutes_exchange_windows(cur, rows)
         results: list[dict[str, Any]] = []
         for row in rows:
             day_id = int(row["day_id"])
             order = int(row["utterance_order"])
-            cur.execute(
-                """
-                SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
-                       page_start, page_end, position_top_start, position_top_end
-                FROM meeting_utterances
-                WHERE day_id=%s AND utterance_order BETWEEN %s AND %s
-                ORDER BY utterance_order ASC
-                """,
-                (day_id, max(1, order - 2), order + 4),
+            exchange = serialize_minutes_exchange(
+                [
+                    item for item in exchange_windows.get(day_id, [])
+                    if max(1, order - 2) <= int(item["utterance_order"]) <= order + 4
+                ]
             )
-            exchange = serialize_minutes_exchange(cur.fetchall() or [])
             results.append(
                 {
                     "id": int(row["id"]),
@@ -3835,6 +4006,7 @@ def search_minutes_items(
                     "exchange": exchange,
                 }
             )
+        put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, results)
         return results
 
 
@@ -4802,44 +4974,60 @@ def api_minutes_search():
 @app.get('/api/minutes/meetings')
 def api_minutes_meetings():
     with db_cursor() as (_, cur):
+        generation = get_cache_generation(cur)
+        cache_key = make_cache_key(["minutes-meetings", str(generation)])
+        cached = get_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key)
+        if cached is not None:
+            return jsonify({"items": cached})
         cur.execute(
             """
             SELECT
               s.id, s.section, s.meeting_name, s.title, s.source_url,
-              MIN(d.meeting_date) AS from_date,
-              MAX(d.meeting_date) AS to_date,
-              COUNT(DISTINCT d.id) AS day_count,
-              COUNT(DISTINCT u.id) AS utterance_count,
-              COUNT(DISTINCT t.id) AS table_count
+              ds.from_date,
+              ds.to_date,
+              COALESCE(ds.day_count, 0) AS day_count,
+              COALESCE(us.utterance_count, 0) AS utterance_count,
+              COALESCE(ts.table_count, 0) AS table_count
             FROM meeting_sessions s
-            LEFT JOIN meeting_days d ON d.session_id=s.id
-            LEFT JOIN meeting_utterances u ON u.day_id=d.id
-            LEFT JOIN meeting_tables t ON t.day_id=d.id
-            GROUP BY s.id, s.section, s.meeting_name, s.title, s.source_url
-            ORDER BY to_date DESC, s.section ASC, s.meeting_name ASC
+            LEFT JOIN (
+              SELECT session_id, MIN(meeting_date) AS from_date, MAX(meeting_date) AS to_date, COUNT(*) AS day_count
+              FROM meeting_days
+              GROUP BY session_id
+            ) ds ON ds.session_id=s.id
+            LEFT JOIN (
+              SELECT d.session_id, COUNT(*) AS utterance_count
+              FROM meeting_days d
+              JOIN meeting_utterances u ON u.day_id=d.id
+              GROUP BY d.session_id
+            ) us ON us.session_id=s.id
+            LEFT JOIN (
+              SELECT d.session_id, COUNT(*) AS table_count
+              FROM meeting_days d
+              JOIN meeting_tables t ON t.day_id=d.id
+              GROUP BY d.session_id
+            ) ts ON ts.session_id=s.id
+            ORDER BY ds.to_date DESC, s.section ASC, s.meeting_name ASC
             LIMIT 500
             """
         )
         rows = cur.fetchall() or []
-    return jsonify(
+    items = [
         {
-            "items": [
-                {
-                    "id": int(row["id"]),
-                    "section": row.get("section") or "",
-                    "meetingName": row.get("meeting_name") or "",
-                    "title": row.get("title") or "",
-                    "sourceUrl": row.get("source_url") or "",
-                    "fromDate": str(row["from_date"]) if row.get("from_date") else None,
-                    "toDate": str(row["to_date"]) if row.get("to_date") else None,
-                    "dayCount": int(row.get("day_count") or 0),
-                    "utteranceCount": int(row.get("utterance_count") or 0),
-                    "tableCount": int(row.get("table_count") or 0),
-                }
-                for row in rows
-            ]
+            "id": int(row["id"]),
+            "section": row.get("section") or "",
+            "meetingName": row.get("meeting_name") or "",
+            "title": row.get("title") or "",
+            "sourceUrl": row.get("source_url") or "",
+            "fromDate": str(row["from_date"]) if row.get("from_date") else None,
+            "toDate": str(row["to_date"]) if row.get("to_date") else None,
+            "dayCount": int(row.get("day_count") or 0),
+            "utteranceCount": int(row.get("utterance_count") or 0),
+            "tableCount": int(row.get("table_count") or 0),
         }
-    )
+        for row in rows
+    ]
+    put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, items)
+    return jsonify({"items": items})
 
 
 @app.get('/api/minutes/speakers')
@@ -4866,6 +5054,11 @@ def api_minutes_speakers():
         params.append(to_date)
     where = " AND ".join(conditions)
     with db_cursor() as (_, cur):
+        generation = get_cache_generation(cur)
+        cache_key = make_cache_key(["minutes-speakers", role, section, str(meeting_id or ""), from_date, to_date, str(generation)])
+        cached = get_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key)
+        if cached is not None:
+            return jsonify({"items": cached})
         cur.execute(
             f"""
             SELECT sp.display_name, sp.title, sp.role, sp.speaker_group, COUNT(u.id) AS utterance_count
@@ -4881,20 +5074,18 @@ def api_minutes_speakers():
             tuple(params),
         )
         rows = cur.fetchall() or []
-    return jsonify(
+    items = [
         {
-            "items": [
-                {
-                    "displayName": row.get("display_name") or "",
-                    "title": row.get("title") or "",
-                    "role": row.get("role") or "unknown",
-                    "speakerGroup": row.get("speaker_group") or "",
-                    "utteranceCount": int(row.get("utterance_count") or 0),
-                }
-                for row in rows
-            ]
+            "displayName": row.get("display_name") or "",
+            "title": row.get("title") or "",
+            "role": row.get("role") or "unknown",
+            "speakerGroup": row.get("speaker_group") or "",
+            "utteranceCount": int(row.get("utterance_count") or 0),
         }
-    )
+        for row in rows
+    ]
+    put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, items)
+    return jsonify({"items": items})
 
 
 @app.get('/api/minutes/meetings/<int:meeting_id>')
@@ -4904,18 +5095,34 @@ def api_minutes_meeting_detail(meeting_id: int):
             """
             SELECT
               s.id, s.section, s.meeting_name, s.title, s.source_url,
-              MIN(d.meeting_date) AS from_date,
-              MAX(d.meeting_date) AS to_date,
-              COUNT(DISTINCT u.id) AS utterance_count,
-              COUNT(DISTINCT t.id) AS table_count
+              ds.from_date,
+              ds.to_date,
+              COALESCE(us.utterance_count, 0) AS utterance_count,
+              COALESCE(ts.table_count, 0) AS table_count
             FROM meeting_sessions s
-            LEFT JOIN meeting_days d ON d.session_id=s.id
-            LEFT JOIN meeting_utterances u ON u.day_id=d.id
-            LEFT JOIN meeting_tables t ON t.day_id=d.id
+            LEFT JOIN (
+              SELECT session_id, MIN(meeting_date) AS from_date, MAX(meeting_date) AS to_date
+              FROM meeting_days
+              WHERE session_id=%s
+              GROUP BY session_id
+            ) ds ON ds.session_id=s.id
+            LEFT JOIN (
+              SELECT d.session_id, COUNT(*) AS utterance_count
+              FROM meeting_days d
+              JOIN meeting_utterances u ON u.day_id=d.id
+              WHERE d.session_id=%s
+              GROUP BY d.session_id
+            ) us ON us.session_id=s.id
+            LEFT JOIN (
+              SELECT d.session_id, COUNT(*) AS table_count
+              FROM meeting_days d
+              JOIN meeting_tables t ON t.day_id=d.id
+              WHERE d.session_id=%s
+              GROUP BY d.session_id
+            ) ts ON ts.session_id=s.id
             WHERE s.id=%s
-            GROUP BY s.id, s.section, s.meeting_name, s.title, s.source_url
             """,
-            (meeting_id,),
+            (meeting_id, meeting_id, meeting_id, meeting_id),
         )
         meeting = cur.fetchone()
         if not meeting:

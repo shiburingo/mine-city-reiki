@@ -3013,7 +3013,7 @@ function AppShell() {
                       key={item.id}
                       className={`mb-4 min-w-0 rounded-2xl border p-4 last:mb-0 sm:p-5 ${
                         item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
-                      }`}
+                      } [content-visibility:auto] [contain-intrinsic-size:0_14rem]`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -3061,7 +3061,7 @@ function AppShell() {
                               : selectedDayMinutesHitIds.has(item.id)
                                 ? 'border-[#79b28d] bg-[#f0faf3]'
                                 : 'bg-[#fbfdfb]'
-                          }`}
+                          } [content-visibility:auto] [contain-intrinsic-size:0_5rem]`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-semibold">{item.speakerTitle} {item.speakerName}</span>
@@ -3093,7 +3093,7 @@ function AppShell() {
                               : isHit
                                 ? 'border-[#79b28d] bg-[#f0faf3]'
                                 : 'border-transparent'
-                          }`}
+                          } [content-visibility:auto] [contain-intrinsic-size:0_16rem]`}
                         >
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <h4 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h4>
@@ -3270,7 +3270,7 @@ function AppShell() {
                         }
                         const item = contentItem.utterance;
                         return (
-                          <article key={`utterance-${item.id}`} className="min-w-0 border-b border-dashed pb-5 last:border-b-0">
+                          <article key={`utterance-${item.id}`} className="min-w-0 border-b border-dashed pb-5 last:border-b-0 [content-visibility:auto] [contain-intrinsic-size:0_16rem]">
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                               <h5 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h5>
                               <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
