@@ -447,6 +447,13 @@ function compareOrderText(a: string | null | undefined, b: string | null | undef
   return ORDER_COLLATOR.compare(normalizeOrderText(a), normalizeOrderText(b));
 }
 
+function firstContentLine(value: string | null | undefined): string {
+  return normalizeOrderText(value)
+    .replace(/^…+/, '')
+    .replace(/^\.\.\./, '')
+    .trim();
+}
+
 function compareDocumentSummary(a: DocumentSummary, b: DocumentSummary): number {
   const byLawNumber = compareOrderText(a.lawNumber, b.lawNumber);
   if (byLawNumber !== 0) return byLawNumber;
@@ -2041,6 +2048,15 @@ function AppShell() {
     }
     return [...names.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40);
   }, [currentDayUtterances]);
+  const selectedDayMinutesHits = useMemo(() => {
+    if (!selectedMinutesResult) return [];
+    const hits = sortedMinutesResults.filter((result) => result.dayId === selectedMinutesResult.dayId);
+    const deduped = new Map<number, MinutesSearchResult>();
+    for (const hit of hits.length > 0 ? hits : [selectedMinutesResult]) {
+      deduped.set(hit.id, hit);
+    }
+    return [...deduped.values()].sort((a, b) => a.order - b.order);
+  }, [selectedMinutesResult, sortedMinutesResults]);
 
   function moveSelectedMinutesUtterance(delta: number) {
     if (!minutesDayDetail || selectedMinutesUtteranceIndex < 0) return;
@@ -2752,30 +2768,43 @@ function AppShell() {
               </div>
             </div>
 
-            <aside className="space-y-4">
-              <div className="rounded-3xl border bg-white p-4">
-                <p className="text-sm font-semibold text-[#173f36]">会議内情報</p>
-                <dl className="mt-3 space-y-2 text-sm">
-                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">会議種別</dt><dd>{selectedMinutesResult.section}</dd></div>
-                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">日付</dt><dd>{selectedMinutesResult.meetingDate || '不明'}</dd></div>
-                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">表</dt><dd>{minutesDayDetail?.tables.length ?? 0}件</dd></div>
-                  <div className="flex justify-between gap-3"><dt className="text-muted-foreground">ページ</dt><dd>{minutesDayDetail?.pageCount || '-'}</dd></div>
-                </dl>
-              </div>
-              <div className="rounded-3xl border bg-white p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-[#173f36]">抽出表</p>
-                  {minutesDetailLoading ? <span className="text-xs text-muted-foreground">読込中</span> : null}
+            <aside className="rounded-3xl border bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-[#173f36]">検索ヒット箇所</p>
+                  <p className="mt-1 text-xs text-muted-foreground">該当発言を選択して本文位置を切り替えます。</p>
                 </div>
-                {minutesDayDetail?.tables.length ? (
-                  <div className="mt-3 max-h-96 space-y-3 overflow-auto">
-                    {minutesDayDetail.tables.slice(0, 6).map((table) => (
-                      renderMinutesTableCard(table, true)
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-sm text-muted-foreground">この会議日に抽出表はありません。</p>
-                )}
+                <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
+                  {selectedDayMinutesHits.length.toLocaleString()}件
+                </span>
+              </div>
+              <div className="mt-4 max-h-[64vh] space-y-2 overflow-auto pr-1">
+                {selectedDayMinutesHits.map((hit) => (
+                  <button
+                    key={hit.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedMinutesResult(hit);
+                      setMinutesReaderMode('unit');
+                    }}
+                    className={`w-full rounded-2xl border px-3 py-3 text-left transition hover:border-[#79b28d] ${
+                      hit.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-[#2f765e]">発言{hit.order} / p.{hit.pageStart}-{hit.pageEnd}</p>
+                        <p className="mt-1 truncate text-sm font-semibold">{hit.speakerTitle} {hit.speakerName}</p>
+                      </div>
+                      <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${minutesRoleClass(hit.speakerRole)}`}>
+                        {minutesRoleLabel(hit.speakerRole)}
+                      </span>
+                    </div>
+                    <p className="mt-2 line-clamp-1 text-xs leading-6 text-muted-foreground">
+                      {renderHighlightedText(firstContentLine(hit.snippet || hit.text), minutesHighlightTerms)}
+                    </p>
+                  </button>
+                ))}
               </div>
             </aside>
           </div>
