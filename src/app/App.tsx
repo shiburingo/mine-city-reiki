@@ -323,7 +323,7 @@ function minutesRoleClass(role: string): string {
   return 'border-border bg-muted text-muted-foreground';
 }
 
-const MINUTES_EXECUTIVE_TITLE_FILTERS = [
+const MINUTES_EXECUTIVE_TITLE_FALLBACKS = [
   '市長',
   '副市長',
   '教育長',
@@ -1825,6 +1825,21 @@ function AppShell() {
       })
       .sort((a, b) => b.utteranceCount - a.utteranceCount || a.displayName.localeCompare(b.displayName, 'ja-JP'));
   }, [filteredMinutesSpeakers]);
+  const minutesExecutiveTitleFilters = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const speaker of minutesSpeakers) {
+      if (speaker.role !== 'answerer') continue;
+      const title = (speaker.title || '').trim();
+      if (!title) continue;
+      counts.set(title, (counts.get(title) || 0) + speaker.utteranceCount);
+    }
+    if (counts.size === 0) {
+      return MINUTES_EXECUTIVE_TITLE_FALLBACKS.map((title) => ({ title, count: null as number | null }));
+    }
+    return [...counts.entries()]
+      .map(([title, count]) => ({ title, count }))
+      .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title, 'ja-JP'));
+  }, [minutesSpeakers]);
   const minutesBrowseFiscalYears = useMemo(() => {
     return [...new Set(minutesMeetings.map((meeting) => calendarYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
       .sort((a, b) => b - a);
@@ -2221,9 +2236,11 @@ function AppShell() {
           <option value="secretariat">事務局</option>
           <option value="report">報告</option>
           <option value="unknown">未分類</option>
-          <optgroup label="執行部の役職">
-            {MINUTES_EXECUTIVE_TITLE_FILTERS.map((title) => (
-              <option key={title} value={`title:${title}`}>{title}</option>
+          <optgroup label="執行部の所属・役職">
+            {minutesExecutiveTitleFilters.map((item) => (
+              <option key={item.title} value={`title:${item.title}`}>
+                {item.title}{item.count != null ? `（${item.count.toLocaleString()}発言）` : ''}
+              </option>
             ))}
           </optgroup>
         </select>
@@ -2937,9 +2954,11 @@ function AppShell() {
                         <option value="secretariat">事務局</option>
                         <option value="report">報告</option>
                         <option value="unknown">未分類</option>
-                        <optgroup label="執行部の役職">
-                          {MINUTES_EXECUTIVE_TITLE_FILTERS.map((title) => (
-                            <option key={title} value={`title:${title}`}>{title}</option>
+                        <optgroup label="執行部の所属・役職">
+                          {minutesExecutiveTitleFilters.map((item) => (
+                            <option key={item.title} value={`title:${item.title}`}>
+                              {item.title}{item.count != null ? `（${item.count.toLocaleString()}発言）` : ''}
+                            </option>
                           ))}
                         </optgroup>
                       </select>
