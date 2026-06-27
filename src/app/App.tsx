@@ -22,6 +22,7 @@ import {
   fetchSyncStatus,
   fetchSynonyms,
   runMinutesSync,
+  runDictionaryUpdate,
   runReindex,
   runSync,
   searchLaws,
@@ -30,7 +31,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem, SynonymStatsItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -920,6 +921,7 @@ function AppShell() {
 
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [synonymItems, setSynonymItems] = useState<SynonymItem[]>([]);
+  const [synonymStats, setSynonymStats] = useState<SynonymStatsItem[]>([]);
   const [synonymLoading, setSynonymLoading] = useState(false);
   const [newSynonymCanonical, setNewSynonymCanonical] = useState('');
   const [newSynonymTerm, setNewSynonymTerm] = useState('');
@@ -1306,8 +1308,9 @@ function AppShell() {
   async function loadSynonyms() {
     setSynonymLoading(true);
     try {
-      const items = await fetchSynonyms();
+      const { items, stats } = await fetchSynonyms();
       setSynonymItems(items);
+      setSynonymStats(stats);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '同義語取得に失敗しました。');
     } finally {
@@ -1328,6 +1331,24 @@ function AppShell() {
       setNewSynonymTerm('');
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '同義語追加に失敗しました。');
+    }
+  }
+
+  async function triggerDictionaryUpdate() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では関連語辞書を更新できません。');
+      return;
+    }
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runDictionaryUpdate(true, true);
+      const runs = await fetchSyncRuns();
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '関連語辞書更新の起動に失敗しました。');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1898,12 +1919,17 @@ function AppShell() {
   }
 
   const runningSyncRun = useMemo(
-    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation !== 'reindex') ?? null,
+    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update'].includes(String(run.summary?.operation || ''))) ?? null,
     [syncRuns],
   );
 
   const runningReindexRun = useMemo(
     () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'reindex') ?? null,
+    [syncRuns],
+  );
+
+  const runningDictionaryRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'dictionary-update') ?? null,
     [syncRuns],
   );
 
@@ -4654,6 +4680,40 @@ function AppShell() {
                 <ProgressMeter title="検索再構築の進捗" run={runningReindexRun} />
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="size-5 text-primary" />
+                  <h2 className="text-xl font-semibold">関連語辞書更新</h2>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">日本語 WordNet の最新版取得と、既存DB（例規・法令・会議録）からの関連語再作成を実行します。検索・質問・会議録の関連語検索で共通利用します。</p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
+                    disabled={busy || Boolean(runningDictionaryRun)}
+                    onClick={() => void triggerDictionaryUpdate()}
+                  >
+                    最新辞書を取得して再作成
+                  </button>
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent"
+                    disabled={synonymLoading}
+                    onClick={() => void loadSynonyms()}
+                  >
+                    件数を再読み込み
+                  </button>
+                </div>
+                <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
+                  {synonymStats.length === 0 ? (
+                    <p className="text-muted-foreground">辞書統計はまだ取得されていません。</p>
+                  ) : synonymStats.map((item) => (
+                    <div key={`${item.sourceType}-${item.sourceVersion}`} className="flex justify-between gap-3 rounded-2xl border bg-background px-3 py-2">
+                      <span className="text-muted-foreground">{item.sourceType}{item.sourceVersion ? ` / ${item.sourceVersion}` : ''}</span>
+                      <span className="font-semibold">{item.count.toLocaleString()}件</span>
+                    </div>
+                  ))}
+                </div>
+                <ProgressMeter title="関連語辞書更新の進捗" run={runningDictionaryRun} />
+              </div>
+              <div className="rounded-3xl border bg-card p-6 shadow-sm">
                 <h2 className="text-xl font-semibold">同期履歴</h2>
                 <div className="mt-4 space-y-3">
                   {syncRuns.length === 0 ? (
@@ -4662,7 +4722,7 @@ function AppShell() {
                     syncRuns.map((run) => (
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-3">
-                          <span className="font-medium">{run.summary?.operation === 'reindex' ? '再索引' : run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
+                          <span className="font-medium">{run.summary?.operation === 'reindex' ? '再索引' : run.summary?.operation === 'dictionary-update' ? '関連語辞書更新' : run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
                           <span className={run.status === 'failed' ? 'text-red-600' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status}</span>
                         </div>
                         <p className="mt-2 text-muted-foreground">開始: {formatDateTime(run.startedAt)}</p>
@@ -4670,6 +4730,9 @@ function AppShell() {
                         {run.summary && Object.keys(run.summary).length > 0 ? (
                           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                             {run.summary.reindexed != null ? <span className="text-primary">再索引 {run.summary.reindexed}件</span> : null}
+                            {run.summary.inserted != null ? <span className="text-primary">辞書登録 {Number(run.summary.inserted).toLocaleString()}件</span> : null}
+                            {run.summary.wordnetPairs != null ? <span>WordNet {Number(run.summary.wordnetPairs).toLocaleString()}件</span> : null}
+                            {run.summary.domainPairs != null ? <span>既存DB {Number(run.summary.domainPairs).toLocaleString()}件</span> : null}
                             {run.summary.added != null ? <span className="text-emerald-700">追加 {run.summary.added}件</span> : null}
                             {run.summary.updated != null ? <span className="text-amber-700">更新 {run.summary.updated}件</span> : null}
                             {run.summary.unchanged != null ? <span>変更なし {run.summary.unchanged}件</span> : null}
@@ -4747,7 +4810,10 @@ function AppShell() {
                   ) : (
                     synonymItems.map((s) => (
                       <div key={s.id} className="flex items-center justify-between gap-3 rounded-xl border bg-background px-3 py-2 text-sm">
-                        <span><span className="font-medium">{s.canonicalTerm}</span> ↔ <span>{s.synonymTerm}</span></span>
+                        <span>
+                          <span className="font-medium">{s.canonicalTerm}</span> ↔ <span>{s.synonymTerm}</span>
+                          <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{s.sourceType || 'manual'}</span>
+                        </span>
                         <button type="button" onClick={() => void handleDeleteSynonym(s.id)} className="text-muted-foreground hover:text-red-600">
                           <Trash2 className="size-4" />
                         </button>

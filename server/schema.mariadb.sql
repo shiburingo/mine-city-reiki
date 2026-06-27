@@ -109,29 +109,41 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
   synonym_term VARCHAR(191) NOT NULL,
   priority TINYINT UNSIGNED NOT NULL DEFAULT 10,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  source_type ENUM('builtin','manual','wordnet','domain') NOT NULL DEFAULT 'manual',
+  source_version VARCHAR(64) NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_law_synonyms_pair (canonical_term, synonym_term),
   KEY idx_law_synonyms_canonical (canonical_term, is_active),
-  KEY idx_law_synonyms_synonym (synonym_term, is_active)
+  KEY idx_law_synonyms_synonym (synonym_term, is_active),
+  KEY idx_law_synonyms_source (source_type, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority) VALUES
-  ('地方自治法', '自治法', 20),
-  ('地方自治法', '自治体法', 12),
-  ('美祢市', '本市', 8),
-  ('条例', '例規', 14),
-  ('規則', '例規', 12),
-  ('要綱', '例規', 12),
-  ('職員', '職員等', 8),
-  ('休暇', '休業', 8),
-  ('休暇', '休み', 6),
-  ('手当', '給与', 8),
-  ('会計年度任用職員', '会計年度職員', 18),
-  ('会計年度任用職員', '任用職員', 12),
-  ('議会', '議員', 8),
-  ('個人情報', '個人情報保護', 14),
-  ('情報公開', '開示', 10);
+ALTER TABLE law_synonyms
+  ADD COLUMN IF NOT EXISTS source_type ENUM('builtin','manual','wordnet','domain') NOT NULL DEFAULT 'manual' AFTER is_active;
+
+ALTER TABLE law_synonyms
+  ADD COLUMN IF NOT EXISTS source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type;
+
+ALTER TABLE law_synonyms
+  ADD INDEX IF NOT EXISTS idx_law_synonyms_source (source_type, is_active);
+
+INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority, source_type, source_version) VALUES
+  ('地方自治法', '自治法', 20, 'builtin', '0.1.0'),
+  ('地方自治法', '自治体法', 12, 'builtin', '0.1.0'),
+  ('美祢市', '本市', 8, 'builtin', '0.1.0'),
+  ('条例', '例規', 14, 'builtin', '0.1.0'),
+  ('規則', '例規', 12, 'builtin', '0.1.0'),
+  ('要綱', '例規', 12, 'builtin', '0.1.0'),
+  ('職員', '職員等', 8, 'builtin', '0.1.0'),
+  ('休暇', '休業', 8, 'builtin', '0.1.0'),
+  ('休暇', '休み', 6, 'builtin', '0.1.0'),
+  ('手当', '給与', 8, 'builtin', '0.1.0'),
+  ('会計年度任用職員', '会計年度職員', 18, 'builtin', '0.1.0'),
+  ('会計年度任用職員', '任用職員', 12, 'builtin', '0.1.0'),
+  ('議会', '議員', 8, 'builtin', '0.1.0'),
+  ('個人情報', '個人情報保護', 14, 'builtin', '0.1.0'),
+  ('情報公開', '開示', 10, 'builtin', '0.1.0');
 
 CREATE TABLE IF NOT EXISTS law_document_history (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

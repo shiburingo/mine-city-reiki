@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -53,6 +53,13 @@ export async function runReindex(batchSize = 10): Promise<{ ok: boolean; summary
   });
 }
 
+export async function runDictionaryUpdate(includeWordnet = true, includeDomain = true): Promise<{ ok: boolean; summary: Record<string, any> }> {
+  return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/dictionary/update', {
+    method: 'POST',
+    body: JSON.stringify({ includeWordnet, includeDomain }),
+  });
+}
+
 export async function searchLaws(params: { fields: SearchField[]; source?: string; limit?: number; offset?: number; lawType?: string; fromDate?: string; toDate?: string; fuzzy?: boolean }): Promise<SearchResponse> {
   const qs = new URLSearchParams();
   params.fields.forEach((f, i) => {
@@ -95,9 +102,9 @@ export async function fetchDocumentHistory(id: number): Promise<DocHistoryItem[]
   return data.items || [];
 }
 
-export async function fetchSynonyms(): Promise<SynonymItem[]> {
-  const data = await apiFetch<{ items: SynonymItem[] }>('/synonyms');
-  return data.items || [];
+export async function fetchSynonyms(): Promise<{ items: SynonymItem[]; stats: SynonymStatsItem[] }> {
+  const data = await apiFetch<{ items: SynonymItem[]; stats?: SynonymStatsItem[] }>('/synonyms');
+  return { items: data.items || [], stats: data.stats || [] };
 }
 
 export async function createSynonym(canonicalTerm: string, synonymTerm: string, priority?: number): Promise<SynonymItem> {

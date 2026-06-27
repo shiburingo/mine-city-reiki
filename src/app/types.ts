@@ -152,6 +152,14 @@ export type SynonymItem = {
   synonymTerm: string;
   priority: number;
   isActive: boolean;
+  sourceType?: string;
+  sourceVersion?: string;
+};
+
+export type SynonymStatsItem = {
+  sourceType: string;
+  sourceVersion: string;
+  count: number;
 };
 
 export type DocHistoryItem = {

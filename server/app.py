@@ -32,6 +32,7 @@ from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERS
 from meeting_minutes.speaker_tagger import tag_utterances
 from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSION
 from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract_coordinate_tables, refine_person_roster_tables
+from dictionary_engine import build_hybrid_dictionary
 
 try:
     from janome.tokenizer import Tokenizer as JanomeTokenizer
@@ -374,6 +375,9 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_column(cur, "law_synonyms", "source_type", "source_type ENUM('builtin','manual','wordnet','domain') NOT NULL DEFAULT 'manual' AFTER is_active")
+            ensure_column(cur, "law_synonyms", "source_version", "source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type")
+            ensure_index(cur, "law_synonyms", "idx_law_synonyms_source", "(source_type, is_active)")
             ensure_table(
                 cur,
                 "law_document_history",
@@ -906,10 +910,10 @@ def seed_law_synonyms(cur) -> None:
         for synonym_term in synonyms:
             cur.execute(
                 """
-                INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority, is_active)
-                VALUES (%s,%s,%s,1)
+                INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority, is_active, source_type, source_version)
+                VALUES (%s,%s,%s,1,'builtin',%s)
                 """,
-                (canonical_term, synonym_term, 10),
+                (canonical_term, synonym_term, 10, APP_VERSION),
             )
 
 
@@ -3152,6 +3156,64 @@ def launch_reindex_in_background(batch_size: int = 10) -> None:
         thread.start()
 
 
+def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool = True) -> dict[str, Any]:
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps({'operation': 'dictionary-update'}, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+
+    summary: dict[str, Any] = {
+        'operation': 'dictionary-update',
+        'includeWordnet': include_wordnet,
+        'includeDomain': include_domain,
+        'progressCurrent': 0,
+        'progressTotal': int(include_wordnet) + int(include_domain) + 1,
+        'progressLabel': '関連語辞書更新を開始します',
+    }
+
+    def _progress(label: str, current: int, total: int) -> None:
+        summary['progressLabel'] = label
+        summary['progressCurrent'] = current
+        summary['progressTotal'] = total
+        with db_cursor(commit=True) as (_, progress_cur):
+            update_sync_run_summary(progress_cur, run_id, summary)
+
+    try:
+        with db_cursor(commit=True) as (_, cur):
+            summary = build_hybrid_dictionary(
+                cur,
+                include_wordnet=include_wordnet,
+                include_domain=include_domain,
+                progress=_progress,
+            )
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
+            set_sync_run_status(cur, run_id, 'success', summary, None)
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
+        raise
+
+
+def launch_dictionary_update_in_background(include_wordnet: bool = True, include_domain: bool = True) -> None:
+    def _runner() -> None:
+        try:
+            execute_dictionary_update(include_wordnet=include_wordnet, include_domain=include_domain)
+        except Exception:
+            app.logger.exception('Background dictionary update failed')
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-dictionary-update",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
 def normalize_minutes_speaker_name(name: str) -> str:
     return re.sub(r"\s+", "", normalize_text(name))
 
@@ -4588,6 +4650,25 @@ def api_reindex_run():
     return jsonify({'ok': True, 'started': True, 'summary': {'operation': 'reindex', 'batchSize': batch_size}}), 202
 
 
+@app.post('/api/dictionary/update')
+def api_dictionary_update_run():
+    payload = request.get_json(silent=True) or {}
+    include_wordnet = bool(payload.get('includeWordnet', True))
+    include_domain = bool(payload.get('includeDomain', True))
+    if not include_wordnet and not include_domain:
+        raise ValueError('更新対象を1つ以上選択してください。')
+    launch_dictionary_update_in_background(include_wordnet=include_wordnet, include_domain=include_domain)
+    return jsonify({
+        'ok': True,
+        'started': True,
+        'summary': {
+            'operation': 'dictionary-update',
+            'includeWordnet': include_wordnet,
+            'includeDomain': include_domain,
+        },
+    }), 202
+
+
 @app.get('/api/search')
 def api_search():
     source = (request.args.get('source') or 'all').strip()
@@ -5531,10 +5612,15 @@ def api_document_history_detail(document_id: int, history_id: int):
 def api_synonyms_list():
     with db_cursor() as (_, cur):
         cur.execute(
-            "SELECT id, canonical_term, synonym_term, priority, is_active"
+            "SELECT id, canonical_term, synonym_term, priority, is_active, source_type, source_version"
             " FROM law_synonyms ORDER BY canonical_term, synonym_term LIMIT 500"
         )
         rows = cur.fetchall() or []
+        cur.execute(
+            "SELECT source_type, source_version, COUNT(*) AS count"
+            " FROM law_synonyms WHERE is_active=1 GROUP BY source_type, source_version ORDER BY source_type, source_version"
+        )
+        stats = cur.fetchall() or []
     return jsonify({
         'items': [
             {
@@ -5543,9 +5629,19 @@ def api_synonyms_list():
                 'synonymTerm': r['synonym_term'],
                 'priority': int(r['priority']),
                 'isActive': bool(r['is_active']),
+                'sourceType': r.get('source_type') or 'manual',
+                'sourceVersion': r.get('source_version') or '',
             }
             for r in rows
-        ]
+        ],
+        'stats': [
+            {
+                'sourceType': r.get('source_type') or 'manual',
+                'sourceVersion': r.get('source_version') or '',
+                'count': int(r.get('count') or 0),
+            }
+            for r in stats
+        ],
     })
 
 
@@ -5561,16 +5657,16 @@ def api_synonyms_create():
         raise ValueError('canonicalTerm と synonymTerm は異なる必要があります。')
     with db_cursor(commit=True) as (_, cur):
         cur.execute(
-            "INSERT INTO law_synonyms (canonical_term, synonym_term, priority, is_active)"
-            " VALUES (%s,%s,%s,1)"
-            " ON DUPLICATE KEY UPDATE priority=%s, is_active=1, updated_at=CURRENT_TIMESTAMP",
+            "INSERT INTO law_synonyms (canonical_term, synonym_term, priority, is_active, source_type, source_version)"
+            " VALUES (%s,%s,%s,1,'manual','')"
+            " ON DUPLICATE KEY UPDATE priority=%s, is_active=1, source_type='manual', updated_at=CURRENT_TIMESTAMP",
             (canonical, synonym, priority, priority),
         )
         new_id = int(cur.lastrowid) if cur.lastrowid else 0
         bump_cache_generation(cur)
     global LOCAL_SYNONYM_CACHE
     LOCAL_SYNONYM_CACHE = None
-    return jsonify({'id': new_id, 'canonicalTerm': canonical, 'synonymTerm': synonym, 'priority': priority, 'isActive': True})
+    return jsonify({'id': new_id, 'canonicalTerm': canonical, 'synonymTerm': synonym, 'priority': priority, 'isActive': True, 'sourceType': 'manual', 'sourceVersion': ''})
 
 
 @app.delete('/api/synonyms/<int:synonym_id>')
