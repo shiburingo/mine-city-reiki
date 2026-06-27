@@ -1568,10 +1568,14 @@ function AppShell() {
     setMinutesSearchYear('');
     setMinutesFromDate('');
     setMinutesToDate('');
+    setMinutesMatchMode('exact');
+    setMinutesOp('AND');
+    setMinutesIncludeReplies(true);
+    setMinutesSortOrder('new');
     setMinutesResults([]);
     setMinutesTotal(0);
     setSelectedMinutesResult(null);
-    setMinutesPage('home');
+    setMinutesResultMode('utterance');
   }
 
   function clearMinutesSpeakerSearch() {
