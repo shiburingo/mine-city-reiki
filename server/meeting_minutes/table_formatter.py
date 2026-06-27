@@ -11,6 +11,24 @@ from .pdf_extractor import ExtractedPage
 ENGINE_VERSION = "coordinate-table-v1"
 PERSON_TABLE_ENGINE_VERSION = "coordinate-person-table-v2"
 
+AGENDA_TITLE_TOKENS = (
+    "議案",
+    "承認",
+    "認定",
+    "報告",
+    "同意",
+    "諮問",
+    "請願",
+    "陳情",
+    "補正予算",
+    "当初予算",
+    "決算",
+    "条例",
+    "契約",
+    "指定管理",
+    "専決処分",
+)
+
 
 @dataclass
 class FormattedTable:
@@ -327,6 +345,10 @@ def _compact_number_roster(rows: list[list[str]]) -> tuple[list[list[str]], str]
             index += 1
     if len(entries) < 3:
         return None
+    agenda_like = sum(1 for _number, value in entries if len(_norm(value)) >= 10 or any(token in value for token in AGENDA_TITLE_TOKENS))
+    if not has_seat_number and agenda_like >= max(2, len(entries) // 2):
+        compacted = [["番号", "件名"], *[[number, title] for number, title in entries]]
+        return compacted, "付議事件一覧"
     if has_seat_number or len(entries) >= 8:
         compacted: list[list[str]] = [["番号", "氏名", "番号", "氏名"]]
         for pair_index in range(0, len(entries), 2):

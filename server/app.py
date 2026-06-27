@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html as html_lib
 import hashlib
 import io
 import json
@@ -3517,17 +3518,82 @@ def serialize_minutes_exchange(rows: list[dict[str, Any]]) -> list[dict[str, Any
     ]
 
 
+AGENDA_TABLE_TOKENS = (
+    "議案",
+    "承認",
+    "認定",
+    "報告",
+    "同意",
+    "諮問",
+    "請願",
+    "陳情",
+    "補正予算",
+    "当初予算",
+    "決算",
+    "条例",
+    "契約",
+    "指定管理",
+    "専決処分",
+)
+
+
+def render_minutes_table_html(rows: list[list[str]], has_header: bool = True) -> str:
+    if not rows:
+        return ""
+    parts = ["<table>"]
+    for row_index, table_row in enumerate(rows):
+        tag = "th" if has_header and row_index == 0 else "td"
+        parts.append("<tr>")
+        for cell in table_row:
+            parts.append(f"<{tag}>{html_lib.escape(str(cell or ''))}</{tag}>")
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def normalize_minutes_table_for_display(caption: str, rows: list[Any], table_html: str, search_text: str) -> tuple[str, list[Any], str, str]:
+    if not rows or not isinstance(rows[0], list):
+        return caption, rows, table_html, search_text
+    header = [str(cell or "").strip() for cell in rows[0]]
+    if not caption.startswith("一般質問者名簿") or header[:2] != ["番号", "氏名"]:
+        return caption, rows, table_html, search_text
+    body = rows[1:]
+    agenda_like = 0
+    for row in body:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        title = str(row[1] or "")
+        if len(re.sub(r"\s+", "", title)) >= 10 or any(token in title for token in AGENDA_TABLE_TOKENS):
+            agenda_like += 1
+    if agenda_like < max(2, len(body) // 2):
+        return caption, rows, table_html, search_text
+    fixed_rows = [list(row) for row in rows]
+    fixed_rows[0] = list(fixed_rows[0])
+    fixed_rows[0][1] = "件名"
+    fixed_caption = caption.replace("一般質問者名簿", "付議事件一覧", 1)
+    fixed_html = render_minutes_table_html([[str(cell or "") for cell in row] for row in fixed_rows], has_header=True)
+    fixed_search = "\n".join([fixed_caption, *[" ".join(str(cell or "") for cell in row if str(cell or "")) for row in fixed_rows]])
+    return fixed_caption, fixed_rows, fixed_html, fixed_search
+
+
 def serialize_minutes_table(row: dict[str, Any]) -> dict[str, Any]:
+    rows = json.loads(row.get("rows_json") or "[]")
+    caption, rows, table_html, search_text = normalize_minutes_table_for_display(
+        row.get("caption") or "",
+        rows,
+        row.get("html") or "",
+        row.get("search_text") or "",
+    )
     return {
         "id": int(row["id"]),
         "tableKey": row.get("table_key") or "",
         "page": int(row.get("page") or 0),
         "positionTop": float(row.get("position_top") or 0),
         "positionBottom": float(row.get("position_bottom") or 0),
-        "caption": row.get("caption") or "",
-        "rows": json.loads(row.get("rows_json") or "[]"),
-        "html": row.get("html") or "",
-        "searchText": row.get("search_text") or "",
+        "caption": caption,
+        "rows": rows,
+        "html": table_html,
+        "searchText": search_text,
         "confidence": float(row.get("confidence") or 0),
     }
 
