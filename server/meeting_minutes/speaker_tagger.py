@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine
 
 
-ENGINE_VERSION = "speaker-rules-v2"
+ENGINE_VERSION = "speaker-rules-v3"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
@@ -18,6 +18,8 @@ ANSWERER_TITLES = (
     "市長",
     "副市長",
     "教育長",
+    "病院事業管理者",
+    "代表監査委員",
     "部長",
     "次長",
     "課長",
@@ -32,6 +34,8 @@ ANSWERER_TITLES = (
     "支所長",
     "センター長",
 )
+REPORT_REQUEST_RE = re.compile(r"(報告を求め|報告.*お願いいたします|進捗.*お願いいたします|分科会長、お願いいたします)")
+REPORT_BODY_RE = re.compile(r"(報告させて|報告いた|進捗|分科会|部会|前回|協議|取組|取り組)")
 
 
 @dataclass
@@ -78,7 +82,39 @@ def speech_type_from_role(role: str) -> str:
         return "answer"
     if role == "chair":
         return "proceeding"
+    if role == "report":
+        return "report"
     return "statement"
+
+
+def looks_report_context(previous: TaggedUtterance | None, current: TaggedUtterance, next_item: TaggedUtterance | None) -> bool:
+    if current.speaker_role != "unknown":
+        return False
+    title = current.speaker_title
+    if "分科会長" not in title and "部会長" not in title:
+        return False
+    previous_text = previous.text if previous else ""
+    next_text = next_item.text if next_item else ""
+    if previous and previous.speaker_role == "chair" and REPORT_REQUEST_RE.search(previous_text):
+        return True
+    if REPORT_BODY_RE.search(current.text) and "報告" in next_text:
+        return True
+    if REPORT_BODY_RE.search(current.text) and previous and previous.speaker_role == "chair":
+        return True
+    return False
+
+
+def reclassify_report_utterances(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
+    for index, utterance in enumerate(utterances):
+        previous = utterances[index - 1] if index > 0 else None
+        next_item = utterances[index + 1] if index + 1 < len(utterances) else None
+        if looks_report_context(previous, utterance, next_item):
+            utterance.speaker_role = "report"
+            utterance.speaker_group = "報告"
+            utterance.speech_type = "report"
+            utterance.confidence = max(utterance.confidence, 0.86)
+            utterance.reason = "surrounding chair utterance and body indicate report"
+    return utterances
 
 
 def is_printed_page_number(text: str) -> bool:
@@ -187,4 +223,4 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
             current["page_end"] = line.page
             current["position_top_end"] = line.top
     flush()
-    return utterances
+    return reclassify_report_utterances(utterances)

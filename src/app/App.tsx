@@ -308,6 +308,7 @@ function minutesRoleLabel(role: string): string {
   if (role === 'answerer') return '答弁者';
   if (role === 'chair') return '議事進行';
   if (role === 'secretariat') return '事務局';
+  if (role === 'report') return '報告';
   if (role === 'other') return 'その他';
   return '未分類';
 }
@@ -318,6 +319,7 @@ function minutesRoleClass(role: string): string {
   if (role === 'answerer') return 'border-sky-200 bg-sky-50 text-sky-800';
   if (role === 'chair') return 'border-amber-200 bg-amber-50 text-amber-800';
   if (role === 'secretariat') return 'border-slate-200 bg-slate-50 text-slate-700';
+  if (role === 'report') return 'border-lime-200 bg-lime-50 text-lime-800';
   return 'border-border bg-muted text-muted-foreground';
 }
 
@@ -2217,6 +2219,7 @@ function AppShell() {
           <option value="answerer">答弁者</option>
           <option value="chair">議事進行</option>
           <option value="secretariat">事務局</option>
+          <option value="report">報告</option>
           <option value="unknown">未分類</option>
           <optgroup label="執行部の役職">
             {MINUTES_EXECUTIVE_TITLE_FILTERS.map((title) => (
@@ -2932,6 +2935,7 @@ function AppShell() {
                         <option value="answerer">答弁者</option>
                         <option value="chair">議事進行</option>
                         <option value="secretariat">事務局</option>
+                        <option value="report">報告</option>
                         <option value="unknown">未分類</option>
                         <optgroup label="執行部の役職">
                           {MINUTES_EXECUTIVE_TITLE_FILTERS.map((title) => (

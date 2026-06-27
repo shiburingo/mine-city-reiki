@@ -185,7 +185,7 @@ export type BrowseCategory = {
   trail: string;
 };
 
-export type MinutesSpeakerRole = 'questioner' | 'answerer' | 'chair' | 'secretariat' | 'other' | 'unknown';
+export type MinutesSpeakerRole = 'questioner' | 'answerer' | 'chair' | 'secretariat' | 'report' | 'other' | 'unknown';
 
 export type MinutesRun = {
   id: number;
