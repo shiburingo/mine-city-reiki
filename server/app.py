@@ -3190,6 +3190,7 @@ def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool
             )
             bump_cache_generation(cur)
             prune_expired_caches(cur)
+        with db_cursor(commit=True) as (_, cur):
             set_sync_run_status(cur, run_id, 'success', summary, None)
         return summary
     except Exception as exc:
