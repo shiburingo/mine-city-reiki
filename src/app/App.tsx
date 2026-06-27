@@ -1559,6 +1559,19 @@ function AppShell() {
     setMinutesPage('speaker');
   }
 
+  function runMinutesSpeakerSearch(speakerName: string) {
+    const speaker = speakerName.trim();
+    if (!speaker) return;
+    setMinutesQuery('');
+    setMinutesSpeaker(speaker);
+    void submitMinutesSearch({
+      query: '',
+      speaker,
+      matchMode: 'exact',
+      op: 'AND',
+    });
+  }
+
   function setMinutesSearchYearRange(value: string) {
     setMinutesSearchYear(value);
     setMinutesMeetingId(null);
@@ -3045,7 +3058,14 @@ function AppShell() {
                       <select
                         className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
                         value={minutesSpeaker}
-                        onChange={(e) => setMinutesSpeaker(e.target.value)}
+                        onChange={(e) => {
+                          const nextSpeaker = e.target.value;
+                          if (nextSpeaker) {
+                            runMinutesSpeakerSearch(nextSpeaker);
+                          } else {
+                            setMinutesSpeaker('');
+                          }
+                        }}
                       >
                         <option value="">発言者を選択</option>
                         {groupedMinutesSpeakers.slice(0, 300).map((speaker) => (
@@ -3126,7 +3146,8 @@ function AppShell() {
                         <button
                           key={speaker.displayName}
                           type="button"
-                          onClick={() => setMinutesSpeaker(speaker.displayName)}
+                          disabled={minutesSearching}
+                          onClick={() => runMinutesSpeakerSearch(speaker.displayName)}
                           className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
                             minutesSpeaker === speaker.displayName ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-[#fbfdfb] text-[#37564d] hover:border-[#79b28d]'
                           }`}
@@ -3141,19 +3162,7 @@ function AppShell() {
                     </div>
                   </div>
 
-                  <div className="mt-5 rounded-2xl border bg-white p-4">
-                    {renderMinutesSearchOptions(true)}
-                  </div>
-
                   <div className="mt-5 flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-center">
-                    <button
-                      type="button"
-                      disabled={minutesSearching}
-                      onClick={() => void submitMinutesSearch()}
-                      className="inline-flex h-11 min-w-40 items-center justify-center rounded-xl bg-[#2f765e] px-6 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
-                    >
-                      {minutesSearching ? '検索中…' : '検索'}
-                    </button>
                     <button
                       type="button"
                       onClick={clearMinutesSpeakerSearch}
