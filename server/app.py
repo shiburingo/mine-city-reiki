@@ -3631,6 +3631,41 @@ def minutes_snippet(text: str, keywords: list[str]) -> str:
     return snippet if snippet else normalize_text(text)[:180]
 
 
+EXACT_EXECUTIVE_TITLE_FILTERS = {
+    "市長",
+    "副市長",
+    "教育長",
+    "病院事業管理者",
+    "代表監査委員",
+    "会計管理者",
+    "消防長",
+}
+
+
+def append_minutes_role_filter(
+    conditions: list[str],
+    params: list[Any],
+    role: str,
+    role_column: str,
+    title_column: str,
+) -> None:
+    if not role or role == "all":
+        return
+    if role.startswith("title:"):
+        title = role.removeprefix("title:").strip()
+        if not title:
+            return
+        if title in EXACT_EXECUTIVE_TITLE_FILTERS:
+            conditions.append(f"({role_column}='answerer' AND {title_column}=%s)")
+            params.append(title)
+        else:
+            conditions.append(f"({role_column}='answerer' AND {title_column} LIKE %s)")
+            params.append(f"%{title}")
+        return
+    conditions.append(f"{role_column}=%s")
+    params.append(role)
+
+
 def search_minutes_items(
     query: str = "",
     speaker: str = "",
@@ -3662,9 +3697,7 @@ def search_minutes_items(
     if speaker:
         conditions.append("(u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
         params.extend([f"%{speaker}%", f"%{speaker}%"])
-    if role and role != "all":
-        conditions.append("u.speaker_role=%s")
-        params.append(role)
+    append_minutes_role_filter(conditions, params, role, "u.speaker_role", "u.speaker_title")
     if section and section != "all":
         conditions.append("s.section=%s")
         params.append(section)
@@ -4736,9 +4769,7 @@ def api_minutes_speakers():
     meeting_id = int(request.args.get("meetingId") or 0) or None
     conditions = ["1=1"]
     params: list[Any] = []
-    if role and role != "all":
-        conditions.append("sp.role=%s")
-        params.append(role)
+    append_minutes_role_filter(conditions, params, role, "sp.role", "sp.title")
     if section and section != "all":
         conditions.append("s.section=%s")
         params.append(section)

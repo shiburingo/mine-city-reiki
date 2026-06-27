@@ -303,6 +303,7 @@ function sourceLabel(source: string): string {
 }
 
 function minutesRoleLabel(role: string): string {
+  if (role.startsWith('title:')) return role.slice('title:'.length);
   if (role === 'questioner') return '質問者';
   if (role === 'answerer') return '答弁者';
   if (role === 'chair') return '議事進行';
@@ -312,12 +313,34 @@ function minutesRoleLabel(role: string): string {
 }
 
 function minutesRoleClass(role: string): string {
+  if (role.startsWith('title:')) return 'border-sky-200 bg-sky-50 text-sky-800';
   if (role === 'questioner') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
   if (role === 'answerer') return 'border-sky-200 bg-sky-50 text-sky-800';
   if (role === 'chair') return 'border-amber-200 bg-amber-50 text-amber-800';
   if (role === 'secretariat') return 'border-slate-200 bg-slate-50 text-slate-700';
   return 'border-border bg-muted text-muted-foreground';
 }
+
+const MINUTES_EXECUTIVE_TITLE_FILTERS = [
+  '市長',
+  '副市長',
+  '教育長',
+  '病院事業管理者',
+  '代表監査委員',
+  '会計管理者',
+  '部長',
+  '次長',
+  '課長',
+  '局長',
+  '消防長',
+  '事務局長',
+  '所長',
+  '室長',
+  '支所長',
+  'センター長',
+  '参事',
+  '主幹',
+];
 
 function groupSearchResults(items: SearchResult[]): SearchResultGroup[] {
   const groups = new Map<number, SearchResultGroup>();
@@ -2195,6 +2218,11 @@ function AppShell() {
           <option value="chair">議事進行</option>
           <option value="secretariat">事務局</option>
           <option value="unknown">未分類</option>
+          <optgroup label="執行部の役職">
+            {MINUTES_EXECUTIVE_TITLE_FILTERS.map((title) => (
+              <option key={title} value={`title:${title}`}>{title}</option>
+            ))}
+          </optgroup>
         </select>
       </label>
       <label className="space-y-2 text-sm">
@@ -2905,6 +2933,11 @@ function AppShell() {
                         <option value="chair">議事進行</option>
                         <option value="secretariat">事務局</option>
                         <option value="unknown">未分類</option>
+                        <optgroup label="執行部の役職">
+                          {MINUTES_EXECUTIVE_TITLE_FILTERS.map((title) => (
+                            <option key={title} value={`title:${title}`}>{title}</option>
+                          ))}
+                        </optgroup>
                       </select>
                     </label>
                     <label className="space-y-2 text-sm">
