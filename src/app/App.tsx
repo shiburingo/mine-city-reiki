@@ -100,7 +100,7 @@ type MinutesSearchHistoryItem = {
   includeReplies: boolean;
   createdAt: string;
 };
-type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'advanced' | 'history' | 'results' | 'detail' | 'meetingDetail';
+type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'history' | 'results' | 'detail' | 'meetingDetail';
 type MinutesBrowseSectionFilter = 'all' | string;
 
 function loadMinutesSearchHistory(): MinutesSearchHistoryItem[] {
@@ -1120,7 +1120,7 @@ function AppShell() {
   }, [tab, syncRuns, minutesStatus.latestRun?.status]);
 
   useEffect(() => {
-    if (tab !== 'minutes' || minutesPage !== 'speaker') return;
+    if (tab !== 'minutes' || (minutesPage !== 'speaker' && minutesPage !== 'collection')) return;
     void loadMinutesSpeakers({
       role: minutesRole,
       section: minutesSection,
@@ -1449,6 +1449,8 @@ function AppShell() {
     matchMode: 'exact' | 'related';
     op: 'AND' | 'OR';
     includeReplies: boolean;
+    limit: number;
+    resultMode: 'utterance' | 'meeting' | 'table';
   }> = {}) {
     const query = (overrides.query ?? minutesQuery).trim();
     const speaker = (overrides.speaker ?? minutesSpeaker).trim();
@@ -1460,6 +1462,8 @@ function AppShell() {
     const matchMode = overrides.matchMode ?? minutesMatchMode;
     const op = overrides.op ?? minutesOp;
     const includeReplies = overrides.includeReplies ?? minutesIncludeReplies;
+    const limit = overrides.limit ?? 30;
+    const resultMode = overrides.resultMode;
     const meeting = meetingId ? minutesMeetings.find((item) => item.id === meetingId) || null : null;
     if (
       !query
@@ -1509,13 +1513,13 @@ function AppShell() {
         op,
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
-        limit: 30,
+        limit,
       });
       setMinutesResults(resp.items);
       setMinutesTotal(resp.total);
       setSelectedMinutesResult(resp.items[0] || null);
       setMinutesExpandedResultIds(new Set());
-      setMinutesResultMode((speaker || role !== 'all') ? 'meeting' : 'utterance');
+      setMinutesResultMode(resultMode ?? ((speaker || role !== 'all') ? 'meeting' : 'utterance'));
       setMinutesSearchReturnPage(minutesPage);
       setMinutesPage('results');
     } catch (err) {
@@ -1584,6 +1588,22 @@ function AppShell() {
     setMinutesPage('speaker');
   }
 
+  function clearMinutesCollectionSearch() {
+    setMinutesQuery('');
+    setMinutesSpeaker('');
+    setMinutesRole('all');
+    setMinutesSection('all');
+    setMinutesMeetingId(null);
+    setMinutesSearchYear('');
+    setMinutesFromDate('');
+    setMinutesToDate('');
+    setMinutesResults([]);
+    setMinutesTotal(0);
+    setSelectedMinutesResult(null);
+    setMinutesResultMode('utterance');
+    setMinutesPage('collection');
+  }
+
   function runMinutesSpeakerSearch(speakerName: string) {
     const speaker = speakerName.trim();
     if (!speaker) return;
@@ -1594,6 +1614,24 @@ function AppShell() {
       speaker,
       matchMode: 'exact',
       op: 'AND',
+    });
+  }
+
+  function submitMinutesCollection() {
+    const speaker = minutesSpeaker.trim();
+    if (!speaker) {
+      setGlobalError('発言集を作成する発言者を選択してください。');
+      return;
+    }
+    setMinutesQuery('');
+    void submitMinutesSearch({
+      query: '',
+      speaker,
+      matchMode: 'exact',
+      op: 'AND',
+      includeReplies: minutesIncludeReplies,
+      limit: 200,
+      resultMode: 'utterance',
     });
   }
 
@@ -2357,7 +2395,7 @@ function AppShell() {
     </div>
   );
 
-  const renderMinutesCommonFilters = (showKeyword: boolean, showSpeaker: boolean): JSX.Element => (
+  const renderMinutesCommonFilters = (showKeyword: boolean, showSpeaker: boolean, onEnter?: () => void): JSX.Element => (
     <div className="grid gap-4 lg:grid-cols-2">
       {showKeyword ? (
         <label className="space-y-2 text-sm lg:col-span-2">
@@ -2367,7 +2405,7 @@ function AppShell() {
             placeholder="例: 観光、公共交通、学校給食"
             value={minutesQuery}
             onChange={(e) => setMinutesQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') (onEnter ? onEnter() : void submitMinutesSearch()); }}
           />
         </label>
       ) : null}
@@ -2380,7 +2418,7 @@ function AppShell() {
             placeholder="氏名、議員番号、市長、課長など"
             value={minutesSpeaker}
             onChange={(e) => setMinutesSpeaker(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') (onEnter ? onEnter() : void submitMinutesSearch()); }}
           />
           <datalist id="minutes-speakers">
             {minutesSpeakers.slice(0, 300).map((speaker) => (
@@ -3048,7 +3086,7 @@ function AppShell() {
                   { page: 'browse' as const, title: '会議録の閲覧', desc: '年、会議名、会議種別から会議録を閲覧します。', icon: BookOpen },
                   { page: 'keyword' as const, title: '言葉から検索', desc: '調べたい言葉を指定して発言本文を検索します。', icon: Search },
                   { page: 'speaker' as const, title: '発言者から検索', desc: '発言者の氏名や役職から発言を探します。', icon: FileSearch },
-                  { page: 'advanced' as const, title: 'くわしく検索', desc: '期間、会議種別、発言区分、検索方式を組み合わせます。', icon: Settings2 },
+                  { page: 'collection' as const, title: '発言集作成', desc: '指定した発言者の発言だけを抽出し、関連する質問や答弁も必要に応じて表示します。', icon: BookMarked },
                 ].map((item) => {
                   const Icon = item.icon;
                   return (
@@ -3420,16 +3458,76 @@ function AppShell() {
             </div>
           ) : null}
 
-          {minutesPage === 'advanced' ? (
+          {minutesPage === 'collection' ? (
             <div className="mx-auto max-w-5xl space-y-5">
               {renderMinutesBackButton()}
               <div className="rounded-3xl border bg-white p-6">
-                <h3 className="text-2xl font-semibold text-[#173f36]">くわしく検索</h3>
-                <p className="mt-2 text-sm text-muted-foreground">検索語、発言者、会議、期間、発言区分を組み合わせて検索します。</p>
+                <h3 className="text-2xl font-semibold text-[#173f36]">発言集作成</h3>
+                <p className="mt-2 text-sm text-muted-foreground">指定した発言者の発言のみを抽出します。必要に応じて、関連する質問や答弁も本文閲覧に含めます。</p>
                 <div className="mt-6 space-y-5">
-                  {renderMinutesCommonFilters(true, true)}
-                  {renderMinutesSearchOptions()}
-                  {renderMinutesSearchActions()}
+                  <div className="rounded-2xl border bg-[#f8fbf8] p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-lg font-semibold text-[#173f36]">発言者候補</p>
+                        <p className="mt-1 text-sm text-muted-foreground">候補を選択してから発言集を作成します。</p>
+                      </div>
+                      <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
+                        {groupedMinutesSpeakers.length.toLocaleString()}人
+                      </span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {groupedMinutesSpeakers.slice(0, 24).map((speaker) => (
+                        <button
+                          key={speaker.displayName}
+                          type="button"
+                          onClick={() => setMinutesSpeaker(speaker.displayName)}
+                          className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+                            minutesSpeaker === speaker.displayName ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-white text-[#37564d] hover:border-[#79b28d]'
+                          }`}
+                        >
+                          {speaker.displayName || '氏名なし'}
+                          <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
+                        </button>
+                      ))}
+                      {groupedMinutesSpeakers.length > 24 ? (
+                        <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(groupedMinutesSpeakers.length - 24).toLocaleString()}人は入力欄から選択</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  {renderMinutesCommonFilters(false, true, submitMinutesCollection)}
+                  <div className="rounded-2xl border bg-[#f8fbf8] p-5">
+                    <p className="text-sm font-semibold text-[#173f36]">表示オプション</p>
+                    <label className="mt-3 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
+                      <input type="checkbox" checked={minutesIncludeReplies} onChange={(e) => setMinutesIncludeReplies(e.target.checked)} />
+                      関連する答弁や質問も本文閲覧に表示
+                    </label>
+                  </div>
+                  <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      disabled={minutesSearching}
+                      onClick={submitMinutesCollection}
+                      className="inline-flex h-12 min-w-44 items-center justify-center rounded-xl bg-[#2f765e] px-6 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+                    >
+                      {minutesSearching ? '作成中…' : '発言集を作成'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearMinutesCollectionSearch}
+                      className="inline-flex h-12 min-w-36 items-center justify-center rounded-xl border bg-white px-5 text-sm font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+                    >
+                      条件クリア
+                    </button>
+                    {minutesResults.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setMinutesPage('results')}
+                        className="inline-flex h-12 min-w-36 items-center justify-center rounded-xl border bg-white px-5 text-sm font-semibold text-[#37564d] hover:bg-[#edf6f0]"
+                      >
+                        前回の結果へ
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>
@@ -3459,7 +3557,7 @@ function AppShell() {
                       type="button"
                       onClick={() => {
                         applyMinutesHistory(item);
-                        setMinutesPage('advanced');
+                        setMinutesPage(item.speaker && !item.query ? 'collection' : 'keyword');
                       }}
                       className="w-full rounded-2xl border bg-[#fbfdfb] px-4 py-3 text-left hover:border-[#79b28d]"
                     >
