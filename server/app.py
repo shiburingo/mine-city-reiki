@@ -3785,35 +3785,15 @@ def append_minutes_query_filter(
         if not boolean_query:
             return
         conditions.append(
-            """
-            (
-              MATCH(u.search_text) AGAINST (%s IN BOOLEAN MODE)
-              OR EXISTS (
-                SELECT 1 FROM meeting_tables mt
-                WHERE mt.day_id=d.id
-                  AND MATCH(mt.search_text) AGAINST (%s IN BOOLEAN MODE)
-              )
-            )
-            """
+            "MATCH(u.search_text) AGAINST (%s IN BOOLEAN MODE)"
         )
-        params.extend([boolean_query, boolean_query])
+        params.append(boolean_query)
         return
 
     if match_mode == "exact":
         like = f"%{normalized_query}%"
-        conditions.append(
-            """
-            (
-              u.search_text LIKE %s
-              OR EXISTS (
-                SELECT 1 FROM meeting_tables mt
-                WHERE mt.day_id=d.id
-                  AND mt.search_text LIKE %s
-              )
-            )
-            """
-        )
-        params.extend([like, like])
+        conditions.append("u.search_text LIKE %s")
+        params.append(like)
         return
 
     if not terms:
@@ -3821,19 +3801,8 @@ def append_minutes_query_filter(
     term_conditions: list[str] = []
     for term in terms:
         like = f"%{term}%"
-        term_conditions.append(
-            """
-            (
-              u.search_text LIKE %s
-              OR EXISTS (
-                SELECT 1 FROM meeting_tables mt
-                WHERE mt.day_id=d.id
-                  AND mt.search_text LIKE %s
-              )
-            )
-            """
-        )
-        params.extend([like, like])
+        term_conditions.append("u.search_text LIKE %s")
+        params.append(like)
     joiner = " OR " if op == "OR" or match_mode == "related" else " AND "
     conditions.append("(" + joiner.join(term_conditions) + ")")
 
@@ -3858,8 +3827,8 @@ def build_minutes_where(
     append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext)
     if speaker:
         if speaker_exact_only:
-            conditions.append("(u.speaker_name=%s OR u.speaker_title=%s)")
-            params.extend([speaker, speaker])
+            conditions.append("u.speaker_name=%s")
+            params.append(speaker)
         else:
             conditions.append("(u.speaker_name=%s OR u.speaker_title=%s OR u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
             params.extend([speaker, speaker, f"%{speaker}%", f"%{speaker}%"])
