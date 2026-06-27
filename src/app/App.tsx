@@ -344,6 +344,77 @@ const MINUTES_EXECUTIVE_TITLE_FALLBACKS = [
   '主幹',
 ];
 
+const MINUTES_EXECUTIVE_TITLE_ORDER = [
+  '市長',
+  '副市長',
+  '教育長',
+  '病院事業管理者',
+  '代表監査委員',
+  'デジタル推進部長',
+  '総務企画部長',
+  '市民福祉部長',
+  '建設農林部長',
+  '観光商工部長',
+  '総務企画部理事',
+  '地方創生監',
+  '会計管理者',
+  '教育委員会事務局長',
+  '上下水道局長',
+  '病院事業局管理部長',
+  '消防長',
+  '総務企画部次長',
+  '建設農林部次長',
+  'デジタル推進部次長',
+  '市民福祉部次長',
+  '観光商工部次長',
+  '総務企画部総務課長',
+];
+
+const MINUTES_EXECUTIVE_TITLE_ORDER_MAP = new Map(
+  MINUTES_EXECUTIVE_TITLE_ORDER.map((title, index) => [title, index * 10]),
+);
+
+const MINUTES_EXECUTIVE_ORGANIZATION_ORDER = [
+  'デジタル推進部',
+  '総務企画部',
+  '市民福祉部',
+  '建設農林部',
+  '観光商工部',
+  '教育委員会',
+  '上下水道局',
+  '病院事業局',
+  '消防',
+  '農業委員会',
+];
+
+function minutesExecutiveOrganizationRank(title: string): number {
+  const index = MINUTES_EXECUTIVE_ORGANIZATION_ORDER.findIndex((name) => title.includes(name));
+  return index >= 0 ? index : MINUTES_EXECUTIVE_ORGANIZATION_ORDER.length;
+}
+
+function minutesExecutiveTitleRank(title: string): number {
+  const normalized = normalizeOrderText(title).replace(/\s+/g, '');
+  const exactRank = MINUTES_EXECUTIVE_TITLE_ORDER_MAP.get(normalized);
+  if (exactRank != null) return exactRank;
+  const organizationRank = minutesExecutiveOrganizationRank(normalized);
+  if (normalized.endsWith('部長')) return 500 + organizationRank;
+  if (normalized.endsWith('理事')) return 540 + organizationRank;
+  if (normalized.endsWith('監')) return 550 + organizationRank;
+  if (normalized.endsWith('会計管理者')) return 560 + organizationRank;
+  if (normalized.endsWith('事務局長')) return 570 + organizationRank;
+  if (normalized.endsWith('局長')) return 580 + organizationRank;
+  if (normalized.endsWith('消防長')) return 590 + organizationRank;
+  if (normalized.endsWith('次長')) return 650 + organizationRank;
+  if (normalized.endsWith('課長')) return 720 + organizationRank;
+  if (normalized.endsWith('室長')) return 760 + organizationRank;
+  if (normalized.endsWith('所長')) return 800 + organizationRank;
+  if (normalized.endsWith('センター長')) return 820 + organizationRank;
+  if (normalized.endsWith('支所長')) return 840 + organizationRank;
+  if (normalized.endsWith('参事')) return 860 + organizationRank;
+  if (normalized.endsWith('主幹')) return 880 + organizationRank;
+  return 999;
+}
+
 function groupSearchResults(items: SearchResult[]): SearchResultGroup[] {
   const groups = new Map<number, SearchResultGroup>();
   for (const item of items) {
@@ -1838,7 +1909,13 @@ function AppShell() {
     }
     return [...counts.entries()]
       .map(([title, count]) => ({ title, count }))
-      .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title, 'ja-JP'));
+      .sort((a, b) => {
+        const byRank = minutesExecutiveTitleRank(a.title) - minutesExecutiveTitleRank(b.title);
+        if (byRank !== 0) return byRank;
+        const byTitle = compareOrderText(a.title, b.title);
+        if (byTitle !== 0) return byTitle;
+        return b.count - a.count;
+      });
   }, [minutesSpeakers]);
   const minutesBrowseFiscalYears = useMemo(() => {
     return [...new Set(minutesMeetings.map((meeting) => calendarYearFromDate(meeting.fromDate || meeting.toDate)).filter((year): year is number => year != null))]
