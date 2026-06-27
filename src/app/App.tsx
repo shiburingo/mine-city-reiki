@@ -2448,18 +2448,30 @@ function AppShell() {
           </button>
           <p className="mt-1 text-sm text-white/75">検索方法を選んでから、条件入力、検索結果、本文閲覧へ順に進みます。</p>
         </div>
-        <div className="grid grid-cols-4 overflow-hidden rounded-2xl border border-white/15 bg-white/10 text-center text-xs">
-          {[
-            ['会議日', `${minutesStatus.dayCount.toLocaleString()}件`],
-            ['発言', `${minutesStatus.utteranceCount.toLocaleString()}件`],
-            ['発言者', `${minutesStatus.speakerCount.toLocaleString()}人`],
-            ['表', `${minutesStatus.tableCount.toLocaleString()}件`],
-          ].map(([label, value]) => (
-            <div key={label} className="border-r border-white/10 px-4 py-2 last:border-r-0">
-              <p className="text-white/60">{label}</p>
-              <p className="mt-0.5 text-sm font-semibold">{value}</p>
-            </div>
-          ))}
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {([
+            ['browse', '会議録の閲覧', BookOpen],
+            ['keyword', '言葉から検索', Search],
+            ['speaker', '発言者から検索', FileSearch],
+            ['collection', '発言集作成', BookMarked],
+          ] as const).map(([page, label, Icon]) => {
+            const active = minutesPage === page || (page === 'collection' && minutesPage === 'collectionResults');
+            return (
+              <button
+                key={page}
+                type="button"
+                onClick={() => setMinutesPage(page)}
+                className={`inline-flex min-w-36 items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                  active
+                    ? 'border-white bg-white text-[#173f36] shadow-sm'
+                    : 'border-white/20 bg-white/10 text-white hover:border-white/40 hover:bg-white/15'
+                }`}
+              >
+                <Icon className="size-4" />
+                {label}
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
