@@ -1519,6 +1519,7 @@ function AppShell() {
     op: 'AND' | 'OR';
     includeReplies: boolean;
     limit: MinutesSearchLimit;
+    context: 'none' | 'wide';
     resultMode: 'utterance' | 'meeting' | 'table';
     destinationPage: MinutesPage;
   }> = {}) {
@@ -1533,6 +1534,7 @@ function AppShell() {
     const op = overrides.op ?? minutesOp;
     const includeReplies = overrides.includeReplies ?? minutesIncludeReplies;
     const limit = overrides.limit ?? minutesLimit;
+    const context = overrides.context ?? 'none';
     const resultMode = overrides.resultMode;
     const destinationPage = overrides.destinationPage ?? 'results';
     const meeting = meetingId ? minutesMeetings.find((item) => item.id === meetingId) || null : null;
@@ -1585,6 +1587,7 @@ function AppShell() {
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
         limit,
+        context,
       });
       setMinutesResults(resp.items);
       setMinutesTotal(resp.total);
@@ -1713,6 +1716,7 @@ function AppShell() {
       op: 'AND',
       includeReplies: minutesIncludeReplies,
       limit: minutesLimit,
+      context: 'wide',
       resultMode: 'utterance',
       destinationPage: 'collectionResults',
     });
@@ -2148,9 +2152,10 @@ function AppShell() {
       return byOrder || left.localeCompare(right, 'ja-JP');
     });
   }, [browsedMinutesMeetings]);
+  const deferredMinutesResults = useDeferredValue(minutesResults);
   const meetingGroupedMinutesResults = useMemo(() => {
     const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
-    for (const result of minutesResults) {
+    for (const result of deferredMinutesResults) {
       const existing = groups.get(result.dayId);
       if (existing) {
         existing.count += 1;
@@ -2168,9 +2173,9 @@ function AppShell() {
       });
     }
     return [...groups.values()];
-  }, [minutesResults]);
+  }, [deferredMinutesResults]);
   const sortedMinutesResults = useMemo(() => {
-    const values = [...minutesResults];
+    const values = [...deferredMinutesResults];
     values.sort((a, b) => {
       const left = a.meetingDate || '';
       const right = b.meetingDate || '';
@@ -2179,7 +2184,7 @@ function AppShell() {
       return a.order - b.order;
     });
     return values;
-  }, [minutesResults, minutesSortOrder]);
+  }, [deferredMinutesResults, minutesSortOrder]);
   const groupedSortedMinutesResults = useMemo(() => {
     const groups = new Map<number, {
       dayId: number;
@@ -2218,6 +2223,7 @@ function AppShell() {
       pdfUrl: string;
       items: CollectionItem[];
       seen: Set<number>;
+      itemById: Map<number, CollectionItem>;
     }>();
     const targetSpeaker = minutesSpeaker.trim();
     for (const result of sortedMinutesResults) {
@@ -2230,6 +2236,7 @@ function AppShell() {
         pdfUrl: result.pdfUrl,
         items: [],
         seen: new Set<number>(),
+        itemById: new Map<number, CollectionItem>(),
       };
       const baseItem: MinutesExchangeItem = {
         id: result.id,
@@ -2278,7 +2285,7 @@ function AppShell() {
         const isHit = item.id === result.id;
         const isTargetSpeaker = targetSpeaker ? item.speakerName === targetSpeaker || item.speakerTitle === targetSpeaker : isHit;
         if (group.seen.has(item.id)) {
-          const existing = group.items.find((entry) => entry.id === item.id);
+          const existing = group.itemById.get(item.id);
           if (existing) {
             existing.isHit = existing.isHit || isHit;
             existing.isTargetSpeaker = existing.isTargetSpeaker || isTargetSpeaker;
@@ -2286,18 +2293,20 @@ function AppShell() {
           continue;
         }
         group.seen.add(item.id);
-        group.items.push({
+        const collectionItem = {
           ...item,
           isHit,
           isTargetSpeaker,
-        });
+        };
+        group.itemById.set(item.id, collectionItem);
+        group.items.push(collectionItem);
       }
       groups.set(result.dayId, group);
     }
     return [...groups.values()]
       .map((group) => ({
         ...group,
-        items: group.items.sort((a, b) => a.order - b.order),
+        items: group.items.length > 1 ? group.items.sort((a, b) => a.order - b.order) : group.items,
       }))
       .filter((group) => group.items.length > 0);
   }, [minutesIncludeChair, minutesIncludeReplies, minutesSpeaker, sortedMinutesResults]);
@@ -2310,6 +2319,15 @@ function AppShell() {
   const currentDayContentItems = minutesDayDetail?.contentItems?.length
     ? minutesDayDetail.contentItems
     : currentDayUtterances.map((utterance) => ({ type: 'utterance' as const, utterance }));
+  const selectedMinutesUnitItems = useMemo(() => {
+    if (!selectedMinutesResult) return [];
+    if (!minutesIncludeReplies) return [selectedMinutesResult];
+    if (selectedMinutesResult.exchange.length > 0) return selectedMinutesResult.exchange;
+    if (!minutesDayDetail || minutesDayDetail.id !== selectedMinutesResult.dayId) return [selectedMinutesResult];
+    const index = minutesDayDetail.utterances.findIndex((item) => item.id === selectedMinutesResult.id);
+    if (index < 0) return [selectedMinutesResult];
+    return minutesDayDetail.utterances.slice(Math.max(0, index - 2), index + 5);
+  }, [minutesDayDetail, minutesIncludeReplies, selectedMinutesResult]);
   const selectedMinutesUtteranceIndex = useMemo(
     () => currentDayUtterances.findIndex((item) => item.id === selectedMinutesResult?.id),
     [currentDayUtterances, selectedMinutesResult?.id],
@@ -2784,7 +2802,7 @@ function AppShell() {
         key={result.id}
         className={`rounded-2xl border bg-white p-4 transition hover:border-[#79b28d] ${
           selectedMinutesResult?.id === result.id ? 'border-[#2f765e] ring-2 ring-[#2f765e]/10' : ''
-        }`}
+        } [content-visibility:auto] [contain-intrinsic-size:0_12rem]`}
       >
         <button type="button" onClick={() => selectMinutesResult(result)} className="w-full text-left">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -2892,7 +2910,7 @@ function AppShell() {
                       key={`${group.dayId}-${item.id}`}
                       className={`min-w-0 border-l-4 py-1 pl-4 ${
                         item.isTargetSpeaker ? 'border-[#2f765e]' : 'border-[#c7ddd3]'
-                      }`}
+                      } [content-visibility:auto] [contain-intrinsic-size:0_12rem]`}
                     >
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
@@ -3116,7 +3134,7 @@ function AppShell() {
               </div>
               <div ref={minutesReaderScrollRef} className="max-h-[72vh] min-w-0 overflow-auto p-4 sm:p-5">
                 {minutesReaderMode === 'unit' ? (
-                  (minutesIncludeReplies ? selectedMinutesResult.exchange : [selectedMinutesResult]).map((item) => (
+                  selectedMinutesUnitItems.map((item) => (
                     <article
                       id={`minutes-utterance-${item.id}`}
                       key={item.id}

@@ -140,7 +140,7 @@ STOP_TERMS = {
 }
 SEARCH_CACHE_TTL_SECONDS = 60 * 30
 ASK_CACHE_TTL_SECONDS = 60 * 60 * 6
-LOCAL_CACHE_TTL_SECONDS = 120
+LOCAL_CACHE_TTL_SECONDS = 600
 LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_MINUTES_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
@@ -608,7 +608,11 @@ def ensure_schema() -> None:
             ensure_column(cur, "meeting_tables", "position_top", "position_top FLOAT NOT NULL DEFAULT 0 AFTER page")
             ensure_column(cur, "meeting_tables", "position_bottom", "position_bottom FLOAT NOT NULL DEFAULT 0 AFTER position_top")
             ensure_index(cur, "meeting_days", "idx_meeting_days_session_date", "(session_id, meeting_date)")
+            ensure_index(cur, "meeting_days", "idx_meeting_days_date_session", "(meeting_date, session_id, id)")
+            ensure_index(cur, "meeting_sessions", "idx_meeting_sessions_section_id", "(section, id)")
             ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_speaker_name_title", "(speaker_name, speaker_title, day_id)")
+            ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_speaker_name_day_order", "(speaker_name, day_id, utterance_order)")
+            ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_speaker_title_day_order", "(speaker_title, day_id, utterance_order)")
             ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_role_title", "(speaker_role, speaker_title, day_id)")
             ensure_index(cur, "meeting_utterances", "idx_meeting_utterances_day_page_order", "(day_id, page_start, utterance_order)")
             ensure_index(cur, "meeting_tables", "idx_meeting_tables_day_page", "(day_id, page, position_top, id)")
@@ -3901,6 +3905,7 @@ def search_minutes_items(
     match_mode: str = "exact",
     op: str = "AND",
     limit: int | None = 20,
+    context: str = "none",
 ) -> list[dict[str, Any]]:
     terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
@@ -3919,6 +3924,7 @@ def search_minutes_items(
                 match_mode,
                 op,
                 str(limit),
+                context,
                 str(generation),
             ]
         )
@@ -3978,16 +3984,21 @@ def search_minutes_items(
             if (limit is not None and len(rows) >= limit) or (not use_fulltext and (rows or not speaker_exact_only)):
                 break
 
-        exchange_windows = fetch_minutes_exchange_windows(cur, rows)
+        include_exchange = context == "wide"
+        exchange_windows = fetch_minutes_exchange_windows(cur, rows) if include_exchange else {}
         results: list[dict[str, Any]] = []
         for row in rows:
             day_id = int(row["day_id"])
             order = int(row["utterance_order"])
-            exchange = serialize_minutes_exchange(
-                [
-                    item for item in exchange_windows.get(day_id, [])
-                    if max(1, order - 4) <= int(item["utterance_order"]) <= order + 24
-                ]
+            exchange = (
+                serialize_minutes_exchange(
+                    [
+                        item for item in exchange_windows.get(day_id, [])
+                        if max(1, order - 4) <= int(item["utterance_order"]) <= order + 24
+                    ]
+                )
+                if include_exchange
+                else []
             )
             results.append(
                 {
@@ -4972,6 +4983,9 @@ def api_minutes_search():
     op = (request.args.get("op") or "AND").strip().upper()
     if op not in {"AND", "OR"}:
         op = "AND"
+    context = (request.args.get("context") or "none").strip().lower()
+    if context not in {"none", "wide"}:
+        context = "none"
     raw_limit = (request.args.get("limit") or "20").strip().lower()
     if raw_limit in {"all", "unlimited", "0"}:
         limit = None
@@ -4982,7 +4996,7 @@ def api_minutes_search():
             limit = 20
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
-    items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, match_mode, op, limit)
+    items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, match_mode, op, limit, context)
     return jsonify({"items": items, "total": len(items)})
 
 
