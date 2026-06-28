@@ -4,13 +4,14 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from .pdf_extractor import ExtractedLine
+from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
 ENGINE_VERSION = "speaker-rules-v3"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
+PROCEDURAL_LINE_END_RE = re.compile(r"(休憩|再開|散会|閉会)$")
 STRUCTURAL_LINE_RE = re.compile(
     r"^(日程第|〔|【|（|第[0-9０-９一二三四五六七八九十]+[、 　]|[0-9０-９]+[、.．)]|[（(][0-9０-９一二三四五六七八九十]+[）)])"
 )
@@ -126,6 +127,11 @@ def should_keep_line_break(previous: str, current: str) -> bool:
     current = current.strip()
     if not previous or not current:
         return True
+    previous_line = previous.splitlines()[-1].strip()
+    if is_separator_line(previous_line) or is_separator_line(current):
+        return True
+    if PROCEDURAL_LINE_END_RE.search(previous_line):
+        return True
     if STRUCTURAL_LINE_RE.match(current):
         return True
     if SENTENCE_END_RE.search(previous):
@@ -134,7 +140,7 @@ def should_keep_line_break(previous: str, current: str) -> bool:
 
 
 def normalize_body_lines(parts: list[object]) -> str:
-    lines = [str(part).strip() for part in parts if str(part).strip()]
+    lines = [normalize_extracted_text_layout(str(part)).strip() for part in parts if str(part).strip()]
     if not lines:
         return ""
     normalized = lines[0]

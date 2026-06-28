@@ -10,6 +10,12 @@ from typing import Any
 import pdfplumber
 
 
+GAIJI_SEPARATOR_CHARS = "疑癡癘"
+GAIJI_SEPARATOR_RE = re.compile(f"[{re.escape(GAIJI_SEPARATOR_CHARS)}]{{3,}}")
+SEPARATOR_LINE_RE = re.compile(r"[-‐‑‒–—―ー−─━]{6,}")
+EMBEDDED_SEPARATOR_RE = re.compile(r"(?<=[休憩散会閉会])(-{6,})(?=(?:午前|午後|上会議))")
+
+
 @dataclass
 class ExtractedLine:
     page: int
@@ -35,6 +41,23 @@ class ExtractedPdf:
     pages: list[ExtractedPage]
 
 
+def normalize_pdf_gaiji_text(text: str) -> str:
+    """Replace custom-font gaiji runs used as divider lines with safe symbols."""
+    if not text:
+        return ""
+    return GAIJI_SEPARATOR_RE.sub(lambda match: "-" * len(match.group(0)), str(text))
+
+
+def normalize_extracted_text_layout(text: str) -> str:
+    value = normalize_pdf_gaiji_text(text)
+    return EMBEDDED_SEPARATOR_RE.sub(r"\n\1\n", value)
+
+
+def is_separator_line(text: str) -> bool:
+    value = re.sub(r"\s+", "", normalize_pdf_gaiji_text(text or ""))
+    return bool(SEPARATOR_LINE_RE.fullmatch(value))
+
+
 def download_pdf(url: str, timeout: int = 60) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "mine-city-reiki-minutes/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as res:
@@ -55,7 +78,7 @@ def _extract_lines(words: list[dict[str, Any]], page_no: int) -> list[ExtractedL
         parts: list[str] = []
         prev_x1: float | None = None
         for word in ordered:
-            text = str(word.get("text") or "")
+            text = normalize_pdf_gaiji_text(str(word.get("text") or ""))
             if not text:
                 continue
             x0 = float(word.get("x0") or 0)
@@ -63,7 +86,7 @@ def _extract_lines(words: list[dict[str, Any]], page_no: int) -> list[ExtractedL
                 parts.append(" ")
             parts.append(text)
             prev_x1 = float(word.get("x1") or x0)
-        line_text = re.sub(r"\s+", " ", "".join(parts)).strip()
+        line_text = normalize_extracted_text_layout(re.sub(r"\s+", " ", "".join(parts)).strip())
         if line_text:
             lines.append(
                 ExtractedLine(
@@ -83,11 +106,11 @@ def extract_pdf_from_bytes(pdf_bytes: bytes) -> ExtractedPdf:
     text_parts: list[str] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for idx, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
+            text = normalize_extracted_text_layout(page.extract_text(x_tolerance=1, y_tolerance=3) or "")
             words = page.extract_words(x_tolerance=1, y_tolerance=3, keep_blank_chars=False, use_text_flow=False) or []
             normalized_words = [
                 {
-                    "text": str(word.get("text") or ""),
+                    "text": normalize_pdf_gaiji_text(str(word.get("text") or "")),
                     "x0": float(word.get("x0") or 0),
                     "x1": float(word.get("x1") or 0),
                     "top": float(word.get("top") or 0),
@@ -104,4 +127,3 @@ def extract_pdf_from_bytes(pdf_bytes: bytes) -> ExtractedPdf:
 
 def extract_pdf_from_url(url: str) -> ExtractedPdf:
     return extract_pdf_from_bytes(download_pdf(url))
-
