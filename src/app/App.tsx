@@ -761,7 +761,12 @@ function articleHeadingTone(depth: number): string {
   return 'px-3 py-1 text-muted-foreground';
 }
 
-function scrollElementIntoContainer(elementId: string, container: HTMLElement | null, block: ScrollLogicalPosition = 'start'): void {
+function scrollElementIntoContainer(
+  elementId: string,
+  container: HTMLElement | null,
+  block: ScrollLogicalPosition = 'start',
+  behavior: ScrollBehavior = 'smooth',
+): void {
   const target = document.getElementById(elementId);
   if (!target) return;
   if (container?.contains(target)) {
@@ -769,10 +774,10 @@ function scrollElementIntoContainer(elementId: string, container: HTMLElement | 
     const containerRect = container.getBoundingClientRect();
     const offset = block === 'center' ? (container.clientHeight - targetRect.height) / 2 : 24;
     const top = targetRect.top - containerRect.top + container.scrollTop - offset;
-    container.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+    container.scrollTo({ top: Math.max(top, 0), behavior });
     return;
   }
-  target.scrollIntoView({ behavior: 'smooth', block });
+  target.scrollIntoView({ behavior, block });
 }
 
 type DiffLine = { type: 'same' | 'del' | 'add'; text: string };
@@ -950,6 +955,7 @@ function AppShell() {
   const selectedArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
+  const minutesReaderScrollTimerRef = useRef<number | null>(null);
   const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
   const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
@@ -1241,8 +1247,17 @@ function AppShell() {
 
   useEffect(() => {
     if (tab !== 'minutes') return;
+    if (selectedMinutesResult && minutesDayDetail?.id === selectedMinutesResult.dayId) return;
     void loadMinutesDay(selectedMinutesResult);
-  }, [tab, selectedMinutesResult?.id]);
+  }, [tab, selectedMinutesResult?.dayId, minutesDayDetail?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (minutesReaderScrollTimerRef.current != null) {
+        window.clearTimeout(minutesReaderScrollTimerRef.current);
+      }
+    };
+  }, []);
 
   async function handleLogin(username: string, password: string) {
     const loggedIn = await login(username, password);
@@ -2305,15 +2320,16 @@ function AppShell() {
     }
     return [...names.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40);
   }, [currentDayUtterances]);
+  const selectedMinutesDayId = selectedMinutesResult?.dayId ?? null;
   const selectedDayMinutesHits = useMemo(() => {
-    if (!selectedMinutesResult) return [];
-    const hits = sortedMinutesResults.filter((result) => result.dayId === selectedMinutesResult.dayId);
+    if (!selectedMinutesDayId) return [];
+    const hits = sortedMinutesResults.filter((result) => result.dayId === selectedMinutesDayId);
     const deduped = new Map<number, MinutesSearchResult>();
-    for (const hit of hits.length > 0 ? hits : [selectedMinutesResult]) {
+    for (const hit of hits) {
       deduped.set(hit.id, hit);
     }
     return [...deduped.values()].sort((a, b) => a.order - b.order);
-  }, [selectedMinutesResult, sortedMinutesResults]);
+  }, [selectedMinutesDayId, sortedMinutesResults]);
   const selectedDayMinutesHitIds = useMemo(
     () => new Set(selectedDayMinutesHits.map((hit) => hit.id)),
     [selectedDayMinutesHits],
@@ -2322,25 +2338,27 @@ function AppShell() {
 
   function scrollMinutesUtteranceIntoView(utteranceId: number | null | undefined) {
     if (!utteranceId) return;
-    window.setTimeout(() => {
-      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start');
+    if (minutesReaderScrollTimerRef.current != null) {
+      window.clearTimeout(minutesReaderScrollTimerRef.current);
+    }
+    minutesReaderScrollTimerRef.current = window.setTimeout(() => {
+      minutesReaderScrollTimerRef.current = null;
+      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start', 'auto');
     }, 0);
   }
 
   function selectMinutesHit(hit: MinutesSearchResult) {
     setSelectedMinutesResult(hit);
-    if (minutesReaderMode === 'full' || minutesReaderMode === 'list') {
-      scrollMinutesUtteranceIntoView(hit.id);
-    } else {
+    if (!['unit', 'full', 'list'].includes(minutesReaderMode)) {
       setMinutesReaderMode('unit');
     }
   }
 
   useEffect(() => {
-    if (minutesPage !== 'detail' || !['unit', 'full'].includes(minutesReaderMode)) return;
+    if (minutesPage !== 'detail' || !['unit', 'full', 'list'].includes(minutesReaderMode)) return;
     if (!currentDayUtterances.length) return;
     const selectedId = selectedMinutesResult?.id ?? null;
-    const targetId = minutesReaderMode === 'unit'
+    const targetId = minutesReaderMode === 'unit' || minutesReaderMode === 'list'
       ? selectedId
       : selectedId && selectedDayMinutesHitIds.has(selectedId)
         ? selectedId
