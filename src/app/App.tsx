@@ -104,10 +104,19 @@ type MinutesSearchHistoryItem = {
 type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'collectionResults' | 'history' | 'results' | 'detail' | 'meetingDetail';
 type MinutesSearchMethodPage = Extract<MinutesPage, 'browse' | 'keyword' | 'speaker' | 'collection'>;
 type MinutesBrowseSectionFilter = 'all' | string;
+type MinutesSearchLimit = 30 | 60 | 100 | 200 | 'all';
 const DEFAULT_MINUTES_MATCH_MODE: MinutesSearchHistoryItem['matchMode'] = 'exact';
 const DEFAULT_MINUTES_OP: MinutesSearchHistoryItem['op'] = 'AND';
 const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
 const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
+const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 30;
+const MINUTES_SEARCH_LIMIT_OPTIONS: { value: MinutesSearchLimit; label: string }[] = [
+  { value: 30, label: '30件' },
+  { value: 60, label: '60件' },
+  { value: 100, label: '100件' },
+  { value: 200, label: '200件' },
+  { value: 'all', label: '無制限' },
+];
 
 function loadMinutesSearchHistory(): MinutesSearchHistoryItem[] {
   try {
@@ -978,6 +987,7 @@ function AppShell() {
   const [minutesOp, setMinutesOp] = useState<'AND' | 'OR'>(DEFAULT_MINUTES_OP);
   const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(DEFAULT_MINUTES_INCLUDE_REPLIES);
   const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>(DEFAULT_MINUTES_SORT_ORDER);
+  const [minutesLimit, setMinutesLimit] = useState<MinutesSearchLimit>(DEFAULT_MINUTES_SEARCH_LIMIT);
   const [minutesPage, setMinutesPage] = useState<MinutesPage>('home');
   const [minutesSearchReturnPage, setMinutesSearchReturnPage] = useState<MinutesPage>('home');
   const [minutesBrowseFiscalYear, setMinutesBrowseFiscalYear] = useState('');
@@ -1491,7 +1501,7 @@ function AppShell() {
     matchMode: 'exact' | 'related';
     op: 'AND' | 'OR';
     includeReplies: boolean;
-    limit: number;
+    limit: MinutesSearchLimit;
     resultMode: 'utterance' | 'meeting' | 'table';
     destinationPage: MinutesPage;
   }> = {}) {
@@ -1505,7 +1515,7 @@ function AppShell() {
     const matchMode = overrides.matchMode ?? minutesMatchMode;
     const op = overrides.op ?? minutesOp;
     const includeReplies = overrides.includeReplies ?? minutesIncludeReplies;
-    const limit = overrides.limit ?? 30;
+    const limit = overrides.limit ?? minutesLimit;
     const resultMode = overrides.resultMode;
     const destinationPage = overrides.destinationPage ?? 'results';
     const meeting = meetingId ? minutesMeetings.find((item) => item.id === meetingId) || null : null;
@@ -1617,6 +1627,7 @@ function AppShell() {
     setMinutesOp(DEFAULT_MINUTES_OP);
     setMinutesIncludeReplies(DEFAULT_MINUTES_INCLUDE_REPLIES);
     setMinutesSortOrder(DEFAULT_MINUTES_SORT_ORDER);
+    setMinutesLimit(DEFAULT_MINUTES_SEARCH_LIMIT);
   }
 
   function resetMinutesSearchResults(resultMode: 'utterance' | 'meeting' | 'table' = 'utterance') {
@@ -1665,6 +1676,7 @@ function AppShell() {
       speaker,
       matchMode: 'exact',
       op: 'AND',
+      limit: minutesLimit,
     });
   }
 
@@ -1682,7 +1694,7 @@ function AppShell() {
       matchMode: 'exact',
       op: 'AND',
       includeReplies: minutesIncludeReplies,
-      limit: 200,
+      limit: minutesLimit,
       resultMode: 'utterance',
       destinationPage: 'collectionResults',
     });
@@ -2568,6 +2580,29 @@ function AppShell() {
         <input type="checkbox" checked={minutesIncludeReplies} onChange={(e) => setMinutesIncludeReplies(e.target.checked)} />
         質問・答弁など前後の関連発言を本文閲覧に表示
       </label>
+      {renderMinutesLimitSelector()}
+    </div>
+  );
+
+  const renderMinutesLimitSelector = (): JSX.Element => (
+    <div className="mt-4 rounded-2xl border bg-white p-3">
+      <p className="text-xs font-semibold text-[#173f36]">表示件数</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {MINUTES_SEARCH_LIMIT_OPTIONS.map((option) => (
+          <button
+            key={String(option.value)}
+            type="button"
+            onClick={() => setMinutesLimit(option.value)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+              minutesLimit === option.value
+                ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]'
+                : 'bg-[#fbfdfb] text-[#37564d] hover:border-[#79b28d]'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -3537,6 +3572,8 @@ function AppShell() {
                     </label>
                   </div>
 
+                  {renderMinutesLimitSelector()}
+
                   <div className="mt-5 rounded-2xl border bg-white p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
@@ -3763,6 +3800,7 @@ function AppShell() {
                       <input type="checkbox" checked={minutesIncludeReplies} onChange={(e) => setMinutesIncludeReplies(e.target.checked)} />
                       関連する答弁や質問も本文閲覧に表示
                     </label>
+                    {renderMinutesLimitSelector()}
                   </div>
                   <div className="mt-6 flex flex-col gap-3 sm:flex-row">
                     <button

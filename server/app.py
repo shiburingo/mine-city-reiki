@@ -3898,7 +3898,7 @@ def search_minutes_items(
     day_id: int | None = None,
     match_mode: str = "exact",
     op: str = "AND",
-    limit: int = 20,
+    limit: int | None = 20,
 ) -> list[dict[str, Any]]:
     terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
@@ -3949,6 +3949,8 @@ def search_minutes_items(
                 speaker_exact_only=speaker_exact_only,
             )
             try:
+                limit_clause = "LIMIT %s" if limit is not None else ""
+                query_params = params + ([limit] if limit is not None else [])
                 cur.execute(
                     f"""
                     SELECT
@@ -3961,9 +3963,9 @@ def search_minutes_items(
                     JOIN meeting_sessions s ON s.id=d.session_id
                     WHERE {where}
                     ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
-                    LIMIT %s
+                    {limit_clause}
                     """,
-                    tuple(params + [limit]),
+                    tuple(query_params),
                 )
             except pymysql.err.OperationalError:
                 if use_fulltext:
@@ -3971,7 +3973,7 @@ def search_minutes_items(
                     continue
                 raise
             rows = cur.fetchall() or []
-            if len(rows) >= limit or (not use_fulltext and (rows or not speaker_exact_only)):
+            if (limit is not None and len(rows) >= limit) or (not use_fulltext and (rows or not speaker_exact_only)):
                 break
 
         exchange_windows = fetch_minutes_exchange_windows(cur, rows)
@@ -4968,7 +4970,14 @@ def api_minutes_search():
     op = (request.args.get("op") or "AND").strip().upper()
     if op not in {"AND", "OR"}:
         op = "AND"
-    limit = max(1, min(60, int(request.args.get("limit") or "20")))
+    raw_limit = (request.args.get("limit") or "20").strip().lower()
+    if raw_limit in {"all", "unlimited", "0"}:
+        limit = None
+    else:
+        try:
+            limit = max(1, min(200, int(raw_limit)))
+        except ValueError:
+            limit = 20
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
     items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, match_mode, op, limit)

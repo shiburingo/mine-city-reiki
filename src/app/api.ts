@@ -170,7 +170,7 @@ export async function searchMinutes(params: {
   op?: 'AND' | 'OR';
   fromDate?: string;
   toDate?: string;
-  limit?: number;
+  limit?: number | 'all';
 }): Promise<{ items: MinutesSearchResult[]; total: number }> {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
