@@ -102,7 +102,12 @@ type MinutesSearchHistoryItem = {
   createdAt: string;
 };
 type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'collectionResults' | 'history' | 'results' | 'detail' | 'meetingDetail';
+type MinutesSearchMethodPage = Extract<MinutesPage, 'browse' | 'keyword' | 'speaker' | 'collection'>;
 type MinutesBrowseSectionFilter = 'all' | string;
+const DEFAULT_MINUTES_MATCH_MODE: MinutesSearchHistoryItem['matchMode'] = 'exact';
+const DEFAULT_MINUTES_OP: MinutesSearchHistoryItem['op'] = 'AND';
+const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
+const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
 
 function loadMinutesSearchHistory(): MinutesSearchHistoryItem[] {
   try {
@@ -969,10 +974,10 @@ function AppShell() {
   const [minutesSearchYear, setMinutesSearchYear] = useState('');
   const [minutesFromDate, setMinutesFromDate] = useState('');
   const [minutesToDate, setMinutesToDate] = useState('');
-  const [minutesMatchMode, setMinutesMatchMode] = useState<'exact' | 'related'>('exact');
-  const [minutesOp, setMinutesOp] = useState<'AND' | 'OR'>('AND');
-  const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(true);
-  const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>('new');
+  const [minutesMatchMode, setMinutesMatchMode] = useState<'exact' | 'related'>(DEFAULT_MINUTES_MATCH_MODE);
+  const [minutesOp, setMinutesOp] = useState<'AND' | 'OR'>(DEFAULT_MINUTES_OP);
+  const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(DEFAULT_MINUTES_INCLUDE_REPLIES);
+  const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>(DEFAULT_MINUTES_SORT_ORDER);
   const [minutesPage, setMinutesPage] = useState<MinutesPage>('home');
   const [minutesSearchReturnPage, setMinutesSearchReturnPage] = useState<MinutesPage>('home');
   const [minutesBrowseFiscalYear, setMinutesBrowseFiscalYear] = useState('');
@@ -1596,7 +1601,7 @@ function AppShell() {
     }
   }
 
-  function clearMinutesSearch() {
+  function resetMinutesSearchFields() {
     setMinutesQuery('');
     setMinutesSpeaker('');
     setMinutesRole('all');
@@ -1605,45 +1610,48 @@ function AppShell() {
     setMinutesSearchYear('');
     setMinutesFromDate('');
     setMinutesToDate('');
-    setMinutesMatchMode('exact');
-    setMinutesOp('AND');
-    setMinutesIncludeReplies(true);
-    setMinutesSortOrder('new');
+  }
+
+  function resetMinutesSearchOptions() {
+    setMinutesMatchMode(DEFAULT_MINUTES_MATCH_MODE);
+    setMinutesOp(DEFAULT_MINUTES_OP);
+    setMinutesIncludeReplies(DEFAULT_MINUTES_INCLUDE_REPLIES);
+    setMinutesSortOrder(DEFAULT_MINUTES_SORT_ORDER);
+  }
+
+  function resetMinutesSearchResults(resultMode: 'utterance' | 'meeting' | 'table' = 'utterance') {
     setMinutesResults([]);
     setMinutesTotal(0);
+    setMinutesExpandedResultIds(new Set());
     setSelectedMinutesResult(null);
-    setMinutesResultMode('utterance');
+    setMinutesResultMode(resultMode);
+    setMinutesSearchReturnPage('home');
+  }
+
+  function resetMinutesSearchState(resultMode: 'utterance' | 'meeting' | 'table' = 'utterance') {
+    resetMinutesSearchFields();
+    resetMinutesSearchOptions();
+    resetMinutesSearchResults(resultMode);
+  }
+
+  function goToMinutesSearchMethod(page: MinutesSearchMethodPage) {
+    if (page !== minutesPage) {
+      resetMinutesSearchState(page === 'speaker' ? 'meeting' : 'utterance');
+    }
+    setMinutesPage(page);
+  }
+
+  function clearMinutesSearch() {
+    resetMinutesSearchState('utterance');
   }
 
   function clearMinutesSpeakerSearch() {
-    setMinutesQuery('');
-    setMinutesSpeaker('');
-    setMinutesRole('all');
-    setMinutesSection('all');
-    setMinutesMeetingId(null);
-    setMinutesSearchYear('');
-    setMinutesFromDate('');
-    setMinutesToDate('');
-    setMinutesResults([]);
-    setMinutesTotal(0);
-    setSelectedMinutesResult(null);
-    setMinutesResultMode('meeting');
+    resetMinutesSearchState('meeting');
     setMinutesPage('speaker');
   }
 
   function clearMinutesCollectionSearch() {
-    setMinutesQuery('');
-    setMinutesSpeaker('');
-    setMinutesRole('all');
-    setMinutesSection('all');
-    setMinutesMeetingId(null);
-    setMinutesSearchYear('');
-    setMinutesFromDate('');
-    setMinutesToDate('');
-    setMinutesResults([]);
-    setMinutesTotal(0);
-    setSelectedMinutesResult(null);
-    setMinutesResultMode('utterance');
+    resetMinutesSearchState('utterance');
     setMinutesPage('collection');
   }
 
@@ -2507,7 +2515,7 @@ function AppShell() {
               <button
                 key={page}
                 type="button"
-                onClick={() => setMinutesPage(page)}
+                onClick={() => goToMinutesSearchMethod(page)}
                 className={`inline-flex min-w-36 items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
                   active
                     ? 'border-white bg-white text-[#173f36] shadow-sm'
@@ -2957,6 +2965,7 @@ function AppShell() {
                 <button
                   type="button"
                   onClick={() => {
+                    resetMinutesSearchState('meeting');
                     setMinutesSpeaker(selectedMinutesResult.speakerName);
                     setMinutesRole(selectedMinutesResult.speakerRole);
                     setMinutesPage('speaker');
@@ -3113,6 +3122,7 @@ function AppShell() {
                         type="button"
                         onClick={() => {
                           const speakerName = name.replace(/^[^\s]+\s+/, '');
+                          resetMinutesSearchState('meeting');
                           setMinutesSpeaker(speakerName);
                           setMinutesPage('speaker');
                         }}
@@ -3345,7 +3355,7 @@ function AppShell() {
                     <button
                       key={item.page}
                       type="button"
-                      onClick={() => setMinutesPage(item.page)}
+                      onClick={() => goToMinutesSearchMethod(item.page)}
                       className="group min-h-44 rounded-3xl border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#79b28d] hover:shadow-md"
                     >
                       <div className="mb-4 inline-flex size-12 items-center justify-center rounded-2xl bg-[#e3f0e8] text-[#173f36] group-hover:bg-[#173f36] group-hover:text-white">
