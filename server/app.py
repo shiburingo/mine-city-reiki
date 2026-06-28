@@ -3858,8 +3858,10 @@ def fetch_minutes_exchange_windows(cur, rows: list[dict[str, Any]]) -> dict[int,
     for row in rows:
         day_id = int(row["day_id"])
         order = int(row["utterance_order"])
-        start = max(1, order - 2)
-        end = order + 4
+        # 発言集では短い質問が連続した後に答弁が続くことがあるため、
+        # 関連発言の取得範囲は閲覧用の数発言より広めに確保する。
+        start = max(1, order - 4)
+        end = order + 24
         if day_id in windows:
             prev_start, prev_end = windows[day_id]
             windows[day_id] = (min(prev_start, start), max(prev_end, end))
@@ -3984,7 +3986,7 @@ def search_minutes_items(
             exchange = serialize_minutes_exchange(
                 [
                     item for item in exchange_windows.get(day_id, [])
-                    if max(1, order - 2) <= int(item["utterance_order"]) <= order + 4
+                    if max(1, order - 4) <= int(item["utterance_order"]) <= order + 24
                 ]
             )
             results.append(
