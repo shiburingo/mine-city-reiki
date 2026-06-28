@@ -644,13 +644,34 @@ function buildHighlightTerms(query: string): string[] {
   return [...terms].sort((a, b) => b.length - a.length);
 }
 
-function renderHighlightedText(text: string, terms: string[]): Array<string | JSX.Element> {
-  if (!terms.length || !text) return [text];
-  const pattern = new RegExp(`(${terms.map(escapeRegExp).join('|')})`, 'gi');
-  const lowerTerms = new Set(terms.map((term) => term.toLocaleLowerCase()));
+function normalizeHighlightTerms(terms: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const term of terms) {
+    const normalized = term.trim();
+    const key = normalized.toLocaleLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result.sort((a, b) => b.length - a.length);
+}
+
+function renderHighlightedText(text: string, terms: string[], relatedTerms: string[] = []): Array<string | JSX.Element> {
+  const exactTerms = normalizeHighlightTerms(terms);
+  const exactLowerTerms = new Set(exactTerms.map((term) => term.toLocaleLowerCase()));
+  const filteredRelatedTerms = normalizeHighlightTerms(relatedTerms).filter((term) => !exactLowerTerms.has(term.toLocaleLowerCase()));
+  if ((!exactTerms.length && !filteredRelatedTerms.length) || !text) return [text];
+  const allTerms = normalizeHighlightTerms([...exactTerms, ...filteredRelatedTerms]);
+  const pattern = new RegExp(`(${allTerms.map(escapeRegExp).join('|')})`, 'gi');
+  const relatedLowerTerms = new Set(filteredRelatedTerms.map((term) => term.toLocaleLowerCase()));
   return text.split(pattern).map((part, index) => (
-    lowerTerms.has(part.toLocaleLowerCase()) ? (
+    exactLowerTerms.has(part.toLocaleLowerCase()) ? (
       <mark key={`${index}-${part}`} className="rounded bg-yellow-200/90 px-0.5 text-inherit">
+        {part}
+      </mark>
+    ) : relatedLowerTerms.has(part.toLocaleLowerCase()) ? (
+      <mark key={`${index}-${part}`} className="rounded bg-emerald-200/90 px-0.5 text-inherit ring-1 ring-emerald-300/70">
         {part}
       </mark>
     ) : part
@@ -2017,6 +2038,21 @@ function AppShell() {
   const browseDocArticleTree = useMemo(() => buildArticleGroupTree(browseDoc?.articles || []), [browseDoc]);
   const selectedDocArticleTree = useMemo(() => buildArticleGroupTree(selectedDoc?.articles || []), [selectedDoc]);
   const groupedResults = useMemo(() => groupSearchResults(results), [results]);
+  const selectedSearchResult = useMemo(() => {
+    if (!selectedDocId) return null;
+    if (activeSelectedArticleHit?.documentId === selectedDocId) {
+      const activeHit = results.find((item) => (
+        item.documentId === activeSelectedArticleHit.documentId
+        && item.articleId === activeSelectedArticleHit.articleId
+      ));
+      if (activeHit) return activeHit;
+    }
+    return results.find((item) => item.documentId === selectedDocId) || null;
+  }, [activeSelectedArticleHit, results, selectedDocId]);
+  const selectedSearchHighlightTerms = selectedSearchResult?.highlightTerms?.length
+    ? selectedSearchResult.highlightTerms
+    : searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : []));
+  const selectedSearchRelatedHighlightTerms = selectedSearchResult?.relatedHighlightTerms || [];
   const deferredMinutesSpeaker = useDeferredValue(minutesSpeaker);
   const filteredMinutesSpeakers = useMemo(() => {
     const needle = deferredMinutesSpeaker.trim();
@@ -2213,6 +2249,8 @@ function AppShell() {
     type CollectionItem = MinutesExchangeItem & {
       isHit: boolean;
       isTargetSpeaker: boolean;
+      highlightTerms: string[];
+      relatedHighlightTerms: string[];
     };
     const groups = new Map<number, {
       dayId: number;
@@ -2289,6 +2327,10 @@ function AppShell() {
           if (existing) {
             existing.isHit = existing.isHit || isHit;
             existing.isTargetSpeaker = existing.isTargetSpeaker || isTargetSpeaker;
+            if (isHit) {
+              existing.highlightTerms = result.highlightTerms || [];
+              existing.relatedHighlightTerms = result.relatedHighlightTerms || [];
+            }
           }
           continue;
         }
@@ -2297,6 +2339,8 @@ function AppShell() {
           ...item,
           isHit,
           isTargetSpeaker,
+          highlightTerms: isHit ? result.highlightTerms || [] : [],
+          relatedHighlightTerms: isHit ? result.relatedHighlightTerms || [] : [],
         };
         group.itemById.set(item.id, collectionItem);
         group.items.push(collectionItem);
@@ -2355,7 +2399,29 @@ function AppShell() {
     () => new Set(selectedDayMinutesHits.map((hit) => hit.id)),
     [selectedDayMinutesHits],
   );
+  const selectedDayMinutesHitTermMap = useMemo(() => {
+    const map = new Map<number, { highlightTerms: string[]; relatedHighlightTerms: string[] }>();
+    for (const hit of selectedDayMinutesHits) {
+      map.set(hit.id, {
+        highlightTerms: hit.highlightTerms || [],
+        relatedHighlightTerms: hit.relatedHighlightTerms || [],
+      });
+    }
+    return map;
+  }, [selectedDayMinutesHits]);
   const firstSelectedDayMinutesHitId = selectedDayMinutesHits[0]?.id ?? null;
+
+  function minutesExactHighlightTerms(item?: { id?: number; highlightTerms?: string[] } | null): string[] {
+    return item?.highlightTerms?.length
+      ? item.highlightTerms
+      : selectedDayMinutesHitTermMap.get(Number(item?.id || 0))?.highlightTerms || minutesHighlightTerms;
+  }
+
+  function minutesRelatedHighlightTerms(item?: { id?: number; relatedHighlightTerms?: string[] } | null): string[] {
+    return item?.relatedHighlightTerms?.length
+      ? item.relatedHighlightTerms
+      : selectedDayMinutesHitTermMap.get(Number(item?.id || 0))?.relatedHighlightTerms || [];
+  }
 
   function scrollMinutesUtteranceIntoView(utteranceId: number | null | undefined) {
     if (!utteranceId) return;
@@ -2430,13 +2496,13 @@ function AppShell() {
     return /^(日程第|〔|【|（|第[0-9０-９一二三四五六七八九十]+[、 　]|[0-9０-９]+[、.．)]|[（(][0-9０-９一二三四五六七八九十]+[）)])/.test(line.trim());
   };
 
-  const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8', highlightTerms: string[] = []): JSX.Element => {
+  const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8', highlightTerms: string[] = [], relatedHighlightTerms: string[] = []): JSX.Element => {
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     return (
       <div className={`${className} min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere]`}>
         {lines.map((line, index) => (
           <p key={`${index}-${line.slice(0, 16)}`} className="m-0 min-w-0 max-w-full break-words [overflow-wrap:anywhere]" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
-            {renderHighlightedText(line, highlightTerms)}
+            {renderHighlightedText(line, highlightTerms, relatedHighlightTerms)}
           </p>
         ))}
       </div>
@@ -2474,6 +2540,7 @@ function AppShell() {
     nodes: ArticleGroupNode[],
     anchorPrefix: string,
     keywords: string[],
+    relatedKeywords: string[],
     articleLinks: ArticleLinkMap,
     sourceAnchorLinks: SourceAnchorLinkMap,
     sourceDocumentLinks: SourceDocumentLinkMap,
@@ -2502,6 +2569,7 @@ function AppShell() {
                     <ArticleContent
                       text={article.text}
                       keywords={keywords}
+                      relatedKeywords={relatedKeywords}
                       articleLinks={articleLinks}
                       sourceAnchorLinks={sourceAnchorLinks}
                       sourceDocumentLinks={sourceDocumentLinks}
@@ -2514,7 +2582,7 @@ function AppShell() {
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink, activeArticleId, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink, activeArticleId, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -2816,7 +2884,7 @@ function AppShell() {
             </span>
           </div>
           <p className="mt-4 line-clamp-3 text-sm leading-7 text-muted-foreground">
-            {renderHighlightedText(result.snippet, minutesHighlightTerms)}
+            {renderHighlightedText(result.snippet, minutesExactHighlightTerms(result), minutesRelatedHighlightTerms(result))}
           </p>
         </button>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
@@ -2837,7 +2905,7 @@ function AppShell() {
         </div>
         {expanded ? (
           <div className="mt-4 rounded-2xl border bg-[#f8fbf8] p-4 text-sm leading-7">
-            {renderMinutesText(result.text, 'text-sm leading-7', minutesHighlightTerms)}
+            {renderMinutesText(result.text, 'text-sm leading-7', minutesExactHighlightTerms(result), minutesRelatedHighlightTerms(result))}
           </div>
         ) : null}
       </article>
@@ -2923,7 +2991,12 @@ function AppShell() {
                           {minutesRoleLabel(item.speakerRole)}
                         </span>
                       </div>
-                      {renderMinutesText(item.text, 'mt-2 text-[15px] leading-8', item.isHit ? minutesHighlightTerms : [])}
+                      {renderMinutesText(
+                        item.text,
+                        'mt-2 text-[15px] leading-8',
+                        item.isHit ? minutesExactHighlightTerms(item) : [],
+                        item.isHit ? minutesRelatedHighlightTerms(item) : [],
+                      )}
                     </article>
                   ))}
                 </div>
@@ -3151,7 +3224,7 @@ function AppShell() {
                           {minutesRoleLabel(item.speakerRole)}
                         </span>
                       </div>
-                      {renderMinutesText(item.text, 'mt-4 text-base leading-8', minutesHighlightTerms)}
+                      {renderMinutesText(item.text, 'mt-4 text-base leading-8', minutesExactHighlightTerms(item), minutesRelatedHighlightTerms(item))}
                     </article>
                   ))
                 ) : null}
@@ -3179,6 +3252,8 @@ function AppShell() {
                               pageEnd: item.pageEnd,
                               snippet: item.text.slice(0, 180),
                               exchange: minutesDayDetail.utterances.slice(Math.max(0, index - 2), index + 5),
+                              highlightTerms: selectedDayMinutesHitTermMap.get(item.id)?.highlightTerms || selectedMinutesResult.highlightTerms || [],
+                              relatedHighlightTerms: selectedDayMinutesHitTermMap.get(item.id)?.relatedHighlightTerms || selectedMinutesResult.relatedHighlightTerms || [],
                             });
                             setMinutesReaderMode('unit');
                           }}
@@ -3195,7 +3270,7 @@ function AppShell() {
                             <span className={`rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
                           </div>
                           <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">
-                            {renderHighlightedText(previewText(item.text), minutesHighlightTerms)}
+                            {renderHighlightedText(previewText(item.text), minutesExactHighlightTerms(item), minutesRelatedHighlightTerms(item))}
                           </p>
                         </button>
                       ))}
@@ -3226,7 +3301,7 @@ function AppShell() {
                             <h4 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h4>
                             {isHit ? <span className="w-fit rounded-full bg-[#dff2e5] px-2 py-0.5 text-xs font-semibold text-[#2f765e]">検索ヒット</span> : null}
                           </div>
-                          {renderMinutesText(item.text, 'mt-3 text-base leading-8', minutesHighlightTerms)}
+                          {renderMinutesText(item.text, 'mt-3 text-base leading-8', minutesExactHighlightTerms(item), minutesRelatedHighlightTerms(item))}
                         </article>
                       );
                     })}
@@ -3295,7 +3370,7 @@ function AppShell() {
                     <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">
                       <span className="font-semibold text-foreground">{hit.speakerTitle} {hit.speakerName}</span>
                       <span className="mx-1 text-muted-foreground">/</span>
-                      {renderHighlightedText(firstContentLine(hit.snippet || hit.text), minutesHighlightTerms)}
+                      {renderHighlightedText(firstContentLine(hit.snippet || hit.text), minutesExactHighlightTerms(hit), minutesRelatedHighlightTerms(hit))}
                     </p>
                   </button>
                 ))}
@@ -4264,6 +4339,7 @@ function AppShell() {
                             browseDocArticleTree,
                             'barticle',
                             [],
+                            [],
                             buildArticleLinkMap(browseDoc.articles, 'barticle'),
                             buildSourceAnchorLinkMap(browseDoc, 'barticle'),
                             buildSourceDocumentLinkMap(browseDoc),
@@ -4555,7 +4631,8 @@ function AppShell() {
                           renderArticleBodyTree(
                             selectedDocArticleTree,
                             'article',
-                            searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : [])),
+                            selectedSearchHighlightTerms,
+                            selectedSearchRelatedHighlightTerms,
                             buildArticleLinkMap(selectedDoc.articles, 'article'),
                             buildSourceAnchorLinkMap(selectedDoc, 'article'),
                             buildSourceDocumentLinkMap(selectedDoc),
@@ -4565,7 +4642,7 @@ function AppShell() {
                             activeSelectedArticleHit?.documentId === selectedDoc.id ? activeSelectedArticleHit.articleId : null,
                           )
                         ) : (
-                          <ArticleContent text={selectedDoc.fullText} />
+                          <ArticleContent text={selectedDoc.fullText} keywords={selectedSearchHighlightTerms} relatedKeywords={selectedSearchRelatedHighlightTerms} />
                         )}
                       </div>
                     </div>

@@ -1298,6 +1298,19 @@ def expand_keywords_with_synonyms(keywords: list[str], cur=None, max_keywords: i
     return expanded[:max_keywords]
 
 
+def related_keywords_for_highlight(keywords: list[str], expanded_keywords: list[str]) -> list[str]:
+    base = {normalize_text(keyword).lower() for keyword in keywords if normalize_text(keyword)}
+    related: list[str] = []
+    seen: set[str] = set()
+    for keyword in expanded_keywords:
+        normalized = normalize_text(keyword).lower()
+        if not normalized or normalized in base or normalized in seen:
+            continue
+        seen.add(normalized)
+        related.append(normalized)
+    return related
+
+
 def source_label(source: str) -> str:
     if source == "mine-city":
         return "美祢市例規"
@@ -1608,6 +1621,8 @@ def serialize_meili_hit(
     score_boost: int = 0,
     document_level: bool = False,
     force_match_reason: str | None = None,
+    highlight_terms: list[str] | None = None,
+    related_highlight_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     ranking_score = hit.get("_rankingScore")
     try:
@@ -1633,6 +1648,8 @@ def serialize_meili_hit(
         "categoryPath": hit.get("categoryPath") or "",
         "matchReasons": [force_match_reason] if force_match_reason else infer_match_reasons_from_hit(hit, keywords, normalized_query),
         "promulgatedAt": hit.get("promulgatedAt"),
+        "highlightTerms": highlight_terms or [],
+        "relatedHighlightTerms": related_highlight_terms or [],
     }
 
 
@@ -1757,6 +1774,7 @@ def search_documents_meili_structured(
     if not all_keywords:
         return 0, []
     keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20) if fuzzy else all_keywords
+    related_keywords = related_keywords_for_highlight(all_keywords, keywords) if fuzzy else []
     query_text = " ".join(keywords)
     normalized_query = " ".join(all_keywords)
     filters = meili_filter_expr(source, law_type)
@@ -1797,6 +1815,8 @@ def search_documents_meili_structured(
                         score_boost=boost,
                         document_level=document_level,
                         force_match_reason=reason,
+                        highlight_terms=all_keywords,
+                        related_highlight_terms=related_keywords,
                     )
                     for hit in (key_result.get("hits") or [])
                 )
@@ -1819,7 +1839,7 @@ def search_documents_meili_structured(
     total = int(result.get("estimatedTotalHits") or result.get("totalHits") or len(hits))
     if not fuzzy:
         hits = [hit for hit in hits if meili_hit_matches_exact(hit, all_keywords)]
-    items = [serialize_meili_hit(hit, keywords, normalized_query) for hit in hits]
+    items = [serialize_meili_hit(hit, keywords, normalized_query, highlight_terms=all_keywords, related_highlight_terms=related_keywords) for hit in hits]
     if not fuzzy and offset == 0 and not pre_items and not items:
         key_query = build_meili_query_key_text(all_keywords)
         if key_query:
@@ -1843,6 +1863,8 @@ def search_documents_meili_structured(
                     score_boost=900,
                     document_level=False,
                     force_match_reason="条文",
+                    highlight_terms=all_keywords,
+                    related_highlight_terms=related_keywords,
                 )
                 for hit in (body_result.get("hits") or [])
             )
@@ -3911,6 +3933,7 @@ def search_minutes_items(
     base_terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
         terms = expand_keywords_with_synonyms(base_terms, cur=cur, max_keywords=20) if match_mode == "related" else base_terms
+        related_terms = related_keywords_for_highlight(base_terms, terms) if match_mode == "related" else []
         generation = get_cache_generation(cur)
         cache_key = make_cache_key(
             [
@@ -4024,6 +4047,8 @@ def search_minutes_items(
                     "snippet": minutes_snippet(row.get("text") or "", terms),
                     "text": row.get("text") or "",
                     "exchange": exchange,
+                    "highlightTerms": base_terms,
+                    "relatedHighlightTerms": related_terms,
                 }
             )
         put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, results)
@@ -4152,7 +4177,12 @@ def put_ask_cache(cur, cache_key: str, normalized_query: str, generation: int, p
     put_local_cache(LOCAL_ASK_CACHE, cache_key, payload)
 
 
-def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, Any]:
+def serialize_search_row(
+    row: dict[str, Any],
+    keywords: list[str],
+    highlight_terms: list[str] | None = None,
+    related_highlight_terms: list[str] | None = None,
+) -> dict[str, Any]:
     law_type = row.get('law_type') or ''
     snippet_text = clean_link_marker_fragments(row.get('article_text') or row.get('full_text') or '')
     return {
@@ -4170,6 +4200,8 @@ def serialize_search_row(row: dict[str, Any], keywords: list[str]) -> dict[str, 
         'categoryPath': row.get('category_path') or '',
         'matchReasons': row.get('match_reasons') or [],
         'promulgatedAt': str(row['promulgated_at']) if row.get('promulgated_at') else None,
+        'highlightTerms': highlight_terms or [],
+        'relatedHighlightTerms': related_highlight_terms or [],
     }
 
 
@@ -4249,6 +4281,8 @@ def fetch_search_detail_rows(
     normalized_query: str,
     limit: int,
     offset: int = 0,
+    highlight_terms: list[str] | None = None,
+    related_highlight_terms: list[str] | None = None,
 ) -> tuple[int, list[dict[str, Any]]]:
     article_map = {
         int(item["article_id"]): {"term_score": int(item["term_score"]), "matched_terms": int(item["matched_terms"])}
@@ -4359,7 +4393,7 @@ def fetch_search_detail_rows(
     rows.sort(key=lambda item: (-int(item["score"]), -(item.get("article_id") is not None), int(item["document_id"]), int(item.get("article_id") or 0)))
     total = len(rows)
     sliced = rows[offset:offset + limit]
-    return total, [serialize_search_row(row, keywords) for row in sliced]
+    return total, [serialize_search_row(row, keywords, highlight_terms, related_highlight_terms) for row in sliced]
 
 
 def search_candidate_limit(limit: int, offset: int = 0, multiplier: int = 3, minimum: int = 60, maximum: int = 240) -> int:
@@ -4629,7 +4663,17 @@ def search_documents_structured(
         document_candidates = [{"document_id": doc_id, "term_score": 1, "matched_terms": 1} for doc_id in list(valid_ids)[:120]]
 
     keywords = expand_keywords_with_synonyms(all_keywords, max_keywords=20) if fuzzy else all_keywords
-    total, results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit, offset)
+    related_keywords = related_keywords_for_highlight(all_keywords, keywords) if fuzzy else []
+    total, results = fetch_search_detail_rows(
+        article_candidates,
+        document_candidates,
+        keywords,
+        normalized_query,
+        limit,
+        offset,
+        all_keywords,
+        related_keywords,
+    )
 
     if offset == 0:
         with db_cursor(commit=True) as (_, cur):
@@ -4654,7 +4698,9 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
     anchor_doc_ids: set[int] | None = None
     with db_cursor() as (_, cur):
         generation = get_cache_generation(cur)
-        keywords = expand_keywords_with_synonyms(split_keywords(query), cur=cur, max_keywords=20) if fuzzy else split_keywords(query)
+        input_keywords = split_keywords(query)
+        keywords = expand_keywords_with_synonyms(input_keywords, cur=cur, max_keywords=20) if fuzzy else input_keywords
+        related_keywords = related_keywords_for_highlight(input_keywords, keywords) if fuzzy else []
         terms = query_terms(query, cur=cur, fuzzy=fuzzy)
         cache_key = make_cache_key(["search", normalized_query, source, str(limit), str(generation), "fuzzy" if fuzzy else "exact"])
         cached = get_search_cache(cur, cache_key)
@@ -4728,7 +4774,16 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
         with db_cursor(commit=True) as (_, cur):
             put_search_cache(cur, cache_key, normalized_query, source, limit, generation, results)
         return len(results), results
-    _total, results = fetch_search_detail_rows(article_candidates, document_candidates, keywords, normalized_query, limit)
+    _total, results = fetch_search_detail_rows(
+        article_candidates,
+        document_candidates,
+        keywords,
+        normalized_query,
+        limit,
+        0,
+        input_keywords,
+        related_keywords,
+    )
     if not results:
         results = search_documents_slow(query, source, limit)
     with db_cursor(commit=True) as (_, cur):

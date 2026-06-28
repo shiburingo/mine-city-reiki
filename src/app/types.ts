@@ -68,6 +68,8 @@ export type SearchResult = {
   snippet: string;
   categoryPath: string;
   matchReasons?: string[];
+  highlightTerms?: string[];
+  relatedHighlightTerms?: string[];
   promulgatedAt?: string | null;
 };
 
@@ -254,6 +256,8 @@ export type MinutesSearchResult = {
   snippet: string;
   text: string;
   exchange: MinutesExchangeItem[];
+  highlightTerms?: string[];
+  relatedHighlightTerms?: string[];
 };
 
 export type MinutesSpeaker = {

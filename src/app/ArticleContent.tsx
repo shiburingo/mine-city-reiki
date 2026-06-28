@@ -118,8 +118,33 @@ function scrollToInternalAnchor(event: React.MouseEvent<HTMLAnchorElement>, href
   target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function renderPlainText(part: string, keywords: string[], articleLinks: ArticleLinkMap, keyPrefix: string, onInternalAnchorLink?: InternalAnchorLinkHandler): React.ReactNode[] {
+function normalizeHighlightTerms(terms: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const term of terms) {
+    const normalized = term.trim();
+    const key = normalized.toLocaleLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result.sort((a, b) => b.length - a.length);
+}
+
+function renderPlainText(
+  part: string,
+  keywords: string[],
+  relatedKeywords: string[],
+  articleLinks: ArticleLinkMap,
+  keyPrefix: string,
+  onInternalAnchorLink?: InternalAnchorLinkHandler,
+): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
+  const exactTerms = normalizeHighlightTerms(keywords);
+  const exactLowerTerms = new Set(exactTerms.map((term) => term.toLocaleLowerCase()));
+  const relatedTerms = normalizeHighlightTerms(relatedKeywords).filter((term) => !exactLowerTerms.has(term.toLocaleLowerCase()));
+  const relatedLowerTerms = new Set(relatedTerms.map((term) => term.toLocaleLowerCase()));
+  const highlightTerms = normalizeHighlightTerms([...exactTerms, ...relatedTerms]);
   const refParts = part.split(ARTICLE_REF_RE);
   refParts.forEach((part, pi) => {
     if (ARTICLE_REF_RE.test(part)) {
@@ -147,19 +172,23 @@ function renderPlainText(part: string, keywords: string[], articleLinks: Article
       return;
     }
     ARTICLE_REF_RE.lastIndex = 0;
-    if (!keywords.length) {
+    if (!highlightTerms.length) {
       nodes.push(part);
       return;
     }
     // キーワードハイライト
-    const escaped = keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    const escaped = highlightTerms.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
     const hlRe = new RegExp(`(${escaped})`, 'gi');
     const hlParts = part.split(hlRe);
     hlParts.forEach((hp, hi) => {
-      if (hlRe.test(hp)) {
+      const key = hp.toLocaleLowerCase();
+      if (exactLowerTerms.has(key) || relatedLowerTerms.has(key)) {
         hlRe.lastIndex = 0;
         nodes.push(
-          <mark key={`${keyPrefix}-hl-${pi}-${hi}`} className="bg-yellow-200 text-yellow-900 rounded px-0.5">
+          <mark
+            key={`${keyPrefix}-hl-${pi}-${hi}`}
+            className={`rounded px-0.5 text-inherit ${exactLowerTerms.has(key) ? 'bg-yellow-200/90' : 'bg-emerald-200/90 ring-1 ring-emerald-300/70'}`}
+          >
             {hp}
           </mark>,
         );
@@ -175,6 +204,7 @@ function renderPlainText(part: string, keywords: string[], articleLinks: Article
 function renderTextLine(
   line: string,
   keywords: string[],
+  relatedKeywords: string[],
   articleLinks: ArticleLinkMap,
   sourceAnchorLinks: SourceAnchorLinkMap,
   sourceDocumentLinks: SourceDocumentLinkMap,
@@ -187,7 +217,7 @@ function renderTextLine(
   for (const match of line.matchAll(LINK_MARKER_RE)) {
     const index = match.index ?? 0;
     if (index > cursor) {
-      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
+      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, relatedKeywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
     }
     const rawHref = decodeMarkerValue(match[1] || '');
     const label = decodeMarkerValue(match[2] || '');
@@ -207,13 +237,13 @@ function renderTextLine(
         target={isInternal ? undefined : '_blank'}
         title={isInternal ? `${label}へ移動` : `${label}を原文で開く`}
       >
-        {renderPlainText(label, keywords, {}, `link-label-${index}`, onInternalAnchorLink)}
+        {renderPlainText(label, keywords, relatedKeywords, {}, `link-label-${index}`, onInternalAnchorLink)}
       </a>,
     );
     cursor = index + match[0].length;
   }
   if (cursor < line.length) {
-    nodes.push(...renderPlainText(line.slice(cursor), keywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
+    nodes.push(...renderPlainText(line.slice(cursor), keywords, relatedKeywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
   }
   return nodes;
 }
@@ -221,6 +251,7 @@ function renderTextLine(
 function ArticleTable({
   rows,
   keywords,
+  relatedKeywords,
   articleLinks,
   sourceAnchorLinks,
   sourceDocumentLinks,
@@ -230,6 +261,7 @@ function ArticleTable({
 }: {
   rows: string[][];
   keywords: string[];
+  relatedKeywords: string[];
   articleLinks: ArticleLinkMap;
   sourceAnchorLinks: SourceAnchorLinkMap;
   sourceDocumentLinks: SourceDocumentLinkMap;
@@ -248,7 +280,7 @@ function ArticleTable({
             <tr>
               {headerRow.map((cell, ci) => (
                 <th key={ci} className="px-3 py-2 text-left font-semibold border-b whitespace-nowrap">
-                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
+                  {renderTextLine(cell, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
                 </th>
               ))}
             </tr>
@@ -259,7 +291,7 @@ function ArticleTable({
             <tr key={ri} className="border-b last:border-b-0 hover:bg-muted/20">
               {row.map((cell, ci) => (
                 <td key={ci} className="px-3 py-2 align-top whitespace-pre-wrap">
-                  {renderTextLine(cell, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
+                  {renderTextLine(cell, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
                 </td>
               ))}
             </tr>
@@ -273,6 +305,7 @@ function ArticleTable({
 export function ArticleContent({
   text,
   keywords = [],
+  relatedKeywords = [],
   articleLinks = {},
   sourceAnchorLinks = {},
   sourceDocumentLinks = {},
@@ -282,6 +315,7 @@ export function ArticleContent({
 }: {
   text: string;
   keywords?: string[];
+  relatedKeywords?: string[];
   articleLinks?: ArticleLinkMap;
   sourceAnchorLinks?: SourceAnchorLinkMap;
   sourceDocumentLinks?: SourceDocumentLinkMap;
@@ -294,7 +328,7 @@ export function ArticleContent({
     <div className="space-y-1 text-sm leading-7">
       {parts.map((part, i) => {
         if (part.type === 'table') {
-          return <ArticleTable key={i} rows={part.rows} keywords={keywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceDocumentLinks={sourceDocumentLinks} sourceUrl={sourceUrl} onSourceDocumentLink={onSourceDocumentLink} onInternalAnchorLink={onInternalAnchorLink} />;
+          return <ArticleTable key={i} rows={part.rows} keywords={keywords} relatedKeywords={relatedKeywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceDocumentLinks={sourceDocumentLinks} sourceUrl={sourceUrl} onSourceDocumentLink={onSourceDocumentLink} onInternalAnchorLink={onInternalAnchorLink} />;
         }
         const lines = part.text.split('\n');
         return (
@@ -302,7 +336,7 @@ export function ArticleContent({
             {lines.map((line, li) => (
               <React.Fragment key={li}>
                 {li > 0 ? '\n' : null}
-                {renderTextLine(line, keywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
+                {renderTextLine(line, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
               </React.Fragment>
             ))}
           </p>
