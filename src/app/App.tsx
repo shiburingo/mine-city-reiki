@@ -108,6 +108,7 @@ type MinutesSearchLimit = 30 | 60 | 100 | 200 | 'all';
 const DEFAULT_MINUTES_MATCH_MODE: MinutesSearchHistoryItem['matchMode'] = 'exact';
 const DEFAULT_MINUTES_OP: MinutesSearchHistoryItem['op'] = 'AND';
 const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
+const DEFAULT_MINUTES_INCLUDE_CHAIR = false;
 const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
 const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 30;
 const MINUTES_SEARCH_LIMIT_OPTIONS: { value: MinutesSearchLimit; label: string }[] = [
@@ -992,6 +993,7 @@ function AppShell() {
   const [minutesMatchMode, setMinutesMatchMode] = useState<'exact' | 'related'>(DEFAULT_MINUTES_MATCH_MODE);
   const [minutesOp, setMinutesOp] = useState<'AND' | 'OR'>(DEFAULT_MINUTES_OP);
   const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(DEFAULT_MINUTES_INCLUDE_REPLIES);
+  const [minutesIncludeChair, setMinutesIncludeChair] = useState(DEFAULT_MINUTES_INCLUDE_CHAIR);
   const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>(DEFAULT_MINUTES_SORT_ORDER);
   const [minutesLimit, setMinutesLimit] = useState<MinutesSearchLimit>(DEFAULT_MINUTES_SEARCH_LIMIT);
   const [minutesPage, setMinutesPage] = useState<MinutesPage>('home');
@@ -1641,6 +1643,7 @@ function AppShell() {
     setMinutesMatchMode(DEFAULT_MINUTES_MATCH_MODE);
     setMinutesOp(DEFAULT_MINUTES_OP);
     setMinutesIncludeReplies(DEFAULT_MINUTES_INCLUDE_REPLIES);
+    setMinutesIncludeChair(DEFAULT_MINUTES_INCLUDE_CHAIR);
     setMinutesSortOrder(DEFAULT_MINUTES_SORT_ORDER);
     setMinutesLimit(DEFAULT_MINUTES_SEARCH_LIMIT);
   }
@@ -2271,7 +2274,7 @@ function AppShell() {
         }
       }
       for (const item of sourceItems) {
-        if (item.speakerRole === 'chair') continue;
+        if (item.speakerRole === 'chair' && !minutesIncludeChair) continue;
         const isHit = item.id === result.id;
         const isTargetSpeaker = targetSpeaker ? item.speakerName === targetSpeaker || item.speakerTitle === targetSpeaker : isHit;
         if (group.seen.has(item.id)) {
@@ -2297,7 +2300,7 @@ function AppShell() {
         items: group.items.sort((a, b) => a.order - b.order),
       }))
       .filter((group) => group.items.length > 0);
-  }, [minutesIncludeReplies, minutesSpeaker, sortedMinutesResults]);
+  }, [minutesIncludeChair, minutesIncludeReplies, minutesSpeaker, sortedMinutesResults]);
   const minutesCollectionItemCount = useMemo(
     () => minutesCollectionGroups.reduce((sum, group) => sum + group.items.length, 0),
     [minutesCollectionGroups],
@@ -2837,6 +2840,7 @@ function AppShell() {
             <p className="mt-2 text-sm text-muted-foreground">
               {minutesTotal.toLocaleString()}件ヒット / 表示発言 {minutesCollectionItemCount.toLocaleString()}件
               {minutesIncludeReplies ? ' / 関連する質問・答弁を含む' : ' / 指定発言者のみ'}
+              {minutesIncludeChair ? ' / 議事進行を含む' : ''}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -2846,6 +2850,13 @@ function AppShell() {
               className="inline-flex h-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold hover:bg-[#edf6f0]"
             >
               {minutesIncludeReplies ? '関連発言を非表示' : '関連発言も表示'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setMinutesIncludeChair((prev) => !prev)}
+              className="inline-flex h-10 items-center justify-center rounded-xl border px-3 text-sm font-semibold hover:bg-[#edf6f0]"
+            >
+              {minutesIncludeChair ? '議事進行を非表示' : '議事進行も表示'}
             </button>
             <button
               type="button"
@@ -3853,6 +3864,10 @@ function AppShell() {
                     <label className="mt-3 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
                       <input type="checkbox" checked={minutesIncludeReplies} onChange={(e) => setMinutesIncludeReplies(e.target.checked)} />
                       関連する答弁や質問も本文閲覧に表示
+                    </label>
+                    <label className="mt-3 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
+                      <input type="checkbox" checked={minutesIncludeChair} onChange={(e) => setMinutesIncludeChair(e.target.checked)} />
+                      議事進行を表示
                     </label>
                     {renderMinutesLimitSelector()}
                   </div>
