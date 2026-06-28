@@ -2162,6 +2162,30 @@ function AppShell() {
     });
     return values;
   }, [minutesResults, minutesSortOrder]);
+  const groupedSortedMinutesResults = useMemo(() => {
+    const groups = new Map<number, {
+      dayId: number;
+      title: string;
+      section: string;
+      meetingDate: string | null;
+      items: MinutesSearchResult[];
+    }>();
+    for (const result of sortedMinutesResults) {
+      const existing = groups.get(result.dayId);
+      if (existing) {
+        existing.items.push(result);
+        continue;
+      }
+      groups.set(result.dayId, {
+        dayId: result.dayId,
+        title: result.meetingName || result.dayTitle,
+        section: result.section,
+        meetingDate: result.meetingDate,
+        items: [result],
+      });
+    }
+    return [...groups.values()];
+  }, [sortedMinutesResults]);
   const minutesCollectionGroups = useMemo(() => {
     type CollectionItem = MinutesExchangeItem & {
       isHit: boolean;
@@ -2915,33 +2939,26 @@ function AppShell() {
         ) : minutesResults.length === 0 ? (
           <p className="rounded-2xl border bg-white p-6 text-muted-foreground">検索結果がありません。検索方法へ戻り、条件を変更してください。</p>
         ) : minutesResultMode === 'meeting' ? (
-          <div className="overflow-hidden rounded-2xl border bg-white">
-            <div className="hidden grid-cols-[9rem_minmax(0,1.4fr)_minmax(0,1fr)_8rem] border-b bg-[#5f8f8f] px-4 py-3 text-sm font-semibold text-white md:grid">
-              <span>年</span>
-              <span>会議名</span>
-              <span>日程</span>
-              <span className="text-right">ヒット数</span>
-            </div>
+          <div className="space-y-3">
             {meetingGroupedMinutesResults.map((group) => (
               <button
                 key={group.dayId}
                 type="button"
                 onClick={() => selectMinutesResult(group.first)}
-                className="grid w-full gap-2 border-b px-4 py-4 text-left transition last:border-b-0 hover:bg-[#edf7ef] md:grid-cols-[9rem_minmax(0,1.4fr)_minmax(0,1fr)_8rem] md:items-center"
+                className="w-full rounded-2xl border bg-white px-4 py-4 text-left transition hover:border-[#79b28d] hover:bg-[#edf7ef]"
               >
-                <span className="text-sm font-semibold text-[#2f765e]">
-                  {calendarYearLabelFromDate(group.meetingDate)}
-                </span>
-                <span className="min-w-0 font-semibold text-blue-700 underline-offset-2 hover:underline">
-                  {group.title}
-                </span>
-                <span className="text-sm text-muted-foreground">
-                  {group.meetingDate || '日付なし'} / {group.section}
-                </span>
-                <span className="text-sm font-semibold text-red-600 md:text-right">
-                  {group.count.toLocaleString()}件
-                  <span className="ml-2 text-xs font-medium text-muted-foreground">発言者{group.speakers.size}人</span>
-                </span>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[#2f765e]">
+                      {calendarYearLabelFromDate(group.meetingDate)} / {group.meetingDate || '日付なし'} / {group.section}
+                    </p>
+                    <h4 className="mt-1 text-lg font-semibold leading-snug text-blue-700 underline-offset-2 hover:underline">{group.title}</h4>
+                  </div>
+                  <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-sm font-semibold text-[#2f765e]">
+                    {group.count.toLocaleString()}件
+                    <span className="ml-2 text-xs font-medium text-muted-foreground">発言者{group.speakers.size}人</span>
+                  </span>
+                </div>
               </button>
             ))}
           </div>
@@ -2950,8 +2967,27 @@ function AppShell() {
             表は本文閲覧画面の「資料」タブで、該当会議日の抽出表として確認できます。
           </div>
         ) : (
-          <div className="grid gap-4 xl:grid-cols-2">
-            {sortedMinutesResults.map(renderMinutesResultCard)}
+          <div className="space-y-5">
+            {groupedSortedMinutesResults.map((group) => (
+              <section key={group.dayId} className="overflow-hidden rounded-3xl border bg-white shadow-sm">
+                <div className="border-b bg-[#e8f3ed] px-5 py-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[#2f765e]">
+                        {calendarYearLabelFromDate(group.meetingDate)} / {group.meetingDate || '日付なし'} / {group.section}
+                      </p>
+                      <h4 className="mt-1 text-lg font-semibold leading-snug text-[#173f36]">{group.title}</h4>
+                    </div>
+                    <span className="w-fit rounded-full bg-white px-3 py-1 text-sm font-semibold text-[#2f765e]">
+                      {group.items.length.toLocaleString()}件
+                    </span>
+                  </div>
+                </div>
+                <div className="space-y-3 p-4">
+                  {group.items.map(renderMinutesResultCard)}
+                </div>
+              </section>
+            ))}
           </div>
         )}
       </div>
