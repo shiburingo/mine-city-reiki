@@ -12,8 +12,10 @@ import pdfplumber
 
 GAIJI_SEPARATOR_CHARS = "疑癡癘"
 GAIJI_SEPARATOR_RE = re.compile(f"[{re.escape(GAIJI_SEPARATOR_CHARS)}]{{3,}}")
-SEPARATOR_LINE_RE = re.compile(r"[-‐‑‒–—―ー−─━]{6,}")
-EMBEDDED_SEPARATOR_RE = re.compile(r"(?<=[休憩散会閉会])(-{6,})(?=(?:午前|午後|上会議))")
+PDF_SEPARATOR_CHARS = "-‐‑‒–—―ー−─━"
+PDF_SEPARATOR_PATTERN = f"[{re.escape(PDF_SEPARATOR_CHARS)}]{{6,}}"
+SEPARATOR_LINE_RE = re.compile(PDF_SEPARATOR_PATTERN)
+EMBEDDED_SEPARATOR_RE = re.compile(rf"(?<=[休憩散会閉会])({PDF_SEPARATOR_PATTERN})(?=(?:午前|午後|上会議))")
 
 
 @dataclass
