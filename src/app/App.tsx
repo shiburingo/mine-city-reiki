@@ -788,13 +788,14 @@ function scrollElementIntoContainer(
   container: HTMLElement | null,
   block: ScrollLogicalPosition = 'start',
   behavior: ScrollBehavior = 'smooth',
+  offsetPixels = 24,
 ): void {
   const target = document.getElementById(elementId);
   if (!target) return;
   if (container?.contains(target)) {
     const targetRect = target.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
-    const offset = block === 'center' ? (container.clientHeight - targetRect.height) / 2 : 24;
+    const offset = block === 'center' ? (container.clientHeight - targetRect.height) / 2 : offsetPixels;
     const top = targetRect.top - containerRect.top + container.scrollTop - offset;
     container.scrollTo({ top: Math.max(top, 0), behavior });
     return;
@@ -2430,7 +2431,7 @@ function AppShell() {
     }
     minutesReaderScrollTimerRef.current = window.setTimeout(() => {
       minutesReaderScrollTimerRef.current = null;
-      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start', 'auto');
+      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start', 'auto', 12);
     }, 0);
   }
 
@@ -3213,7 +3214,9 @@ function AppShell() {
                       key={item.id}
                       className={`mb-4 min-w-0 rounded-2xl border p-4 last:mb-0 sm:p-5 ${
                         item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
-                      } [content-visibility:auto] [contain-intrinsic-size:0_14rem]`}
+                      } ${
+                        item.id === selectedMinutesResult.id ? '' : '[content-visibility:auto] [contain-intrinsic-size:0_14rem]'
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -3263,7 +3266,9 @@ function AppShell() {
                               : selectedDayMinutesHitIds.has(item.id)
                                 ? 'border-[#79b28d] bg-[#f0faf3]'
                                 : 'bg-[#fbfdfb]'
-                          } [content-visibility:auto] [contain-intrinsic-size:0_5rem]`}
+                          } ${
+                            item.id === selectedMinutesResult.id ? '' : '[content-visibility:auto] [contain-intrinsic-size:0_5rem]'
+                          }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="font-semibold">{item.speakerTitle} {item.speakerName}</span>
@@ -3295,7 +3300,9 @@ function AppShell() {
                               : isHit
                                 ? 'border-[#79b28d] bg-[#f0faf3]'
                                 : 'border-transparent'
-                          } [content-visibility:auto] [contain-intrinsic-size:0_16rem]`}
+                          } ${
+                            item.id === selectedMinutesResult.id ? '' : '[content-visibility:auto] [contain-intrinsic-size:0_16rem]'
+                          }`}
                         >
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <h4 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h4>
