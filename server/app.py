@@ -3762,13 +3762,14 @@ def append_minutes_role_filter(
     params.append(role)
 
 
-def minutes_boolean_query(terms: list[str], fallback: str) -> str:
+def minutes_boolean_query(terms: list[str], fallback: str, require_all: bool = True) -> str:
     tokens = terms or ([normalize_text(fallback)] if normalize_text(fallback) else [])
     safe_tokens: list[str] = []
     for token in tokens:
         value = re.sub(r'[+\-<>()~*"@]+', " ", token).strip()
         if len(value) >= 2:
-            safe_tokens.append(f"+{value}*")
+            prefix = "+" if require_all else ""
+            safe_tokens.append(f"{prefix}{value}*")
     return " ".join(safe_tokens)
 
 
@@ -3785,7 +3786,7 @@ def append_minutes_query_filter(
     if not normalized_query:
         return
     if use_fulltext:
-        boolean_query = minutes_boolean_query(terms, normalized_query)
+        boolean_query = minutes_boolean_query(terms, normalized_query, require_all=match_mode != "related")
         if not boolean_query:
             return
         conditions.append(
@@ -3907,8 +3908,9 @@ def search_minutes_items(
     limit: int | None = 20,
     context: str = "none",
 ) -> list[dict[str, Any]]:
-    terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
+    base_terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
+        terms = expand_keywords_with_synonyms(base_terms, cur=cur, max_keywords=20) if match_mode == "related" else base_terms
         generation = get_cache_generation(cur)
         cache_key = make_cache_key(
             [
@@ -3933,7 +3935,7 @@ def search_minutes_items(
             return cached
 
         rows: list[dict[str, Any]] = []
-        use_fulltext_options = [True, False] if normalize_text(query) and minutes_boolean_query(terms, query) else [False]
+        use_fulltext_options = [True, False] if normalize_text(query) and minutes_boolean_query(terms, query, require_all=match_mode != "related") else [False]
         speaker_exact_options = [True, False] if speaker else [True]
         attempts = [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
         seen_attempts: set[tuple[bool, bool]] = set()
@@ -4529,7 +4531,7 @@ def search_documents_structured(
     if can_use_meili_structured(active, source, law_type, from_date, to_date):
         try:
             meili_total, meili_items = search_documents_meili_structured(active, source, limit, offset, law_type, fuzzy=fuzzy)
-            if meili_total > 0 or fuzzy:
+            if meili_total > 0:
                 return meili_total, meili_items
             app.logger.info("Meilisearch structured search returned no exact hits; falling back to MySQL")
         except Exception as exc:
@@ -4642,7 +4644,7 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
     if meili_is_enabled() and source in SOURCE_SCOPES:
         try:
             meili_total, meili_items = search_documents_meili_structured([{"q": query, "op": "AND"}], source, limit, 0, "", fuzzy=fuzzy)
-            if meili_total > 0 or fuzzy:
+            if meili_total > 0:
                 return meili_total, meili_items
             app.logger.info("Meilisearch search returned no exact hits; falling back to MySQL")
         except Exception as exc:
