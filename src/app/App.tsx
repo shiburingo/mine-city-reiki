@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart2, Bookmark, BookMarked, BookOpen, ChevronLeft, ChevronRight, Clock, Database, Download, FileSearch, Printer, RefreshCw, Search, Settings2, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader } from '@mine-troutfarm/ui';
 import {
@@ -111,6 +111,8 @@ const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
 const DEFAULT_MINUTES_INCLUDE_CHAIR = false;
 const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
 const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 30;
+const MINUTES_INITIAL_RENDER_LIMIT = 200;
+const MINUTES_RENDER_BATCH_SIZE = 200;
 const MINUTES_SEARCH_LIMIT_OPTIONS: { value: MinutesSearchLimit; label: string }[] = [
   { value: 30, label: '30件' },
   { value: 60, label: '60件' },
@@ -1028,6 +1030,7 @@ function AppShell() {
   const [minutesHistory, setMinutesHistory] = useState<MinutesSearchHistoryItem[]>(() => loadMinutesSearchHistory());
   const [minutesResults, setMinutesResults] = useState<MinutesSearchResult[]>([]);
   const [minutesTotal, setMinutesTotal] = useState(0);
+  const [minutesVisibleResultCount, setMinutesVisibleResultCount] = useState(0);
   const [minutesSearching, setMinutesSearching] = useState(false);
   const [minutesSyncing, setMinutesSyncing] = useState(false);
   const [selectedMinutesResult, setSelectedMinutesResult] = useState<MinutesSearchResult | null>(null);
@@ -1611,13 +1614,16 @@ function AppShell() {
         limit,
         context,
       });
-      setMinutesResults(resp.items);
-      setMinutesTotal(resp.total);
-      setSelectedMinutesResult(resp.items[0] || null);
-      setMinutesExpandedResultIds(new Set());
-      setMinutesResultMode(resultMode ?? ((speaker || role !== 'all') ? 'meeting' : 'utterance'));
-      setMinutesSearchReturnPage(minutesPage);
-      setMinutesPage(destinationPage);
+      startTransition(() => {
+        setMinutesResults(resp.items);
+        setMinutesTotal(resp.total);
+        setMinutesVisibleResultCount(limit === 'all' ? Math.min(MINUTES_INITIAL_RENDER_LIMIT, resp.items.length) : resp.items.length);
+        setSelectedMinutesResult(resp.items[0] || null);
+        setMinutesExpandedResultIds(new Set());
+        setMinutesResultMode(resultMode ?? ((speaker || role !== 'all') ? 'meeting' : 'utterance'));
+        setMinutesSearchReturnPage(minutesPage);
+        setMinutesPage(destinationPage);
+      });
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録検索に失敗しました。');
     } finally {
@@ -1676,6 +1682,7 @@ function AppShell() {
   function resetMinutesSearchResults(resultMode: 'utterance' | 'meeting' | 'table' = 'utterance') {
     setMinutesResults([]);
     setMinutesTotal(0);
+    setMinutesVisibleResultCount(0);
     setMinutesExpandedResultIds(new Set());
     setSelectedMinutesResult(null);
     setMinutesResultMode(resultMode);
@@ -2222,7 +2229,11 @@ function AppShell() {
     });
     return values;
   }, [deferredMinutesResults, minutesSortOrder]);
-  const groupedSortedMinutesResults = useMemo(() => {
+  const visibleSortedMinutesResults = useMemo(() => {
+    if (!minutesVisibleResultCount || sortedMinutesResults.length <= minutesVisibleResultCount) return sortedMinutesResults;
+    return sortedMinutesResults.slice(0, minutesVisibleResultCount);
+  }, [minutesVisibleResultCount, sortedMinutesResults]);
+  const groupedVisibleMinutesResults = useMemo(() => {
     const groups = new Map<number, {
       dayId: number;
       title: string;
@@ -2230,7 +2241,7 @@ function AppShell() {
       meetingDate: string | null;
       items: MinutesSearchResult[];
     }>();
-    for (const result of sortedMinutesResults) {
+    for (const result of visibleSortedMinutesResults) {
       const existing = groups.get(result.dayId);
       if (existing) {
         existing.items.push(result);
@@ -2245,7 +2256,7 @@ function AppShell() {
       });
     }
     return [...groups.values()];
-  }, [sortedMinutesResults]);
+  }, [visibleSortedMinutesResults]);
   const minutesCollectionGroups = useMemo(() => {
     type CollectionItem = MinutesExchangeItem & {
       isHit: boolean;
@@ -3024,6 +3035,11 @@ function AppShell() {
           <div>
             <p className="text-sm font-semibold text-[#2f765e]">検索結果</p>
             <h3 className="text-2xl font-semibold">{minutesTotal.toLocaleString()}件</h3>
+            {minutesResults.length > 0 && minutesVisibleResultCount < sortedMinutesResults.length ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                表示中 {Math.min(minutesVisibleResultCount, sortedMinutesResults.length).toLocaleString()} / {sortedMinutesResults.length.toLocaleString()}件
+              </p>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -3089,7 +3105,7 @@ function AppShell() {
           </div>
         ) : (
           <div className="space-y-5">
-            {groupedSortedMinutesResults.map((group) => (
+            {groupedVisibleMinutesResults.map((group) => (
               <section key={group.dayId} className="overflow-hidden rounded-3xl border bg-white shadow-sm">
                 <div className="border-b bg-[#e8f3ed] px-5 py-4">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -3109,6 +3125,17 @@ function AppShell() {
                 </div>
               </section>
             ))}
+            {minutesVisibleResultCount < sortedMinutesResults.length ? (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setMinutesVisibleResultCount((current) => Math.min(current + MINUTES_RENDER_BATCH_SIZE, sortedMinutesResults.length))}
+                  className="rounded-2xl border bg-white px-6 py-3 text-sm font-semibold text-[#37564d] shadow-sm hover:border-[#79b28d] hover:bg-[#edf6f0]"
+                >
+                  さらに{Math.min(MINUTES_RENDER_BATCH_SIZE, sortedMinutesResults.length - minutesVisibleResultCount).toLocaleString()}件表示
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
       </div>

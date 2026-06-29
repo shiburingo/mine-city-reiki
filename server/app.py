@@ -3749,6 +3749,14 @@ def minutes_snippet(text: str, keywords: list[str]) -> str:
     return snippet if snippet else normalize_text(text)[:180]
 
 
+def minutes_preview_anchor(terms: list[str], query: str) -> str:
+    for term in terms:
+        value = normalize_text(term)
+        if value:
+            return value[:80]
+    return normalize_text(query)[:80]
+
+
 EXACT_EXECUTIVE_TITLE_FILTERS = {
     "市長",
     "副市長",
@@ -3962,6 +3970,17 @@ def search_minutes_items(
         speaker_exact_options = [True, False] if speaker else [True]
         attempts = [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
         seen_attempts: set[tuple[bool, bool]] = set()
+        compact_results = context != "wide"
+        preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
+        if compact_results and preview_anchor:
+            text_select = "CASE WHEN LOCATE(%s, u.text) > 0 THEN SUBSTRING(u.text, GREATEST(1, LOCATE(%s, u.text) - 70), 420) ELSE SUBSTRING(u.text, 1, 420) END AS text"
+            text_select_params: list[Any] = [preview_anchor, preview_anchor]
+        elif compact_results:
+            text_select = "SUBSTRING(u.text, 1, 420) AS text"
+            text_select_params = []
+        else:
+            text_select = "u.text"
+            text_select_params = []
         for use_fulltext, speaker_exact_only in attempts:
             if (use_fulltext, speaker_exact_only) in seen_attempts:
                 continue
@@ -3983,12 +4002,12 @@ def search_minutes_items(
             )
             try:
                 limit_clause = "LIMIT %s" if limit is not None else ""
-                query_params = params + ([limit] if limit is not None else [])
+                query_params = text_select_params + params + ([limit] if limit is not None else [])
                 cur.execute(
                     f"""
                     SELECT
                       u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
-                      u.speech_type, u.text, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+                      u.speech_type, {text_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
                       d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
                       s.section, s.meeting_name, s.title AS session_title
                     FROM meeting_utterances u
