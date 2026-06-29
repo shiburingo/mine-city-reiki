@@ -4025,7 +4025,10 @@ def search_minutes_items(
                     continue
                 raise
             rows = cur.fetchall() or []
-            if (limit is not None and len(rows) >= limit) or (not use_fulltext and (rows or not speaker_exact_only)):
+            # FULLTEXT is the primary path for minutes search. Falling through to
+            # LIKE after FULLTEXT already found rows turns unlimited searches into
+            # a table scan and makes common terms such as 観光 several seconds slower.
+            if (use_fulltext and rows) or (limit is not None and len(rows) >= limit) or (not use_fulltext and (rows or not speaker_exact_only)):
                 break
 
         include_exchange = context == "wide"
