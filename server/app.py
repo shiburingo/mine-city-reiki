@@ -4080,9 +4080,15 @@ def search_minutes_items(
 
         rows: list[dict[str, Any]] = []
         short_index_term = ""
-        if len(base_terms) == 1 and match_mode == "exact":
+        if len(base_terms) == 1:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
-            if candidate_short_term and is_minutes_short_term_index_ready(cur, candidate_short_term):
+            expanded_terms = {normalize_text(term) for term in terms if normalize_text(term)}
+            can_satisfy_with_short_index = match_mode == "exact" or expanded_terms <= {candidate_short_term}
+            if (
+                candidate_short_term
+                and can_satisfy_with_short_index
+                and is_minutes_short_term_index_ready(cur, candidate_short_term)
+            ):
                 short_index_term = candidate_short_term
         use_fulltext_options = (
             [False]
