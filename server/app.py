@@ -146,6 +146,7 @@ LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_MINUTES_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
 SYNC_THREAD_LOCK = threading.Lock()
+MINUTES_SHORT_TERM_INDEX_VERSION = "short-term-v1"
 BUILTIN_SYNONYM_GROUPS = [
     # ── 法令の種類・総称 ──────────────────────────────
     ("地方自治法", ["自治法", "自治体法"]),
@@ -580,6 +581,36 @@ def ensure_schema() -> None:
             )
             ensure_table(
                 cur,
+                "meeting_utterance_short_terms",
+                """
+                CREATE TABLE meeting_utterance_short_terms (
+                  term VARCHAR(16) NOT NULL,
+                  utterance_id BIGINT UNSIGNED NOT NULL,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (term, utterance_id),
+                  KEY idx_meeting_utterance_short_terms_day_term (day_id, term),
+                  KEY idx_meeting_utterance_short_terms_utterance (utterance_id),
+                  CONSTRAINT fk_meeting_utterance_short_terms_utterance FOREIGN KEY (utterance_id) REFERENCES meeting_utterances(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_meeting_utterance_short_terms_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_short_term_index_status",
+                """
+                CREATE TABLE meeting_short_term_index_status (
+                  term VARCHAR(16) NOT NULL PRIMARY KEY,
+                  index_version VARCHAR(64) NOT NULL DEFAULT '',
+                  utterance_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  rebuilt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
                 "meeting_tables",
                 """
                 CREATE TABLE meeting_tables (
@@ -708,6 +739,86 @@ def contains_japanese(text: str) -> bool:
         or ch == "々"
         for ch in text
     )
+
+
+def is_japanese_single_search_char(ch: str) -> bool:
+    return (
+        len(ch) == 1
+        and (
+            ("\u3040" <= ch <= "\u30ff")
+            or ("\u3400" <= ch <= "\u9fff")
+            or ch in {"々", "〆", "〇"}
+        )
+    )
+
+
+def normalize_minutes_short_term(term: str) -> str:
+    value = normalize_text(term)
+    return value if is_japanese_single_search_char(value) else ""
+
+
+def extract_minutes_short_terms(text: str) -> list[str]:
+    normalized = normalize_text(text)
+    return sorted({ch for ch in normalized if is_japanese_single_search_char(ch)})
+
+
+def insert_minutes_short_terms_for_utterance(cur, utterance_id: int, day_id: int, search_text: str) -> None:
+    terms = extract_minutes_short_terms(search_text)
+    if not terms:
+        return
+    cur.executemany(
+        """
+        INSERT IGNORE INTO meeting_utterance_short_terms (term, utterance_id, day_id)
+        VALUES (%s,%s,%s)
+        """,
+        [(term, utterance_id, day_id) for term in terms],
+    )
+
+
+def is_minutes_short_term_index_ready(cur, term: str) -> bool:
+    short_term = normalize_minutes_short_term(term)
+    if not short_term:
+        return False
+    cur.execute(
+        """
+        SELECT 1
+        FROM meeting_short_term_index_status
+        WHERE term=%s AND index_version=%s
+        LIMIT 1
+        """,
+        (short_term, MINUTES_SHORT_TERM_INDEX_VERSION),
+    )
+    return cur.fetchone() is not None
+
+
+def rebuild_minutes_short_term_index_for_term(cur, term: str) -> int:
+    short_term = normalize_minutes_short_term(term)
+    if not short_term:
+        return 0
+    cur.execute("DELETE FROM meeting_utterance_short_terms WHERE term=%s", (short_term,))
+    cur.execute(
+        """
+        INSERT IGNORE INTO meeting_utterance_short_terms (term, utterance_id, day_id)
+        SELECT %s, id, day_id
+        FROM meeting_utterances
+        WHERE search_text LIKE %s
+        """,
+        (short_term, f"%{short_term}%"),
+    )
+    utterance_count = int(cur.rowcount or 0)
+    cur.execute(
+        """
+        INSERT INTO meeting_short_term_index_status (term, index_version, utterance_count, rebuilt_at)
+        VALUES (%s,%s,%s,CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          index_version=VALUES(index_version),
+          utterance_count=VALUES(utterance_count),
+          rebuilt_at=VALUES(rebuilt_at),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (short_term, MINUTES_SHORT_TERM_INDEX_VERSION, utterance_count),
+    )
+    return utterance_count
 
 
 def get_janome_tokenizer():
@@ -3451,6 +3562,7 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
                 SPEAKER_ENGINE_VERSION,
             ),
         )
+        insert_minutes_short_terms_for_utterance(cur, int(cur.lastrowid), day_id, search_text)
     for table in tables:
         cur.execute(
             """
@@ -3967,7 +4079,18 @@ def search_minutes_items(
             return cached
 
         rows: list[dict[str, Any]] = []
-        use_fulltext_options = [True, False] if normalize_text(query) and minutes_boolean_query(terms, query, require_all=match_mode != "related") else [False]
+        short_index_term = ""
+        if len(base_terms) == 1 and match_mode == "exact":
+            candidate_short_term = normalize_minutes_short_term(base_terms[0])
+            if candidate_short_term and is_minutes_short_term_index_ready(cur, candidate_short_term):
+                short_index_term = candidate_short_term
+        use_fulltext_options = (
+            [False]
+            if short_index_term
+            else [True, False]
+            if normalize_text(query) and minutes_boolean_query(terms, query, require_all=match_mode != "related")
+            else [False]
+        )
         speaker_exact_options = [True, False] if speaker else [True]
         attempts = [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
         seen_attempts: set[tuple[bool, bool]] = set()
@@ -3993,8 +4116,8 @@ def search_minutes_items(
                 continue
             seen_attempts.add((use_fulltext, speaker_exact_only))
             where, params = build_minutes_where(
-                query,
-                terms,
+                "" if short_index_term else query,
+                [] if short_index_term else terms,
                 speaker,
                 role,
                 section,
@@ -4009,7 +4132,12 @@ def search_minutes_items(
             )
             try:
                 limit_clause = "LIMIT %s" if limit is not None else ""
-                query_params = text_select_params + params + ([limit] if limit is not None else [])
+                short_join_sql = ""
+                short_join_params: list[Any] = []
+                if short_index_term:
+                    short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.id AND st.term=%s"
+                    short_join_params.append(short_index_term)
+                query_params = text_select_params + short_join_params + params + ([limit] if limit is not None else [])
                 cur.execute(
                     f"""
                     SELECT
@@ -4018,6 +4146,7 @@ def search_minutes_items(
                       d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
                       s.section, s.meeting_name, s.title AS session_title
                     FROM meeting_utterances u
+                    {short_join_sql}
                     JOIN meeting_days d ON d.id=u.day_id
                     JOIN meeting_sessions s ON s.id=d.session_id
                     WHERE {where}
