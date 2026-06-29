@@ -799,7 +799,10 @@ function scrollElementIntoContainer(
     const containerRect = container.getBoundingClientRect();
     const offset = block === 'center' ? (container.clientHeight - targetRect.height) / 2 : offsetPixels;
     const top = targetRect.top - containerRect.top + container.scrollTop - offset;
-    container.scrollTo({ top: Math.max(top, 0), behavior });
+    const nextTop = Math.max(top, 0);
+    if (Math.abs(container.scrollTop - nextTop) > 1) {
+      container.scrollTo({ top: nextTop, behavior });
+    }
     return;
   }
   target.scrollIntoView({ behavior, block });
@@ -980,7 +983,7 @@ function AppShell() {
   const selectedArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
-  const minutesReaderScrollTimerRef = useRef<number | null>(null);
+  const minutesReaderScrollFrameRef = useRef<number | null>(null);
   const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
   const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
@@ -1280,8 +1283,8 @@ function AppShell() {
 
   useEffect(() => {
     return () => {
-      if (minutesReaderScrollTimerRef.current != null) {
-        window.clearTimeout(minutesReaderScrollTimerRef.current);
+      if (minutesReaderScrollFrameRef.current != null) {
+        window.cancelAnimationFrame(minutesReaderScrollFrameRef.current);
       }
     };
   }, []);
@@ -2437,13 +2440,15 @@ function AppShell() {
 
   function scrollMinutesUtteranceIntoView(utteranceId: number | null | undefined) {
     if (!utteranceId) return;
-    if (minutesReaderScrollTimerRef.current != null) {
-      window.clearTimeout(minutesReaderScrollTimerRef.current);
+    if (minutesReaderScrollFrameRef.current != null) {
+      window.cancelAnimationFrame(minutesReaderScrollFrameRef.current);
     }
-    minutesReaderScrollTimerRef.current = window.setTimeout(() => {
-      minutesReaderScrollTimerRef.current = null;
-      scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start', 'auto', 12);
-    }, 0);
+    minutesReaderScrollFrameRef.current = window.requestAnimationFrame(() => {
+      minutesReaderScrollFrameRef.current = window.requestAnimationFrame(() => {
+        minutesReaderScrollFrameRef.current = null;
+        scrollElementIntoContainer(`minutes-utterance-${utteranceId}`, minutesReaderScrollRef.current, 'start', 'auto', 12);
+      });
+    });
   }
 
   function selectMinutesHit(hit: MinutesSearchResult) {
@@ -3233,7 +3238,7 @@ function AppShell() {
                   </div>
                 </div>
               </div>
-              <div ref={minutesReaderScrollRef} className="max-h-[72vh] min-w-0 overflow-auto p-4 sm:p-5">
+              <div ref={minutesReaderScrollRef} className="max-h-[72vh] min-w-0 overflow-auto p-4 [overflow-anchor:none] sm:p-5">
                 {minutesReaderMode === 'unit' ? (
                   selectedMinutesUnitItems.map((item) => (
                     <article
