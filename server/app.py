@@ -1289,10 +1289,6 @@ def expand_keywords_with_synonyms(keywords: list[str], cur=None, max_keywords: i
             if synonym and synonym not in seen:
                 seen.add(synonym)
                 expanded.append(synonym)
-        for canonical, linked in synonym_lookup.items():
-            if token in linked and canonical not in seen:
-                seen.add(canonical)
-                expanded.append(canonical)
         if len(expanded) >= max_keywords:
             break
     return expanded[:max_keywords]
