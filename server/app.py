@@ -3757,6 +3757,11 @@ def minutes_preview_anchor(terms: list[str], query: str) -> str:
     return normalize_text(query)[:80]
 
 
+MINUTES_SEARCH_PREVIEW_CHARS = 260
+MINUTES_SEARCH_PREVIEW_BACKTRACK = 55
+MINUTES_SEARCH_SNIPPET_CHARS = 180
+
+
 EXACT_EXECUTIVE_TITLE_FILTERS = {
     "市長",
     "副市長",
@@ -3973,11 +3978,17 @@ def search_minutes_items(
         compact_results = context != "wide"
         preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
         if compact_results and preview_anchor:
-            text_select = "CASE WHEN LOCATE(%s, u.text) > 0 THEN SUBSTRING(u.text, GREATEST(1, LOCATE(%s, u.text) - 70), 420) ELSE SUBSTRING(u.text, 1, 420) END AS text"
-            text_select_params: list[Any] = [preview_anchor, preview_anchor]
+            text_select = "CASE WHEN LOCATE(%s, u.text) > 0 THEN SUBSTRING(u.text, GREATEST(1, LOCATE(%s, u.text) - %s), %s) ELSE SUBSTRING(u.text, 1, %s) END AS text"
+            text_select_params: list[Any] = [
+                preview_anchor,
+                preview_anchor,
+                MINUTES_SEARCH_PREVIEW_BACKTRACK,
+                MINUTES_SEARCH_PREVIEW_CHARS,
+                MINUTES_SEARCH_PREVIEW_CHARS,
+            ]
         elif compact_results:
-            text_select = "SUBSTRING(u.text, 1, 420) AS text"
-            text_select_params = []
+            text_select = "SUBSTRING(u.text, 1, %s) AS text"
+            text_select_params = [MINUTES_SEARCH_PREVIEW_CHARS]
         else:
             text_select = "u.text"
             text_select_params = []
@@ -4037,6 +4048,8 @@ def search_minutes_items(
         for row in rows:
             day_id = int(row["day_id"])
             order = int(row["utterance_order"])
+            row_text = row.get("text") or ""
+            snippet = normalize_text(row_text)[:MINUTES_SEARCH_SNIPPET_CHARS] if compact_results else minutes_snippet(row_text, terms)
             exchange = (
                 serialize_minutes_exchange(
                     [
@@ -4066,8 +4079,8 @@ def search_minutes_items(
                     "pageEnd": int(row.get("page_end") or 0),
                     "positionTopStart": float(row.get("position_top_start") or 0),
                     "positionTopEnd": float(row.get("position_top_end") or 0),
-                    "snippet": minutes_snippet(row.get("text") or "", terms),
-                    "text": row.get("text") or "",
+                    "snippet": snippet,
+                    "text": row_text,
                     "exchange": exchange,
                     "highlightTerms": base_terms,
                     "relatedHighlightTerms": related_terms,
