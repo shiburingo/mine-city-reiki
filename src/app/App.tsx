@@ -4944,18 +4944,42 @@ function AppShell() {
                 <p className="mt-2 text-sm text-muted-foreground">
                   会議録のみ差分同期は、元データWebページからPDF一覧を収集し、追加または内容変更されたPDFだけを抽出し直します。
                 </p>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('mine-city')}>美祢市例規のみ</button>
-                  <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('egov')}>地方自治法のみ</button>
-                  <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('local-public-service')}>地方公務員法のみ</button>
-                  <button
-                    className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
-                    disabled={busy || minutesSyncing || Boolean(runningMinutesRun)}
-                    onClick={() => void triggerMinutesSync(0)}
-                  >
-                    会議録のみ差分同期
-                  </button>
-                  <button className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('all')}>すべて同期</button>
+                <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_15rem]">
+                  <div className="rounded-3xl border bg-background/70 p-3">
+                    <div className="flex items-center justify-between gap-3 px-1">
+                      <p className="text-sm font-semibold">個別同期</p>
+                      <p className="text-xs text-muted-foreground">必要なデータだけ更新</p>
+                    </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      <button className="inline-flex h-14 flex-col items-center justify-center rounded-2xl border bg-card px-4 text-sm font-semibold leading-tight hover:border-primary/40 hover:bg-accent disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('mine-city')}>
+                        <span>美祢市例規</span>
+                        <span className="mt-0.5 text-[11px] font-medium text-muted-foreground">のみ</span>
+                      </button>
+                      <button className="inline-flex h-14 flex-col items-center justify-center rounded-2xl border bg-card px-4 text-sm font-semibold leading-tight hover:border-primary/40 hover:bg-accent disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('egov')}>
+                        <span>地方自治法</span>
+                        <span className="mt-0.5 text-[11px] font-medium text-muted-foreground">のみ</span>
+                      </button>
+                      <button className="inline-flex h-14 flex-col items-center justify-center rounded-2xl border bg-card px-4 text-sm font-semibold leading-tight hover:border-primary/40 hover:bg-accent disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('local-public-service')}>
+                        <span>地方公務員法</span>
+                        <span className="mt-0.5 text-[11px] font-medium text-muted-foreground">のみ</span>
+                      </button>
+                      <button
+                        className="inline-flex h-14 flex-col items-center justify-center rounded-2xl border border-primary/30 bg-primary/5 px-4 text-sm font-semibold leading-tight text-primary hover:bg-primary/10 disabled:opacity-60"
+                        disabled={busy || minutesSyncing || Boolean(runningMinutesRun)}
+                        onClick={() => void triggerMinutesSync(0)}
+                      >
+                        <span>会議録</span>
+                        <span className="mt-0.5 text-[11px] font-semibold text-primary/80">差分同期</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded-3xl border border-primary/20 bg-primary/5 p-3">
+                    <p className="px-1 text-sm font-semibold text-primary">一括同期</p>
+                    <button className="mt-3 inline-flex h-14 w-full flex-col items-center justify-center rounded-2xl bg-primary px-4 text-sm font-semibold leading-tight text-primary-foreground shadow-sm shadow-primary/20 hover:bg-primary/90 disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('all')}>
+                      <span>すべて</span>
+                      <span className="mt-0.5 text-[11px] font-semibold text-primary-foreground/85">同期</span>
+                    </button>
+                  </div>
                 </div>
                 <dl className="mt-5 space-y-2 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-4"><dt>最終開始</dt><dd>{formatDateTime(syncStatus.lastStartedAt)}</dd></div>
