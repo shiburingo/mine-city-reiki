@@ -60,6 +60,13 @@ export async function runDictionaryUpdate(includeWordnet = true, includeDomain =
   });
 }
 
+export async function runMinutesDictionaryUpdate(batchSize = 1000): Promise<{ ok: boolean; summary: Record<string, any> }> {
+  return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/dictionary/minutes/update', {
+    method: 'POST',
+    body: JSON.stringify({ batchSize }),
+  });
+}
+
 export async function searchLaws(params: { fields: SearchField[]; source?: string; limit?: number; offset?: number; lawType?: string; fromDate?: string; toDate?: string; fuzzy?: boolean }): Promise<SearchResponse> {
   const qs = new URLSearchParams();
   params.fields.forEach((f, i) => {

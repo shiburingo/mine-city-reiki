@@ -32,7 +32,15 @@ from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERS
 from meeting_minutes.speaker_tagger import tag_utterances
 from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSION
 from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract_coordinate_tables, refine_person_roster_tables
-from dictionary_engine import build_hybrid_dictionary
+from dictionary_engine import (
+    MINUTES_DICTIONARY_ENGINE_VERSION,
+    build_hybrid_dictionary,
+    build_minutes_pairs_from_rows,
+    count_unprocessed_minutes_dictionary_rows,
+    fetch_unprocessed_minutes_dictionary_rows,
+    insert_pairs,
+    mark_minutes_dictionary_rows_processed,
+)
 
 try:
     from janome.tokenizer import Tokenizer as JanomeTokenizer
@@ -382,8 +390,9 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
-            ensure_column(cur, "law_synonyms", "source_type", "source_type ENUM('builtin','manual','wordnet','domain') NOT NULL DEFAULT 'manual' AFTER is_active")
+            ensure_column(cur, "law_synonyms", "source_type", "source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual' AFTER is_active")
             ensure_column(cur, "law_synonyms", "source_version", "source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type")
+            ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain"])
             ensure_index(cur, "law_synonyms", "idx_law_synonyms_source", "(source_type, is_active)")
             ensure_table(
                 cur,
@@ -606,6 +615,20 @@ def ensure_schema() -> None:
                   utterance_count INT UNSIGNED NOT NULL DEFAULT 0,
                   rebuilt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_dictionary_sources",
+                """
+                CREATE TABLE meeting_dictionary_sources (
+                  utterance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                  engine_version VARCHAR(64) NOT NULL DEFAULT '',
+                  term_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  KEY idx_meeting_dictionary_sources_version (engine_version, processed_at),
+                  CONSTRAINT fk_meeting_dictionary_sources_utterance FOREIGN KEY (utterance_id) REFERENCES meeting_utterances(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
@@ -3360,6 +3383,92 @@ def launch_dictionary_update_in_background(include_wordnet: bool = True, include
         thread.start()
 
 
+def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps({'operation': 'minutes-dictionary-update'}, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+
+    with db_cursor() as (_, cur):
+        total = count_unprocessed_minutes_dictionary_rows(cur)
+
+    summary: dict[str, Any] = {
+        'operation': 'minutes-dictionary-update',
+        'engineVersion': MINUTES_DICTIONARY_ENGINE_VERSION,
+        'batchSize': batch_size,
+        'unprocessed': total,
+        'processed': 0,
+        'minutesPairs': 0,
+        'inserted': 0,
+        'progressCurrent': 0,
+        'progressTotal': total,
+        'progressLabel': '会議録から固有名詞辞書を作成しています',
+    }
+
+    try:
+        if total == 0:
+            summary['progressLabel'] = '未抽出の会議録はありません'
+            with db_cursor(commit=True) as (_, cur):
+                set_sync_run_status(cur, run_id, 'success', summary, None)
+            return summary
+
+        while summary['processed'] < total:
+            with db_cursor(commit=True) as (_, cur):
+                rows = fetch_unprocessed_minutes_dictionary_rows(cur, batch_size=batch_size)
+                if not rows:
+                    break
+                pairs, stats = build_minutes_pairs_from_rows(rows)
+                inserted = insert_pairs(
+                    cur,
+                    pairs,
+                    "minutes-domain",
+                    MINUTES_DICTIONARY_ENGINE_VERSION,
+                    14,
+                )
+                marked = mark_minutes_dictionary_rows_processed(
+                    cur,
+                    [int(row["id"]) for row in rows],
+                    term_count=int(stats.get("pairs") or 0),
+                )
+                summary['processed'] += marked
+                summary['minutesPairs'] += len(pairs)
+                summary['inserted'] += inserted
+                summary['lastBatchStats'] = stats
+                summary['progressCurrent'] = min(summary['processed'], total)
+                summary['progressLabel'] = f"会議録辞書 {summary['processed']:,}/{total:,} 発言を処理しました"
+                update_sync_run_summary(cur, run_id, summary)
+
+        with db_cursor(commit=True) as (_, cur):
+            summary['progressCurrent'] = total
+            summary['progressLabel'] = '会議録固有名詞辞書作成が完了しました'
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
+            set_sync_run_status(cur, run_id, 'success', summary, None)
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
+        raise
+
+
+def launch_minutes_dictionary_update_in_background(batch_size: int = 1000) -> None:
+    def _runner() -> None:
+        try:
+            execute_minutes_dictionary_update(batch_size=batch_size)
+        except Exception:
+            app.logger.exception('Background minutes dictionary update failed')
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-minutes-dictionary-update",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
 def normalize_minutes_speaker_name(name: str) -> str:
     return re.sub(r"\s+", "", normalize_text(name))
 
@@ -5079,6 +5188,21 @@ def api_dictionary_update_run():
             'operation': 'dictionary-update',
             'includeWordnet': include_wordnet,
             'includeDomain': include_domain,
+        },
+    }), 202
+
+
+@app.post('/api/dictionary/minutes/update')
+def api_minutes_dictionary_update_run():
+    payload = request.get_json(silent=True) or {}
+    batch_size = max(100, min(5000, int(payload.get('batchSize') or 1000)))
+    launch_minutes_dictionary_update_in_background(batch_size=batch_size)
+    return jsonify({
+        'ok': True,
+        'started': True,
+        'summary': {
+            'operation': 'minutes-dictionary-update',
+            'batchSize': batch_size,
         },
     }), 202
 

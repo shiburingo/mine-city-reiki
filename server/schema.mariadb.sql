@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
   synonym_term VARCHAR(191) NOT NULL,
   priority TINYINT UNSIGNED NOT NULL DEFAULT 10,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
-  source_type ENUM('builtin','manual','wordnet','domain') NOT NULL DEFAULT 'manual',
+  source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual',
   source_version VARCHAR(64) NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE law_synonyms
-  ADD COLUMN IF NOT EXISTS source_type ENUM('builtin','manual','wordnet','domain') NOT NULL DEFAULT 'manual' AFTER is_active;
+  ADD COLUMN IF NOT EXISTS source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual' AFTER is_active;
 
 ALTER TABLE law_synonyms
   ADD COLUMN IF NOT EXISTS source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type;

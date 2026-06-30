@@ -23,6 +23,7 @@ import {
   fetchSynonyms,
   runMinutesSync,
   runDictionaryUpdate,
+  runMinutesDictionaryUpdate,
   runReindex,
   runSync,
   searchLaws,
@@ -179,6 +180,15 @@ function ProgressMeter({ title, run }: { title: string; run: SyncRun | null }) {
       {progress.label ? <p className="mt-2 text-xs text-muted-foreground">{progress.label}</p> : null}
     </div>
   );
+}
+
+function syncRunLabel(run: SyncRun): string {
+  const operation = String(run.summary?.operation || '');
+  if (operation === 'reindex') return '再索引';
+  if (operation === 'dictionary-update') return '関連語辞書更新';
+  if (operation === 'minutes-dictionary-update') return '会議録辞書作成';
+  if (operation === 'minutes-sync') return '会議録同期';
+  return run.runType === 'scheduled' ? '定期同期' : '手動同期';
 }
 
 type TabId = (typeof TABS)[number]['id'];
@@ -1412,6 +1422,24 @@ function AppShell() {
     }
   }
 
+  async function triggerMinutesDictionaryUpdate() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では会議録辞書を作成できません。');
+      return;
+    }
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runMinutesDictionaryUpdate(1000);
+      const runs = await fetchSyncRuns();
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録辞書作成の起動に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDeleteSynonym(id: number) {
     if (user?.isGuest) {
       setGlobalError('ゲスト権限では同義語を削除できません。');
@@ -1993,7 +2021,7 @@ function AppShell() {
   }
 
   const runningSyncRun = useMemo(
-    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update'].includes(String(run.summary?.operation || ''))) ?? null,
+    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'minutes-dictionary-update', 'minutes-sync'].includes(String(run.summary?.operation || ''))) ?? null,
     [syncRuns],
   );
 
@@ -2004,6 +2032,11 @@ function AppShell() {
 
   const runningDictionaryRun = useMemo(
     () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'dictionary-update') ?? null,
+    [syncRuns],
+  );
+
+  const runningMinutesDictionaryRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-dictionary-update') ?? null,
     [syncRuns],
   );
 
@@ -4939,10 +4972,17 @@ function AppShell() {
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun)}
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
                     onClick={() => void triggerDictionaryUpdate()}
                   >
                     最新辞書を取得して再作成
+                  </button>
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    onClick={() => void triggerMinutesDictionaryUpdate()}
+                  >
+                    会議録から増分作成
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent"
@@ -4963,6 +5003,7 @@ function AppShell() {
                   ))}
                 </div>
                 <ProgressMeter title="関連語辞書更新の進捗" run={runningDictionaryRun} />
+                <ProgressMeter title="会議録辞書作成の進捗" run={runningMinutesDictionaryRun} />
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
                 <h2 className="text-xl font-semibold">同期履歴</h2>
@@ -4973,7 +5014,7 @@ function AppShell() {
                     syncRuns.map((run) => (
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-3">
-                          <span className="font-medium">{run.summary?.operation === 'reindex' ? '再索引' : run.summary?.operation === 'dictionary-update' ? '関連語辞書更新' : run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
+                          <span className="font-medium">{syncRunLabel(run)}</span>
                           <span className={run.status === 'failed' ? 'text-red-600' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status}</span>
                         </div>
                         <p className="mt-2 text-muted-foreground">開始: {formatDateTime(run.startedAt)}</p>
@@ -4984,6 +5025,8 @@ function AppShell() {
                             {run.summary.inserted != null ? <span className="text-primary">辞書登録 {Number(run.summary.inserted).toLocaleString()}件</span> : null}
                             {run.summary.wordnetPairs != null ? <span>WordNet {Number(run.summary.wordnetPairs).toLocaleString()}件</span> : null}
                             {run.summary.domainPairs != null ? <span>既存DB {Number(run.summary.domainPairs).toLocaleString()}件</span> : null}
+                            {run.summary.minutesPairs != null ? <span>会議録候補 {Number(run.summary.minutesPairs).toLocaleString()}件</span> : null}
+                            {run.summary.processed != null ? <span>会議録処理 {Number(run.summary.processed).toLocaleString()}発言</span> : null}
                             {run.summary.added != null ? <span className="text-emerald-700">追加 {run.summary.added}件</span> : null}
                             {run.summary.updated != null ? <span className="text-amber-700">更新 {run.summary.updated}件</span> : null}
                             {run.summary.unchanged != null ? <span>変更なし {run.summary.unchanged}件</span> : null}

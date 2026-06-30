@@ -18,6 +18,7 @@ WORDNET_RELEASE_API = "https://api.github.com/repos/bond-lab/wnja/releases/lates
 WORDNET_SQLITE_ASSET = "wnjpn.db.gz"
 WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/download/v{WORDNET_FALLBACK_VERSION}/{WORDNET_SQLITE_ASSET}"
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
+MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
 
 MIN_TERM_LEN = 2
 MAX_TERM_LEN = 40
@@ -48,6 +49,21 @@ TITLE_ALIASES = {
     "教育委員会事務局長": ["教育委員会", "事務局長", "執行部"],
     "農業委員会事務局長": ["農業委員会", "事務局長", "執行部"],
 }
+
+MINUTES_ROLE_ALIASES = {
+    "questioner": ["議員", "質問者"],
+    "answerer": ["答弁者", "執行部"],
+    "chair": ["議長", "議事進行"],
+    "secretariat": ["議会事務局", "事務局"],
+    "report": ["報告"],
+}
+
+MINUTES_PROPER_NOUN_PATTERN = re.compile(
+    r"[一-龯ぁ-んァ-ヴー]{2,30}"
+    r"(?:市|町|村|地区|地域|川|山|台|湖|公園|学校|小学校|中学校|高等学校|高校|"
+    r"保育園|こども園|センター|館|場|施設|事業|計画|委員会|協議会|組合|"
+    r"会|部|課|室|局|署|駅|線|道路|橋|ダム|温泉|観光|農業|林業|水産|養鱒場)"
+)
 
 
 def normalize_term(value: str | None) -> str:
@@ -238,6 +254,139 @@ def insert_pairs(cur, pairs: Iterable[tuple[str, str]], source_type: str, source
         )
         count += 1
     return count
+
+
+def count_unprocessed_minutes_dictionary_rows(cur, engine_version: str = MINUTES_DICTIONARY_ENGINE_VERSION) -> int:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM meeting_utterances u
+        LEFT JOIN meeting_dictionary_sources src
+          ON src.utterance_id=u.id AND src.engine_version=%s
+        WHERE src.utterance_id IS NULL
+        """,
+        (engine_version,),
+    )
+    return int((cur.fetchone() or {}).get("cnt") or 0)
+
+
+def fetch_unprocessed_minutes_dictionary_rows(
+    cur,
+    batch_size: int = 1000,
+    engine_version: str = MINUTES_DICTIONARY_ENGINE_VERSION,
+) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+          u.id, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.text,
+          d.title AS day_title, d.date_label, d.meeting_date,
+          s.section, s.meeting_name, s.title AS session_title
+        FROM meeting_utterances u
+        JOIN meeting_days d ON d.id=u.day_id
+        JOIN meeting_sessions s ON s.id=d.session_id
+        LEFT JOIN meeting_dictionary_sources src
+          ON src.utterance_id=u.id AND src.engine_version=%s
+        WHERE src.utterance_id IS NULL
+        ORDER BY u.id ASC
+        LIMIT %s
+        """,
+        (engine_version, batch_size),
+    )
+    return cur.fetchall() or []
+
+
+def build_minutes_pairs_from_rows(rows: Iterable[dict[str, Any]]) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+    row_list = list(rows)
+    pairs: set[tuple[str, str]] = set()
+    term_counts: Counter[str] = Counter()
+    speaker_count = 0
+    title_count = 0
+    text_term_count = 0
+
+    for row in row_list:
+        speaker_name = row.get("speaker_name") or ""
+        speaker_title = row.get("speaker_title") or ""
+        speaker_role = row.get("speaker_role") or ""
+        speaker_group = row.get("speaker_group") or ""
+        meeting_name = row.get("meeting_name") or ""
+        day_title = row.get("day_title") or ""
+        section = row.get("section") or ""
+
+        if speaker_name:
+            speaker_count += 1
+            add_pair(pairs, speaker_name, normalize_term(speaker_name))
+            if speaker_title:
+                add_pair(pairs, speaker_name, speaker_title)
+                add_pair(pairs, speaker_title, speaker_name)
+                title_count += 1
+            if speaker_group:
+                add_pair(pairs, speaker_name, speaker_group)
+            for alias in MINUTES_ROLE_ALIASES.get(speaker_role, []):
+                add_pair(pairs, speaker_name, alias)
+                if speaker_title:
+                    add_pair(pairs, speaker_title, alias)
+
+        if speaker_title:
+            for alias in TITLE_ALIASES.get(speaker_title, []):
+                add_pair(pairs, speaker_title, alias)
+            for term in split_title_terms(speaker_title):
+                add_pair(pairs, speaker_title, term)
+
+        for title_source in [meeting_name, day_title]:
+            for term in split_title_terms(title_source):
+                add_pair(pairs, title_source, term)
+                term_counts[term] += 1
+        if section:
+            add_pair(pairs, meeting_name, section)
+
+        text = row.get("text") or ""
+        for raw_term in MINUTES_PROPER_NOUN_PATTERN.findall(text):
+            term = normalize_term(raw_term)
+            if is_good_term(term):
+                term_counts[term] += 1
+                text_term_count += 1
+                if "美祢市" in raw_term and len(raw_term) > len("美祢市"):
+                    add_pair(pairs, raw_term, raw_term.replace("美祢市", "", 1))
+                if "養鱒場" in raw_term:
+                    add_pair(pairs, raw_term, "養鱒場")
+
+    repeated_terms = [term for term, count in term_counts.items() if count >= 2 and is_good_term(term)]
+    for left, right in itertools.combinations(sorted(repeated_terms[:150]), 2):
+        if left in right or right in left:
+            add_pair(pairs, left, right)
+
+    return pairs, {
+        "rows": len(row_list),
+        "speakers": speaker_count,
+        "titles": title_count,
+        "textTerms": text_term_count,
+        "domainTerms": len(repeated_terms),
+        "pairs": len(pairs),
+    }
+
+
+def mark_minutes_dictionary_rows_processed(
+    cur,
+    utterance_ids: Iterable[int],
+    *,
+    engine_version: str = MINUTES_DICTIONARY_ENGINE_VERSION,
+    term_count: int = 0,
+) -> int:
+    ids = [int(value) for value in utterance_ids if int(value or 0) > 0]
+    if not ids:
+        return 0
+    cur.executemany(
+        """
+        INSERT INTO meeting_dictionary_sources (utterance_id, engine_version, term_count, processed_at)
+        VALUES (%s,%s,%s,CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          engine_version=VALUES(engine_version),
+          term_count=VALUES(term_count),
+          processed_at=VALUES(processed_at)
+        """,
+        [(utterance_id, engine_version, term_count) for utterance_id in ids],
+    )
+    return len(ids)
 
 
 def build_hybrid_dictionary(
