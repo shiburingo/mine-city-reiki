@@ -190,3 +190,16 @@ CREATE TABLE IF NOT EXISTS ask_query_cache (
   KEY idx_ask_query_cache_generation (cache_generation),
   KEY idx_ask_query_cache_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS usage_events (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  event_type VARCHAR(32) NOT NULL,
+  normalized_query VARCHAR(255) NOT NULL DEFAULT '',
+  source_scope VARCHAR(64) NOT NULL DEFAULT '',
+  result_count INT UNSIGNED NOT NULL DEFAULT 0,
+  metadata_json LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_usage_events_type_created (event_type, created_at),
+  KEY idx_usage_events_type_query (event_type, normalized_query),
+  KEY idx_usage_events_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

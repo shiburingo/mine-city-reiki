@@ -4220,16 +4220,21 @@ function AppShell() {
             </section>
             {analyticsData ? (
               <section className="rounded-3xl border bg-card p-6 shadow-sm">
-                <div className="flex items-center gap-2">
-                  <BarChart2 className="size-5 text-primary" />
-                  <h2 className="text-xl font-semibold">利用統計</h2>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <BarChart2 className="size-5 text-primary" />
+                    <h2 className="text-xl font-semibold">利用統計</h2>
+                  </div>
+                  {analyticsData.latestUsedAt ? (
+                    <p className="text-sm text-muted-foreground">最終利用: {analyticsData.latestUsedAt}</p>
+                  ) : null}
                 </div>
                 <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   {[
-                    { label: '検索キャッシュヒット', value: analyticsData.searchCacheHits.toLocaleString() },
-                    { label: '検索キャッシュ件数', value: analyticsData.searchCacheEntries.toLocaleString() },
-                    { label: '質問キャッシュヒット', value: analyticsData.askCacheHits.toLocaleString() },
-                    { label: '質問キャッシュ件数', value: analyticsData.askCacheEntries.toLocaleString() },
+                    { label: '総利用回数', value: analyticsData.totalUsageEvents.toLocaleString() },
+                    { label: '例規・法令検索', value: analyticsData.lawSearchCount.toLocaleString() },
+                    { label: '会議録検索', value: analyticsData.minutesSearchCount.toLocaleString() },
+                    { label: '質問', value: analyticsData.askCount.toLocaleString() },
                   ].map((s) => (
                     <div key={s.label} className="rounded-2xl border bg-background p-4">
                       <p className="text-xs text-muted-foreground">{s.label}</p>
@@ -4237,34 +4242,32 @@ function AppShell() {
                     </div>
                   ))}
                 </div>
-                {analyticsData.topSearchQueries.length > 0 ? (
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                    <div>
-                      <p className="mb-2 text-sm font-semibold">検索ランキング</p>
-                      <ol className="space-y-1">
-                        {analyticsData.topSearchQueries.slice(0, 5).map((q, i) => (
-                          <li key={i} className="flex items-center justify-between rounded-xl border bg-background px-3 py-2 text-sm">
-                            <span className="text-muted-foreground">{i + 1}. {q.query}</span>
-                            <span className="font-medium">{q.hits}回</span>
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                    {analyticsData.topAskQueries.length > 0 ? (
-                      <div>
-                        <p className="mb-2 text-sm font-semibold">質問ランキング</p>
+                <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                  {[
+                    { title: '例規・法令検索ランキング', items: analyticsData.topLawSearchQueries },
+                    { title: '会議録検索ランキング', items: analyticsData.topMinutesSearchQueries },
+                    { title: '質問ランキング', items: analyticsData.topUsageAskQueries },
+                  ].map((group) => (
+                    <div key={group.title}>
+                      <p className="mb-2 text-sm font-semibold">{group.title}</p>
+                      {group.items.length > 0 ? (
                         <ol className="space-y-1">
-                          {analyticsData.topAskQueries.slice(0, 5).map((q, i) => (
-                            <li key={i} className="flex items-center justify-between rounded-xl border bg-background px-3 py-2 text-sm">
-                              <span className="text-muted-foreground">{i + 1}. {q.query}</span>
-                              <span className="font-medium">{q.hits}回</span>
+                          {group.items.slice(0, 5).map((q, i) => (
+                            <li key={`${q.query}-${i}`} className="flex items-center justify-between gap-3 rounded-xl border bg-background px-3 py-2 text-sm">
+                              <span className="min-w-0 truncate text-muted-foreground">{i + 1}. {q.query}</span>
+                              <span className="shrink-0 font-medium">{q.hits}回</span>
                             </li>
                           ))}
                         </ol>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+                      ) : (
+                        <div className="rounded-xl border bg-background px-3 py-2 text-sm text-muted-foreground">まだ利用記録がありません</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  キャッシュ: 検索 {analyticsData.searchCacheEntries.toLocaleString()}件 / 質問 {analyticsData.askCacheEntries.toLocaleString()}件
+                </p>
               </section>
             ) : null}
           </div>

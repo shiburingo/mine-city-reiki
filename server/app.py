@@ -464,6 +464,24 @@ def ensure_schema() -> None:
             )
             ensure_table(
                 cur,
+                "usage_events",
+                """
+                CREATE TABLE usage_events (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  event_type VARCHAR(32) NOT NULL,
+                  normalized_query VARCHAR(255) NOT NULL DEFAULT '',
+                  source_scope VARCHAR(64) NOT NULL DEFAULT '',
+                  result_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  metadata_json LONGTEXT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  KEY idx_usage_events_type_created (event_type, created_at),
+                  KEY idx_usage_events_type_query (event_type, normalized_query),
+                  KEY idx_usage_events_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
                 "meeting_sessions",
                 """
                 CREATE TABLE meeting_sessions (
@@ -753,6 +771,48 @@ def normalize_text(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "")
     value = re.sub(r"\s+", " ", value)
     return value.strip()
+
+
+def compact_usage_query(value: str, *, fallback: str = "") -> str:
+    query = normalize_text(value)
+    if not query:
+        query = fallback
+    return query[:255]
+
+
+def record_usage_event_cur(
+    cur,
+    event_type: str,
+    normalized_query: str = "",
+    source_scope: str = "",
+    result_count: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO usage_events
+          (event_type, normalized_query, source_scope, result_count, metadata_json)
+        VALUES (%s,%s,%s,%s,%s)
+        """,
+        (
+            event_type[:32],
+            compact_usage_query(normalized_query),
+            (source_scope or "")[:64],
+            max(0, int(result_count or 0)),
+            json.dumps(metadata or {}, ensure_ascii=False) if metadata else None,
+        ),
+    )
+
+
+def record_usage_event(
+    event_type: str,
+    normalized_query: str = "",
+    source_scope: str = "",
+    result_count: int = 0,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    with db_cursor(commit=True) as (_, cur):
+        record_usage_event_cur(cur, event_type, normalized_query, source_scope, result_count, metadata)
 
 
 def contains_japanese(text: str) -> bool:
@@ -5228,6 +5288,25 @@ def api_search():
         fields.append({'q': q, 'op': op})
     if any(f['q'] for f in fields):
         total, items = search_documents_structured(fields, source, limit, offset, law_type, from_date, to_date, fuzzy=fuzzy)
+        query_label = " ".join(
+            [fields[0]["q"]]
+            + [f"{field['op']} {field['q']}" for field in fields[1:] if field["q"]]
+        )
+        record_usage_event(
+            "law-search",
+            query_label,
+            source,
+            total,
+            {
+                "mode": "structured",
+                "lawType": law_type,
+                "fromDate": from_date,
+                "toDate": to_date,
+                "fuzzy": fuzzy,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
         return jsonify({'items': items, 'total': total})
     # 後方互換: q パラメータによる従来検索
     query = (request.args.get('q') or '').strip()
@@ -5235,6 +5314,22 @@ def api_search():
         total, items = search_documents(query, source, limit, fuzzy=fuzzy)
     else:
         total, items = 0, []
+    if query or law_type or from_date or to_date:
+        record_usage_event(
+            "law-search",
+            query,
+            source,
+            total,
+            {
+                "mode": "simple",
+                "lawType": law_type,
+                "fromDate": from_date,
+                "toDate": to_date,
+                "fuzzy": fuzzy,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
     return jsonify({'items': items, 'total': total})
 
 
@@ -5344,6 +5439,35 @@ def api_minutes_search():
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
     items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, match_mode, op, limit, context)
+    query_label = query or " / ".join(
+        part
+        for part in [
+            f"発言者:{speaker}" if speaker else "",
+            f"区分:{role}" if role else "",
+            f"会議種別:{section}" if section else "",
+            f"会議ID:{meeting_id}" if meeting_id else "",
+            f"日程ID:{day_id}" if day_id else "",
+        ]
+        if part
+    )
+    record_usage_event(
+        "minutes-search",
+        query_label,
+        section or "all",
+        len(items),
+        {
+            "speaker": speaker,
+            "role": role,
+            "fromDate": from_date,
+            "toDate": to_date,
+            "meetingId": meeting_id,
+            "dayId": day_id,
+            "matchMode": match_mode,
+            "op": op,
+            "limit": raw_limit,
+            "context": context,
+        },
+    )
     return jsonify({"items": items, "total": len(items)})
 
 
@@ -6099,6 +6223,14 @@ def api_ask():
         cache_key = make_cache_key(["ask3", normalized_query, str(generation)])
         cached = get_ask_cache(cur, cache_key)
         if cached is not None:
+            record_usage_event_cur(
+                cur,
+                "ask",
+                normalized_query,
+                "all",
+                len(cached.get("candidateGroups") or cached.get("candidates") or []),
+                {"cache": True},
+            )
             return jsonify(cached)
         profile = question_search_profile(query, cur=cur)
         keywords = expand_keywords_with_synonyms(profile["display"], cur=cur, max_keywords=20)
@@ -6129,6 +6261,14 @@ def api_ask():
     }
     with db_cursor(commit=True) as (_, cur):
         put_ask_cache(cur, cache_key, normalized_query, generation, response_payload)
+        record_usage_event_cur(
+            cur,
+            "ask",
+            normalized_query,
+            "all",
+            len(candidate_groups),
+            {"cache": False, "questionType": question_type},
+        )
     return jsonify(response_payload)
 
 
@@ -6282,11 +6422,58 @@ def api_analytics():
             " ORDER BY hit_count DESC LIMIT 10"
         )
         top_ask = cur.fetchall() or []
+        cur.execute(
+            """
+            SELECT event_type, COUNT(*) AS count
+            FROM usage_events
+            GROUP BY event_type
+            """
+        )
+        usage_counts = {r["event_type"]: int(r.get("count") or 0) for r in (cur.fetchall() or [])}
+        cur.execute("SELECT MAX(created_at) AS latest_used_at FROM usage_events")
+        latest_usage = cur.fetchone() or {}
+
+        def top_usage_queries(event_type: str) -> list[dict[str, Any]]:
+            cur.execute(
+                """
+                SELECT normalized_query, COUNT(*) AS hits, COALESCE(SUM(result_count),0) AS result_count
+                FROM usage_events
+                WHERE event_type=%s AND normalized_query <> ''
+                GROUP BY normalized_query
+                ORDER BY hits DESC, MAX(created_at) DESC
+                LIMIT 10
+                """,
+                (event_type,),
+            )
+            return [
+                {
+                    "query": row["normalized_query"],
+                    "hits": int(row.get("hits") or 0),
+                    "resultCount": int(row.get("result_count") or 0),
+                }
+                for row in (cur.fetchall() or [])
+            ]
+
+        top_law_usage = top_usage_queries("law-search")
+        top_minutes_usage = top_usage_queries("minutes-search")
+        top_ask_usage = top_usage_queries("ask")
+    law_count = int(usage_counts.get("law-search") or 0)
+    minutes_count = int(usage_counts.get("minutes-search") or 0)
+    ask_count = int(usage_counts.get("ask") or 0)
+    latest_used_at = latest_usage.get("latest_used_at")
     return jsonify({
+        'totalUsageEvents': law_count + minutes_count + ask_count,
+        'lawSearchCount': law_count,
+        'minutesSearchCount': minutes_count,
+        'askCount': ask_count,
+        'latestUsedAt': str(latest_used_at) if latest_used_at else None,
         'searchCacheHits': int(sc.get('total_hits') or 0),
         'searchCacheEntries': int(sc.get('entries') or 0),
         'askCacheHits': int(ac.get('total_hits') or 0),
         'askCacheEntries': int(ac.get('entries') or 0),
+        'topLawSearchQueries': top_law_usage,
+        'topMinutesSearchQueries': top_minutes_usage,
+        'topUsageAskQueries': top_ask_usage,
         'topSearchQueries': [{'query': r['normalized_query'], 'hits': int(r['hit_count'])} for r in top_search],
         'topAskQueries': [{'query': r['normalized_query'], 'hits': int(r['hit_count'])} for r in top_ask],
     })

@@ -176,10 +176,18 @@ export type DocHistoryItem = {
 };
 
 export type AnalyticsData = {
+  totalUsageEvents: number;
+  lawSearchCount: number;
+  minutesSearchCount: number;
+  askCount: number;
+  latestUsedAt: string | null;
   searchCacheHits: number;
   searchCacheEntries: number;
   askCacheHits: number;
   askCacheEntries: number;
+  topLawSearchQueries: { query: string; hits: number; resultCount?: number }[];
+  topMinutesSearchQueries: { query: string; hits: number; resultCount?: number }[];
+  topUsageAskQueries: { query: string; hits: number; resultCount?: number }[];
   topSearchQueries: { query: string; hits: number }[];
   topAskQueries: { query: string; hits: number }[];
 };
