@@ -2687,7 +2687,7 @@ function AppShell() {
   );
 
   const renderMinutesTopBar = (): JSX.Element => (
-    <div className="border-b bg-[#173f36] px-6 py-5 text-white">
+    <div className="no-print border-b bg-[#173f36] px-6 py-5 text-white">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <button
@@ -2966,7 +2966,7 @@ function AppShell() {
   };
 
   const renderMinutesCollectionResultsPage = (): JSX.Element => (
-    <div className="space-y-5 p-6">
+    <div className="minutes-collection-print space-y-5 p-6">
       <div className="rounded-3xl border bg-white p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
@@ -2982,7 +2982,7 @@ function AppShell() {
               {minutesIncludeChair ? ' / 議事進行を含む' : ''}
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="no-print flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => setMinutesIncludeReplies((prev) => !prev)}
@@ -3600,7 +3600,7 @@ function AppShell() {
   };
 
   const renderMinutesWorkspace = (): JSX.Element => {
-    if (minutesPage === 'collectionResults') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
+    if (minutesPage === 'collectionResults') return <section className="minutes-print-page overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
     if (minutesPage === 'results') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
     if (minutesPage === 'detail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
     if (minutesPage === 'meetingDetail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
@@ -5311,6 +5311,33 @@ function AppShell() {
           .no-print, nav, header { display: none !important; }
           .print\\:max-h-none { max-height: none !important; }
           body { background: white; }
+          .minutes-print-page,
+          .minutes-collection-print,
+          .minutes-collection-print > div,
+          .minutes-collection-print section,
+          .minutes-collection-print article {
+            max-height: none !important;
+            overflow: visible !important;
+          }
+          .minutes-print-page {
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+          .minutes-collection-print {
+            padding: 0 !important;
+          }
+          .minutes-collection-print article {
+            content-visibility: visible !important;
+            contain: none !important;
+            contain-intrinsic-size: auto !important;
+            break-inside: auto;
+            page-break-inside: auto;
+          }
+          .minutes-collection-print section {
+            break-inside: auto;
+            page-break-inside: auto;
+          }
         }
       `}</style>
     </div>
