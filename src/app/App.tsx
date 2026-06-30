@@ -1170,6 +1170,9 @@ function AppShell() {
           const [status, runs] = await Promise.all([fetchSyncStatus(), fetchSyncRuns()]);
           setSyncStatus(status);
           setSyncRuns(runs);
+          if (!runs.some((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync')) {
+            setMinutesSyncing(false);
+          }
         } catch {
           // keep the existing screen state when polling fails
         }
@@ -1542,7 +1545,7 @@ function AppShell() {
     }
   }
 
-  async function triggerMinutesSync() {
+  async function triggerMinutesSync(recentDays = 365) {
     if (user?.isGuest) {
       setGlobalError('ゲスト権限では会議録同期を実行できません。');
       return;
@@ -1550,7 +1553,7 @@ function AppShell() {
     setMinutesSyncing(true);
     setGlobalError(null);
     try {
-      await runMinutesSync(365);
+      await runMinutesSync(recentDays);
       const [status, runs, speakers, meetings] = await Promise.all([fetchMinutesStatus(), fetchSyncRuns(), fetchMinutesSpeakers(), fetchMinutesMeetings()]);
       setMinutesStatus(status);
       setSyncRuns(runs);
@@ -4938,10 +4941,20 @@ function AppShell() {
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">手動同期</h2>
                 </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                <p className="mt-2 text-sm text-muted-foreground">
+                  会議録のみ差分同期は、元データWebページからPDF一覧を収集し、追加または内容変更されたPDFだけを抽出し直します。
+                </p>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('mine-city')}>美祢市例規のみ</button>
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('egov')}>地方自治法のみ</button>
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent" disabled={busy} onClick={() => void triggerSync('local-public-service')}>地方公務員法のみ</button>
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
+                    disabled={busy || minutesSyncing || Boolean(runningMinutesRun)}
+                    onClick={() => void triggerMinutesSync(0)}
+                  >
+                    会議録のみ差分同期
+                  </button>
                   <button className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60" disabled={busy} onClick={() => void triggerSync('all')}>すべて同期</button>
                 </div>
                 <dl className="mt-5 space-y-2 text-sm text-muted-foreground">
@@ -4951,6 +4964,7 @@ function AppShell() {
                   <div className="flex justify-between gap-4"><dt>タイムゾーン</dt><dd>{syncStatus.timezone}</dd></div>
                 </dl>
                 <ProgressMeter title="手動同期の進捗" run={runningSyncRun} />
+                <ProgressMeter title="会議録差分同期の進捗" run={runningMinutesRun} />
                 {syncStatus.lastError ? <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{syncStatus.lastError}</p> : null}
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
@@ -5014,7 +5028,7 @@ function AppShell() {
                   {syncRuns.length === 0 ? (
                     <p className="text-sm text-muted-foreground">履歴はありません。</p>
                   ) : (
-                    syncRuns.map((run) => (
+                    syncRuns.slice(0, 3).map((run) => (
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium">{syncRunLabel(run)}</span>
@@ -5029,7 +5043,8 @@ function AppShell() {
                             {run.summary.wordnetPairs != null ? <span>WordNet {Number(run.summary.wordnetPairs).toLocaleString()}件</span> : null}
                             {run.summary.domainPairs != null ? <span>既存DB {Number(run.summary.domainPairs).toLocaleString()}件</span> : null}
                             {run.summary.minutesPairs != null ? <span>会議録候補 {Number(run.summary.minutesPairs).toLocaleString()}件</span> : null}
-                            {run.summary.processed != null ? <span>会議録処理 {Number(run.summary.processed).toLocaleString()}発言</span> : null}
+                            {run.summary.processed != null ? <span>処理 {Number(run.summary.processed).toLocaleString()}件</span> : null}
+                            {run.summary.skipped != null ? <span>スキップ {Number(run.summary.skipped).toLocaleString()}件</span> : null}
                             {run.summary.added != null ? <span className="text-emerald-700">追加 {run.summary.added}件</span> : null}
                             {run.summary.updated != null ? <span className="text-amber-700">更新 {run.summary.updated}件</span> : null}
                             {run.summary.unchanged != null ? <span>変更なし {run.summary.unchanged}件</span> : null}
