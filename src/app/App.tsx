@@ -107,6 +107,7 @@ type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'c
 type MinutesSearchMethodPage = Extract<MinutesPage, 'browse' | 'keyword' | 'speaker' | 'collection'>;
 type MinutesBrowseSectionFilter = 'all' | string;
 type MinutesSearchLimit = 30 | 60 | 100 | 200 | 'all';
+type MinutesReaderMode = 'unit' | 'list' | 'full' | 'toc' | 'materials';
 const DEFAULT_MINUTES_MATCH_MODE: MinutesSearchHistoryItem['matchMode'] = 'exact';
 const DEFAULT_MINUTES_OP: MinutesSearchHistoryItem['op'] = 'AND';
 const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
@@ -1010,6 +1011,7 @@ function AppShell() {
   const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollFrameRef = useRef<number | null>(null);
+  const minutesReaderPendingScrollRef = useRef<number | null>(null);
   const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
   const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
@@ -1054,7 +1056,7 @@ function AppShell() {
   const [minutesBrowseFiscalYear, setMinutesBrowseFiscalYear] = useState('');
   const [minutesBrowseSection, setMinutesBrowseSection] = useState<MinutesBrowseSectionFilter>('all');
   const [minutesResultMode, setMinutesResultMode] = useState<'utterance' | 'meeting' | 'table'>('utterance');
-  const [minutesReaderMode, setMinutesReaderMode] = useState<'unit' | 'list' | 'full' | 'toc' | 'materials'>('unit');
+  const [minutesReaderMode, setMinutesReaderMode] = useState<MinutesReaderMode>('unit');
   const [minutesExpandedResultIds, setMinutesExpandedResultIds] = useState<Set<number>>(new Set());
   const [minutesHistory, setMinutesHistory] = useState<MinutesSearchHistoryItem[]>(() => loadMinutesSearchHistory());
   const [minutesResults, setMinutesResults] = useState<MinutesSearchResult[]>([]);
@@ -1828,7 +1830,25 @@ function AppShell() {
     afterChange?.();
   }
 
+  function cancelMinutesReaderScroll() {
+    minutesReaderPendingScrollRef.current = null;
+    if (minutesReaderScrollFrameRef.current != null) {
+      window.cancelAnimationFrame(minutesReaderScrollFrameRef.current);
+      minutesReaderScrollFrameRef.current = null;
+    }
+  }
+
+  function scheduleMinutesReaderScroll(utteranceId: number | null | undefined) {
+    minutesReaderPendingScrollRef.current = utteranceId || null;
+  }
+
+  function changeMinutesReaderMode(mode: MinutesReaderMode) {
+    cancelMinutesReaderScroll();
+    setMinutesReaderMode(mode);
+  }
+
   function selectMinutesResult(result: MinutesSearchResult) {
+    scheduleMinutesReaderScroll(result.id);
     setSelectedMinutesResult(result);
     setMinutesReaderMode('unit');
     setMinutesPage('detail');
@@ -2533,8 +2553,6 @@ function AppShell() {
     }
     return map;
   }, [selectedDayMinutesHits]);
-  const firstSelectedDayMinutesHitId = selectedDayMinutesHits[0]?.id ?? null;
-
   function minutesExactHighlightTerms(item?: { id?: number; highlightTerms?: string[] } | null): string[] {
     return item?.highlightTerms?.length
       ? item.highlightTerms
@@ -2561,6 +2579,7 @@ function AppShell() {
   }
 
   function selectMinutesHit(hit: MinutesSearchResult) {
+    scheduleMinutesReaderScroll(hit.id);
     setSelectedMinutesResult(hit);
     if (!['unit', 'full', 'list'].includes(minutesReaderMode)) {
       setMinutesReaderMode('unit');
@@ -2570,26 +2589,23 @@ function AppShell() {
   useEffect(() => {
     if (minutesPage !== 'detail' || !['unit', 'full', 'list'].includes(minutesReaderMode)) return;
     if (!currentDayUtterances.length) return;
-    const selectedId = selectedMinutesResult?.id ?? null;
-    const targetId = minutesReaderMode === 'unit' || minutesReaderMode === 'list'
-      ? selectedId
-      : selectedId && selectedDayMinutesHitIds.has(selectedId)
-        ? selectedId
-        : firstSelectedDayMinutesHitId;
+    const targetId = minutesReaderPendingScrollRef.current;
+    if (!targetId) return;
+    if (!currentDayUtterances.some((item) => item.id === targetId)) return;
+    minutesReaderPendingScrollRef.current = null;
     scrollMinutesUtteranceIntoView(targetId);
   }, [
     minutesPage,
     minutesReaderMode,
-    currentDayUtterances.length,
+    currentDayUtterances,
     selectedMinutesResult?.id,
-    selectedDayMinutesHitIds,
-    firstSelectedDayMinutesHitId,
   ]);
 
   function moveSelectedMinutesUtterance(delta: number) {
     if (!minutesDayDetail || selectedMinutesUtteranceIndex < 0) return;
     const next = minutesDayDetail.utterances[selectedMinutesUtteranceIndex + delta];
     if (!next || !selectedMinutesResult) return;
+    scheduleMinutesReaderScroll(next.id);
     setSelectedMinutesResult({
       ...selectedMinutesResult,
       id: next.id,
@@ -3455,7 +3471,7 @@ function AppShell() {
                       <button
                         key={mode}
                         type="button"
-                        onClick={() => setMinutesReaderMode(mode)}
+                        onClick={() => changeMinutesReaderMode(mode)}
                         className={`rounded-lg px-2 py-1.5 transition ${minutesReaderMode === mode ? 'bg-[#173f36] text-white' : 'text-[#4d685f] hover:bg-white'}`}
                       >
                         {label}
@@ -3500,6 +3516,7 @@ function AppShell() {
                           onClick={() => {
                             if (!selectedMinutesResult || !minutesDayDetail) return;
                             const index = minutesDayDetail.utterances.findIndex((u) => u.id === item.id);
+                            scheduleMinutesReaderScroll(item.id);
                             setSelectedMinutesResult({
                               ...selectedMinutesResult,
                               id: item.id,
