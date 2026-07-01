@@ -4132,6 +4132,7 @@ def build_minutes_where(
     section: str,
     from_date: str,
     to_date: str,
+    years: list[int] | None,
     meeting_id: int | None,
     day_id: int | None,
     match_mode: str,
@@ -4159,6 +4160,12 @@ def build_minutes_where(
     if day_id:
         conditions.append("d.id=%s")
         params.append(day_id)
+    if years:
+        year_ranges = []
+        for year in years:
+            year_ranges.append("(d.meeting_date >= %s AND d.meeting_date <= %s)")
+            params.extend([f"{year}-01-01", f"{year}-12-31"])
+        conditions.append(f"({' OR '.join(year_ranges)})")
     if from_date:
         conditions.append("d.meeting_date >= %s")
         params.append(from_date)
@@ -4166,6 +4173,20 @@ def build_minutes_where(
         conditions.append("d.meeting_date <= %s")
         params.append(to_date)
     return " AND ".join(conditions), params
+
+
+def parse_minutes_years(raw: str) -> list[int]:
+    years: list[int] = []
+    for part in re.split(r"[,\s]+", raw or ""):
+        if not part:
+            continue
+        try:
+            year = int(part)
+        except ValueError:
+            continue
+        if 1900 <= year <= 2100 and year not in years:
+            years.append(year)
+    return years
 
 
 def fetch_minutes_exchange_windows(cur, rows: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -4213,6 +4234,7 @@ def search_minutes_items(
     section: str = "",
     from_date: str = "",
     to_date: str = "",
+    years: list[int] | None = None,
     meeting_id: int | None = None,
     day_id: int | None = None,
     match_mode: str = "exact",
@@ -4234,6 +4256,7 @@ def search_minutes_items(
                 section,
                 str(from_date),
                 str(to_date),
+                ",".join(str(year) for year in (years or [])),
                 str(meeting_id or ""),
                 str(day_id or ""),
                 match_mode,
@@ -4298,6 +4321,7 @@ def search_minutes_items(
                 section,
                 from_date,
                 to_date,
+                years,
                 meeting_id,
                 day_id,
                 match_mode,
@@ -5417,6 +5441,7 @@ def api_minutes_search():
     section = (request.args.get("section") or "").strip()
     from_date = (request.args.get("fromDate") or "").strip()
     to_date = (request.args.get("toDate") or "").strip()
+    years = parse_minutes_years(request.args.get("years") or "")
     meeting_id = int(request.args.get("meetingId") or 0) or None
     day_id = int(request.args.get("dayId") or 0) or None
     match_mode = (request.args.get("matchMode") or "exact").strip()
@@ -5438,13 +5463,14 @@ def api_minutes_search():
             limit = 20
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
-    items = search_minutes_items(query, speaker, role, section, from_date, to_date, meeting_id, day_id, match_mode, op, limit, context)
+    items = search_minutes_items(query, speaker, role, section, from_date, to_date, years, meeting_id, day_id, match_mode, op, limit, context)
     query_label = query or " / ".join(
         part
         for part in [
             f"発言者:{speaker}" if speaker else "",
             f"区分:{role}" if role else "",
             f"会議種別:{section}" if section else "",
+            f"年:{','.join(str(year) for year in years)}" if years else "",
             f"会議ID:{meeting_id}" if meeting_id else "",
             f"日程ID:{day_id}" if day_id else "",
         ]
@@ -5460,6 +5486,7 @@ def api_minutes_search():
             "role": role,
             "fromDate": from_date,
             "toDate": to_date,
+            "years": years,
             "meetingId": meeting_id,
             "dayId": day_id,
             "matchMode": match_mode,
@@ -5536,6 +5563,7 @@ def api_minutes_speakers():
     section = (request.args.get("section") or "").strip()
     from_date = (request.args.get("fromDate") or "").strip()
     to_date = (request.args.get("toDate") or "").strip()
+    years = parse_minutes_years(request.args.get("years") or "")
     meeting_id = int(request.args.get("meetingId") or 0) or None
     conditions = ["1=1"]
     params: list[Any] = []
@@ -5546,6 +5574,12 @@ def api_minutes_speakers():
     if meeting_id:
         conditions.append("s.id=%s")
         params.append(meeting_id)
+    if years:
+        year_ranges = []
+        for year in years:
+            year_ranges.append("(d.meeting_date >= %s AND d.meeting_date <= %s)")
+            params.extend([f"{year}-01-01", f"{year}-12-31"])
+        conditions.append(f"({' OR '.join(year_ranges)})")
     if from_date:
         conditions.append("d.meeting_date >= %s")
         params.append(from_date)
@@ -5555,7 +5589,7 @@ def api_minutes_speakers():
     where = " AND ".join(conditions)
     with db_cursor() as (_, cur):
         generation = get_cache_generation(cur)
-        cache_key = make_cache_key(["minutes-speakers", role, section, str(meeting_id or ""), from_date, to_date, str(generation)])
+        cache_key = make_cache_key(["minutes-speakers", role, section, str(meeting_id or ""), from_date, to_date, ",".join(str(year) for year in years), str(generation)])
         cached = get_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key)
         if cached is not None:
             return jsonify({"items": cached})

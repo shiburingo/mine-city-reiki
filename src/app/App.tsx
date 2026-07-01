@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { BarChart2, Bookmark, BookMarked, BookOpen, ChevronLeft, ChevronRight, Clock, Database, Download, FileSearch, Printer, RefreshCw, Search, Settings2, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader } from '@mine-troutfarm/ui';
 import {
@@ -95,6 +95,7 @@ type MinutesSearchHistoryItem = {
   role: string;
   section: string;
   meetingId: number | null;
+  years?: string[];
   fromDate: string;
   toDate: string;
   matchMode: 'exact' | 'related';
@@ -1039,7 +1040,7 @@ function AppShell() {
   const [minutesRole, setMinutesRole] = useState('all');
   const [minutesSection, setMinutesSection] = useState('all');
   const [minutesMeetingId, setMinutesMeetingId] = useState<number | null>(null);
-  const [minutesSearchYear, setMinutesSearchYear] = useState('');
+  const [minutesSearchYears, setMinutesSearchYears] = useState<string[]>([]);
   const [minutesFromDate, setMinutesFromDate] = useState('');
   const [minutesToDate, setMinutesToDate] = useState('');
   const [minutesMatchMode, setMinutesMatchMode] = useState<'exact' | 'related'>(DEFAULT_MINUTES_MATCH_MODE);
@@ -1223,10 +1224,11 @@ function AppShell() {
       role: minutesRole,
       section: minutesSection,
       meetingId: minutesMeetingId,
+      years: minutesSearchYears,
       fromDate: minutesFromDate,
       toDate: minutesToDate,
     });
-  }, [tab, minutesPage, minutesRole, minutesSection, minutesMeetingId, minutesFromDate, minutesToDate]);
+  }, [tab, minutesPage, minutesRole, minutesSection, minutesMeetingId, minutesSearchYears, minutesFromDate, minutesToDate]);
 
   useEffect(() => {
     if (selectedDocId == null) return;
@@ -1532,6 +1534,7 @@ function AppShell() {
     role?: string;
     section?: string;
     meetingId?: number | null;
+    years?: string[];
     fromDate?: string;
     toDate?: string;
   } = {}) {
@@ -1588,6 +1591,7 @@ function AppShell() {
     role: string;
     section: string;
     meetingId: number | null;
+    years: string[];
     fromDate: string;
     toDate: string;
     matchMode: 'exact' | 'related';
@@ -1603,6 +1607,7 @@ function AppShell() {
     const role = overrides.role ?? minutesRole;
     const section = overrides.section ?? minutesSection;
     const meetingId = overrides.meetingId ?? minutesMeetingId;
+    const years = overrides.years ?? minutesSearchYears;
     const fromDate = overrides.fromDate ?? minutesFromDate;
     const toDate = overrides.toDate ?? minutesToDate;
     const matchMode = overrides.matchMode ?? minutesMatchMode;
@@ -1619,6 +1624,7 @@ function AppShell() {
       && role === 'all'
       && section === 'all'
       && !meetingId
+      && years.length === 0
       && !fromDate
       && !toDate
     ) return;
@@ -1629,6 +1635,7 @@ function AppShell() {
         query || '',
         speaker ? `発言者:${speaker}` : '',
         meeting ? meeting.meetingName : '',
+        years.length ? `年:${years.join(',')}` : '',
         role !== 'all' ? minutesRoleLabel(role) : '',
       ].filter(Boolean).join(' / ') || '会議録検索';
       const historyItem: MinutesSearchHistoryItem = {
@@ -1639,6 +1646,7 @@ function AppShell() {
         role,
         section,
         meetingId,
+        years,
         fromDate,
         toDate,
         matchMode,
@@ -1657,6 +1665,7 @@ function AppShell() {
         role,
         section,
         meetingId: meetingId || undefined,
+        years,
         matchMode,
         op,
         fromDate: fromDate || undefined,
@@ -1687,9 +1696,10 @@ function AppShell() {
     setMinutesRole(item.role);
     setMinutesSection(item.section);
     setMinutesMeetingId(item.meetingId);
+    const itemYears = item.years || (item.fromDate && item.toDate && item.fromDate.slice(0, 4) === item.toDate.slice(0, 4) && item.fromDate.endsWith('-01-01') && item.toDate.endsWith('-12-31') ? [item.fromDate.slice(0, 4)] : []);
+    setMinutesSearchYears(itemYears);
     setMinutesFromDate(item.fromDate);
     setMinutesToDate(item.toDate);
-    setMinutesSearchYear(item.fromDate && item.toDate && item.fromDate.slice(0, 4) === item.toDate.slice(0, 4) && item.fromDate.endsWith('-01-01') && item.toDate.endsWith('-12-31') ? item.fromDate.slice(0, 4) : '');
     setMinutesMatchMode(item.matchMode);
     setMinutesOp(item.op);
     setMinutesIncludeReplies(item.includeReplies);
@@ -1700,6 +1710,7 @@ function AppShell() {
         role: item.role,
         section: item.section,
         meetingId: item.meetingId,
+        years: itemYears,
         fromDate: item.fromDate,
         toDate: item.toDate,
         matchMode: item.matchMode,
@@ -1715,7 +1726,7 @@ function AppShell() {
     setMinutesRole('all');
     setMinutesSection('all');
     setMinutesMeetingId(null);
-    setMinutesSearchYear('');
+    setMinutesSearchYears([]);
     setMinutesFromDate('');
     setMinutesToDate('');
   }
@@ -1801,16 +1812,19 @@ function AppShell() {
     });
   }
 
-  function setMinutesSearchYearRange(value: string) {
-    setMinutesSearchYear(value);
+  function setMinutesSearchYearSelection(years: string[]) {
+    setMinutesSearchYears(years);
     setMinutesMeetingId(null);
-    if (!value) {
+    if (years.length > 0) {
       setMinutesFromDate('');
       setMinutesToDate('');
-      return;
     }
-    setMinutesFromDate(`${value}-01-01`);
-    setMinutesToDate(`${value}-12-31`);
+  }
+
+  function handleMinutesSearchYearsChange(event: ChangeEvent<HTMLSelectElement>, afterChange?: () => void) {
+    const years = Array.from(event.currentTarget.selectedOptions).map((option) => option.value).filter(Boolean);
+    setMinutesSearchYearSelection(years);
+    afterChange?.();
   }
 
   function selectMinutesResult(result: MinutesSearchResult) {
@@ -2244,13 +2258,16 @@ function AppShell() {
       });
   }, [minutesMeetings, effectiveMinutesBrowseFiscalYear, minutesBrowseSection]);
   const searchMinutesMeetingOptions = useMemo(() => {
-    const selectedYear = minutesSearchYear ? Number(minutesSearchYear) : null;
+    const selectedYears = new Set(minutesSearchYears.map((year) => Number(year)).filter((year) => Number.isFinite(year)));
     return minutesMeetings.filter((meeting) => {
       if (minutesSection !== 'all' && (meeting.section || '未分類') !== minutesSection) return false;
-      if (selectedYear != null && calendarYearFromDate(meeting.fromDate || meeting.toDate) !== selectedYear) return false;
+      if (selectedYears.size > 0) {
+        const meetingYear = calendarYearFromDate(meeting.fromDate || meeting.toDate);
+        if (meetingYear == null || !selectedYears.has(meetingYear)) return false;
+      }
       return true;
     });
-  }, [minutesMeetings, minutesSearchYear, minutesSection]);
+  }, [minutesMeetings, minutesSearchYears, minutesSection]);
   const browsedMinutesMeetingsBySection = useMemo(() => {
     const groups = new Map<string, MinutesMeeting[]>();
     for (const meeting of browsedMinutesMeetings) {
@@ -2815,6 +2832,20 @@ function AppShell() {
     </div>
   );
 
+  const renderMinutesYearMultiSelect = (afterChange?: () => void): JSX.Element => (
+    <select
+      multiple
+      size={Math.min(5, Math.max(3, minutesBrowseFiscalYears.length))}
+      className="min-h-28 w-full rounded-xl border bg-white px-3 py-2 text-sm"
+      value={minutesSearchYears}
+      onChange={(e) => handleMinutesSearchYearsChange(e, afterChange)}
+    >
+      {minutesBrowseFiscalYears.map((year) => (
+        <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
+      ))}
+    </select>
+  );
+
   const renderMinutesKeywordFilters = (): JSX.Element => (
     <div className="space-y-4">
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_15.5rem] lg:items-end">
@@ -2898,12 +2929,8 @@ function AppShell() {
       <div className="grid gap-4 lg:grid-cols-[8.75rem_minmax(0,1fr)]">
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">年</span>
-          <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSearchYear} onChange={(e) => setMinutesSearchYearRange(e.target.value)}>
-            <option value="">すべて</option>
-            {minutesBrowseFiscalYears.map((year) => (
-              <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
-            ))}
-          </select>
+          {renderMinutesYearMultiSelect()}
+          <span className="block text-xs text-muted-foreground">未選択ならすべて</span>
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">会議名</span>
@@ -2925,11 +2952,11 @@ function AppShell() {
       <div className="grid gap-4 sm:grid-cols-2 xl:max-w-xl">
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">開始日</span>
-          <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesFromDate(e.target.value); }} />
+          <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => { setMinutesSearchYears([]); setMinutesFromDate(e.target.value); }} />
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">終了日</span>
-          <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesToDate(e.target.value); }} />
+          <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => { setMinutesSearchYears([]); setMinutesToDate(e.target.value); }} />
         </label>
       </div>
     </div>
@@ -3036,20 +3063,16 @@ function AppShell() {
       </label>
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">年</span>
-        <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSearchYear} onChange={(e) => setMinutesSearchYearRange(e.target.value)}>
-          <option value="">すべての年</option>
-          {minutesBrowseFiscalYears.map((year) => (
-            <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
-          ))}
-        </select>
+        {renderMinutesYearMultiSelect()}
+        <span className="block text-xs text-muted-foreground">未選択ならすべて。Shift/Controlで複数選択できます。</span>
       </label>
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">開始日</span>
-        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesFromDate(e.target.value); }} />
+        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => { setMinutesSearchYears([]); setMinutesFromDate(e.target.value); }} />
       </label>
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">終了日</span>
-        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesToDate(e.target.value); }} />
+        <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => { setMinutesSearchYears([]); setMinutesToDate(e.target.value); }} />
       </label>
     </div>
   );
@@ -3973,19 +3996,8 @@ function AppShell() {
                   <div className="mt-5 grid gap-4 md:grid-cols-3">
                     <label className="space-y-2 text-sm">
                       <span className="font-semibold text-[#173f36]">年</span>
-                      <select
-                        className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
-                        value={minutesSearchYear}
-                        onChange={(e) => {
-                          setMinutesSearchYearRange(e.target.value);
-                          setMinutesSpeaker('');
-                        }}
-                      >
-                        <option value="">すべての年</option>
-                        {minutesBrowseFiscalYears.map((year) => (
-                          <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
-                        ))}
-                      </select>
+                      {renderMinutesYearMultiSelect(() => setMinutesSpeaker(''))}
+                      <span className="block text-xs text-muted-foreground">未選択ならすべて</span>
                     </label>
                     <label className="space-y-2 text-sm">
                       <span className="font-semibold text-[#173f36]">会議種別</span>

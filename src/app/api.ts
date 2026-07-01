@@ -173,6 +173,7 @@ export async function searchMinutes(params: {
   section?: string;
   meetingId?: number;
   dayId?: number;
+  years?: string[];
   matchMode?: 'exact' | 'related';
   op?: 'AND' | 'OR';
   fromDate?: string;
@@ -187,6 +188,7 @@ export async function searchMinutes(params: {
   if (params.section && params.section !== 'all') qs.set('section', params.section);
   if (params.meetingId) qs.set('meetingId', String(params.meetingId));
   if (params.dayId) qs.set('dayId', String(params.dayId));
+  if (params.years?.length) qs.set('years', params.years.join(','));
   if (params.matchMode) qs.set('matchMode', params.matchMode);
   if (params.op) qs.set('op', params.op);
   if (params.fromDate) qs.set('fromDate', params.fromDate);
@@ -201,6 +203,7 @@ export async function fetchMinutesSpeakers(params: {
   role?: string;
   section?: string;
   meetingId?: number | null;
+  years?: string[];
   fromDate?: string;
   toDate?: string;
 } = {}): Promise<MinutesSpeaker[]> {
@@ -208,6 +211,7 @@ export async function fetchMinutesSpeakers(params: {
   if (params.role && params.role !== 'all') qs.set('role', params.role);
   if (params.section && params.section !== 'all') qs.set('section', params.section);
   if (params.meetingId) qs.set('meetingId', String(params.meetingId));
+  if (params.years?.length) qs.set('years', params.years.join(','));
   if (params.fromDate) qs.set('fromDate', params.fromDate);
   if (params.toDate) qs.set('toDate', params.toDate);
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
