@@ -1172,6 +1172,7 @@ function AppShell() {
       if (minutesSpeakers.length === 0) void loadMinutesSpeakers();
       if (allMinutesSpeakers.length === 0) void loadAllMinutesSpeakers();
       if (minutesMeetings.length === 0) void loadMinutesMeetings();
+      if (synonymStats.length === 0 && !synonymLoading) void loadSynonyms();
     }
   }, [tab]);
 
@@ -2264,6 +2265,18 @@ function AppShell() {
         return (a.meetingName || a.title).localeCompare(b.meetingName || b.title, 'ja-JP', { numeric: true });
       });
   }, [minutesMeetings, currentMinutesFiscalYear]);
+  const latestMinutesMeeting = useMemo(() => {
+    return [...minutesMeetings].sort((a, b) => {
+      const leftDate = a.fromDate || a.toDate || '';
+      const rightDate = b.fromDate || b.toDate || '';
+      const byDate = rightDate.localeCompare(leftDate);
+      if (byDate !== 0) return byDate;
+      const bySection = minutesSectionOrder(a.section || '') - minutesSectionOrder(b.section || '');
+      if (bySection !== 0) return bySection;
+      return (a.meetingName || a.title).localeCompare(b.meetingName || b.title, 'ja-JP', { numeric: true });
+    })[0] ?? null;
+  }, [minutesMeetings]);
+  const synonymTotalCount = useMemo(() => synonymStats.reduce((sum, item) => sum + item.count, 0), [synonymStats]);
   const deferredMinutesResults = useDeferredValue(minutesResults);
   const meetingGroupedMinutesResults = useMemo(() => {
     const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
@@ -3711,19 +3724,46 @@ function AppShell() {
                 </div>
                 <div className="rounded-3xl border bg-white p-5">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-[#173f36]">検索履歴</p>
-                    {minutesHistory.length > 0 ? (
-                      <button type="button" onClick={() => setMinutesPage('history')} className="text-xs font-semibold text-[#2f765e] hover:underline">一覧</button>
-                    ) : null}
+                    <div>
+                      <p className="text-sm font-semibold text-[#173f36]">運用情報</p>
+                      <p className="mt-1 text-xs text-muted-foreground">会議録データと関連語辞書の状態を表示します。</p>
+                    </div>
                   </div>
-                  {minutesHistory.length > 0 ? (
-                    <button type="button" onClick={() => applyMinutesHistory(minutesHistory[0])} className="mt-3 w-full rounded-2xl border bg-[#fbfdfb] px-3 py-3 text-left text-sm hover:border-[#79b28d]">
-                      <p className="font-semibold">{minutesHistory[0].label}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(minutesHistory[0].createdAt)} / {minutesHistory[0].matchMode === 'exact' ? '完全一致' : '関連語'} / {minutesHistory[0].op}</p>
-                    </button>
-                  ) : (
-                    <p className="mt-3 text-sm text-muted-foreground">検索履歴はまだありません。</p>
-                  )}
+                  <div className="mt-4 space-y-3">
+                    <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
+                      <p className="text-xs font-semibold text-muted-foreground">最終更新日</p>
+                      <p className="mt-1 text-sm font-semibold text-[#173f36]">
+                        {minutesStatus.latestRun?.finishedAt || minutesStatus.latestRun?.startedAt
+                          ? formatDateTime(minutesStatus.latestRun.finishedAt || minutesStatus.latestRun.startedAt)
+                          : '未取得'}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
+                      <p className="text-xs font-semibold text-muted-foreground">最新会議録</p>
+                      {latestMinutesMeeting ? (
+                        <button
+                          type="button"
+                          onClick={() => void openMinutesMeeting(latestMinutesMeeting)}
+                          className="mt-1 w-full rounded-xl px-1 py-1 text-left transition hover:bg-[#edf7ef]"
+                        >
+                          <p className="text-sm font-semibold leading-snug text-blue-700 underline-offset-2 hover:underline">
+                            {formatMinutesMeetingBrowseTitle(latestMinutesMeeting)}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {latestMinutesMeeting.section || '未分類'} / {latestMinutesMeeting.dayCount}日程 / {latestMinutesMeeting.utteranceCount.toLocaleString()}発言
+                          </p>
+                        </button>
+                      ) : (
+                        <p className="mt-1 text-sm text-muted-foreground">未登録</p>
+                      )}
+                    </div>
+                    <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
+                      <p className="text-xs font-semibold text-muted-foreground">辞書の登録数</p>
+                      <p className="mt-1 text-sm font-semibold text-[#173f36]">
+                        {synonymLoading && synonymTotalCount === 0 ? '読み込み中…' : `${synonymTotalCount.toLocaleString()}件`}
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
