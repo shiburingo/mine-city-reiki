@@ -2817,7 +2817,7 @@ function AppShell() {
 
   const renderMinutesKeywordFilters = (): JSX.Element => (
     <div className="space-y-4">
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_18rem] xl:items-end">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_15.5rem] lg:items-end">
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">検索語</span>
           <input
@@ -2839,7 +2839,7 @@ function AppShell() {
                 key={item.value}
                 type="button"
                 onClick={() => setMinutesMatchMode(item.value)}
-                className={`rounded-lg px-3 text-sm font-semibold transition ${
+                className={`rounded-lg px-2 text-sm font-semibold transition ${
                   minutesMatchMode === item.value ? 'bg-[#2f765e] text-white shadow-sm' : 'text-[#37564d] hover:bg-[#edf6f0]'
                 }`}
               >
@@ -2895,7 +2895,7 @@ function AppShell() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[10rem_minmax(0,1fr)]">
+      <div className="grid gap-4 lg:grid-cols-[8.75rem_minmax(0,1fr)]">
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">年</span>
           <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSearchYear} onChange={(e) => setMinutesSearchYearRange(e.target.value)}>
