@@ -1822,7 +1822,8 @@ function AppShell() {
   }
 
   function handleMinutesSearchYearsChange(event: ChangeEvent<HTMLSelectElement>, afterChange?: () => void) {
-    const years = Array.from(event.currentTarget.selectedOptions).map((option) => option.value).filter(Boolean);
+    const values = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
+    const years = values.includes('all') ? [] : values.filter(Boolean);
     setMinutesSearchYearSelection(years);
     afterChange?.();
   }
@@ -2837,9 +2838,10 @@ function AppShell() {
       multiple
       size={Math.min(5, Math.max(3, minutesBrowseFiscalYears.length))}
       className="min-h-28 w-full rounded-xl border bg-white px-3 py-2 text-sm"
-      value={minutesSearchYears}
+      value={minutesSearchYears.length ? minutesSearchYears : ['all']}
       onChange={(e) => handleMinutesSearchYearsChange(e, afterChange)}
     >
+      <option value="all">すべて</option>
       {minutesBrowseFiscalYears.map((year) => (
         <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
       ))}
@@ -2930,7 +2932,6 @@ function AppShell() {
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">年</span>
           {renderMinutesYearMultiSelect()}
-          <span className="block text-xs text-muted-foreground">未選択ならすべて</span>
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-semibold text-[#173f36]">会議名</span>
@@ -3064,7 +3065,6 @@ function AppShell() {
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">年</span>
         {renderMinutesYearMultiSelect()}
-        <span className="block text-xs text-muted-foreground">未選択ならすべて。Shift/Controlで複数選択できます。</span>
       </label>
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">開始日</span>
@@ -3997,7 +3997,6 @@ function AppShell() {
                     <label className="space-y-2 text-sm">
                       <span className="font-semibold text-[#173f36]">年</span>
                       {renderMinutesYearMultiSelect(() => setMinutesSpeaker(''))}
-                      <span className="block text-xs text-muted-foreground">未選択ならすべて</span>
                     </label>
                     <label className="space-y-2 text-sm">
                       <span className="font-semibold text-[#173f36]">会議種別</span>
