@@ -111,7 +111,7 @@ const DEFAULT_MINUTES_OP: MinutesSearchHistoryItem['op'] = 'AND';
 const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
 const DEFAULT_MINUTES_INCLUDE_CHAIR = false;
 const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
-const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 30;
+const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 60;
 const MINUTES_INITIAL_RENDER_LIMIT = 200;
 const MINUTES_RENDER_BATCH_SIZE = 200;
 const MINUTES_SEARCH_LIMIT_OPTIONS: { value: MinutesSearchLimit; label: string }[] = [
@@ -2211,6 +2211,19 @@ function AppShell() {
       })
       .map(([section, count]) => ({ section, count }));
   }, [minutesMeetings, effectiveMinutesBrowseFiscalYear]);
+  const minutesSearchSections = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const meeting of minutesMeetings) {
+      const section = meeting.section || '未分類';
+      counts.set(section, (counts.get(section) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort(([left], [right]) => {
+        const byOrder = minutesSectionOrder(left) - minutesSectionOrder(right);
+        return byOrder || left.localeCompare(right, 'ja-JP');
+      })
+      .map(([section, count]) => ({ section, count }));
+  }, [minutesMeetings]);
   const browsedMinutesMeetings = useMemo(() => {
     const selectedYear = effectiveMinutesBrowseFiscalYear === 'all' ? null : Number(effectiveMinutesBrowseFiscalYear);
     return minutesMeetings
@@ -2786,14 +2799,6 @@ function AppShell() {
       <p className="text-sm font-semibold text-[#173f36]">検索条件</p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
-          <input type="radio" checked={minutesMatchMode === 'exact'} onChange={() => setMinutesMatchMode('exact')} />
-          完全一致
-        </label>
-        <label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
-          <input type="radio" checked={minutesMatchMode === 'related'} onChange={() => setMinutesMatchMode('related')} />
-          関連語検索
-        </label>
-        <label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
           <input type="radio" checked={minutesOp === 'AND'} onChange={() => setMinutesOp('AND')} />
           AND
         </label>
@@ -2807,6 +2812,126 @@ function AppShell() {
         質問・答弁など前後の関連発言を本文閲覧に表示
       </label>
       {renderMinutesLimitSelector()}
+    </div>
+  );
+
+  const renderMinutesKeywordFilters = (): JSX.Element => (
+    <div className="space-y-4">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_18rem] xl:items-end">
+        <label className="space-y-2 text-sm">
+          <span className="font-semibold text-[#173f36]">検索語</span>
+          <input
+            className="h-12 w-full rounded-xl border bg-white px-4 text-base"
+            placeholder="例: 観光、公共交通、学校給食"
+            value={minutesQuery}
+            onChange={(e) => setMinutesQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submitMinutesSearch(); }}
+          />
+        </label>
+        <div className="space-y-2 text-sm">
+          <span className="font-semibold text-[#173f36]">検索方式</span>
+          <div className="grid h-12 grid-cols-2 rounded-xl border bg-white p-1">
+            {[
+              { value: 'exact' as const, label: '完全一致' },
+              { value: 'related' as const, label: '関連語検索' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => setMinutesMatchMode(item.value)}
+                className={`rounded-lg px-3 text-sm font-semibold transition ${
+                  minutesMatchMode === item.value ? 'bg-[#2f765e] text-white shadow-sm' : 'text-[#37564d] hover:bg-[#edf6f0]'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <label className="space-y-2 text-sm">
+        <span className="font-semibold text-[#173f36]">発言区分</span>
+        <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesRole} onChange={(e) => setMinutesRole(e.target.value)}>
+          <option value="all">すべて</option>
+          <option value="questioner">質問者</option>
+          <option value="answerer">答弁者</option>
+          <option value="chair">議事進行</option>
+          <option value="secretariat">事務局</option>
+          <option value="report">報告</option>
+          <option value="unknown">未分類</option>
+          <optgroup label="執行部の所属・役職">
+            {minutesExecutiveTitleFilters.map((item) => (
+              <option key={item.title} value={`title:${item.title}`}>
+                {item.title}{item.count != null ? `（${item.count.toLocaleString()}発言）` : ''}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+      </label>
+
+      <div className="space-y-2 text-sm">
+        <span className="font-semibold text-[#173f36]">会議種別</span>
+        <div className="flex flex-wrap gap-2">
+          {[{ section: 'all', count: minutesMeetings.length }, ...minutesSearchSections].map((item) => {
+            const active = minutesSection === item.section;
+            return (
+              <button
+                key={item.section}
+                type="button"
+                onClick={() => {
+                  setMinutesSection(item.section);
+                  setMinutesMeetingId(null);
+                }}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  active ? 'border-[#2f765e] bg-[#dff2e5] text-[#173f36]' : 'bg-white text-[#37564d] hover:border-[#79b28d]'
+                }`}
+              >
+                {item.section === 'all' ? 'すべて' : item.section}
+                <span className="ml-2 text-xs font-medium text-muted-foreground">{item.count.toLocaleString()}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[10rem_minmax(0,1fr)]">
+        <label className="space-y-2 text-sm">
+          <span className="font-semibold text-[#173f36]">年</span>
+          <select className="h-11 w-full rounded-xl border bg-white px-3 text-sm" value={minutesSearchYear} onChange={(e) => setMinutesSearchYearRange(e.target.value)}>
+            <option value="">すべて</option>
+            {minutesBrowseFiscalYears.map((year) => (
+              <option key={year} value={String(year)}>{calendarYearLabel(year)}</option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-semibold text-[#173f36]">会議名</span>
+          <select
+            className="h-11 w-full rounded-xl border bg-white px-3 text-sm"
+            value={minutesMeetingId ?? ''}
+            onChange={(e) => setMinutesMeetingId(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">すべての会議</option>
+            {searchMinutesMeetingOptions.map((meeting) => (
+              <option key={meeting.id} value={meeting.id}>
+                {meeting.section} / {formatMinutesMeetingBrowseTitle(meeting)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:max-w-xl">
+        <label className="space-y-2 text-sm">
+          <span className="font-semibold text-[#173f36]">開始日</span>
+          <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesFromDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesFromDate(e.target.value); }} />
+        </label>
+        <label className="space-y-2 text-sm">
+          <span className="font-semibold text-[#173f36]">終了日</span>
+          <input className="h-11 w-full rounded-xl border bg-white px-3 text-sm" type="date" value={minutesToDate} onChange={(e) => { setMinutesSearchYear(''); setMinutesToDate(e.target.value); }} />
+        </label>
+      </div>
     </div>
   );
 
@@ -3776,7 +3901,7 @@ function AppShell() {
                 <h3 className="text-2xl font-semibold text-[#173f36]">言葉から検索</h3>
                 <p className="mt-2 text-sm text-muted-foreground">調べたい語句を入力し、完全一致または関連語検索を選んでください。</p>
                 <div className="mt-6 space-y-5">
-                  {renderMinutesCommonFilters(true, false)}
+                  {renderMinutesKeywordFilters()}
                   {renderMinutesSearchOptions()}
                   {renderMinutesSearchActions()}
                 </div>
