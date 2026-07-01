@@ -2797,20 +2797,20 @@ function AppShell() {
   const renderMinutesSearchOptions = (compact = false): JSX.Element => (
     <div className={`rounded-2xl border bg-[#f8fbf8] ${compact ? 'p-4' : 'p-5'}`}>
       <p className="text-sm font-semibold text-[#173f36]">検索条件</p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <label className="flex min-w-24 items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
           <input type="radio" checked={minutesOp === 'AND'} onChange={() => setMinutesOp('AND')} />
           AND
         </label>
-        <label className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
+        <label className="flex min-w-24 items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
           <input type="radio" checked={minutesOp === 'OR'} onChange={() => setMinutesOp('OR')} />
           OR
         </label>
+        <label className="flex min-w-40 flex-1 items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm sm:flex-none">
+          <input type="checkbox" checked={minutesIncludeReplies} onChange={(e) => setMinutesIncludeReplies(e.target.checked)} />
+          関連発言表示
+        </label>
       </div>
-      <label className="mt-3 flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm">
-        <input type="checkbox" checked={minutesIncludeReplies} onChange={(e) => setMinutesIncludeReplies(e.target.checked)} />
-        質問・答弁など前後の関連発言を本文閲覧に表示
-      </label>
       {renderMinutesLimitSelector()}
     </div>
   );
@@ -3055,7 +3055,7 @@ function AppShell() {
   );
 
   const renderMinutesSearchActions = (): JSX.Element => (
-    <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+    <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row sm:items-center">
       <button
         type="button"
         disabled={minutesSearching}
