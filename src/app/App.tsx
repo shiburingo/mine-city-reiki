@@ -270,6 +270,21 @@ function calendarYearLabelFromDate(value: string | null | undefined): string {
   return year ? calendarYearLabel(year) : '年不明';
 }
 
+function fiscalYearFromDate(value: string | null | undefined): number | null {
+  const date = parseDate(value);
+  if (!date) return null;
+  return date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
+}
+
+function fiscalYearLabel(year: number): string {
+  return calendarYearLabel(year).replace(/年$/, '年度');
+}
+
+function currentFiscalYear(): number {
+  const today = new Date();
+  return today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
+}
+
 function toFullWidthNumber(value: number | string): string {
   return String(value).replace(/[0-9]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0));
 }
@@ -2235,6 +2250,20 @@ function AppShell() {
       return byOrder || left.localeCompare(right, 'ja-JP');
     });
   }, [browsedMinutesMeetings]);
+  const currentMinutesFiscalYear = currentFiscalYear();
+  const currentFiscalYearMeetings = useMemo(() => {
+    return minutesMeetings
+      .filter((meeting) => fiscalYearFromDate(meeting.fromDate || meeting.toDate) === currentMinutesFiscalYear)
+      .sort((a, b) => {
+        const leftDate = a.fromDate || a.toDate || '';
+        const rightDate = b.fromDate || b.toDate || '';
+        const byDate = rightDate.localeCompare(leftDate);
+        if (byDate !== 0) return byDate;
+        const bySection = minutesSectionOrder(a.section || '') - minutesSectionOrder(b.section || '');
+        if (bySection !== 0) return bySection;
+        return (a.meetingName || a.title).localeCompare(b.meetingName || b.title, 'ja-JP', { numeric: true });
+      });
+  }, [minutesMeetings, currentMinutesFiscalYear]);
   const deferredMinutesResults = useDeferredValue(minutesResults);
   const meetingGroupedMinutesResults = useMemo(() => {
     const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
@@ -3638,22 +3667,47 @@ function AppShell() {
 
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
                 <div className="rounded-3xl border bg-white p-5">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                      <p className="text-sm font-semibold text-[#173f36]">データ更新</p>
-                      <p className="mt-1 text-xs text-muted-foreground">直近1年分の会議録PDFから発言・表を抽出します。</p>
+                      <p className="text-sm font-semibold text-[#173f36]">今年度の会議録</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {fiscalYearLabel(currentMinutesFiscalYear)}の会議録を新しい順に表示します。クリックすると会議録全文を開きます。
+                      </p>
                     </div>
-                    <button
-                      type="button"
-                      disabled={minutesSyncing || Boolean(runningMinutesRun)}
-                      onClick={() => void triggerMinutesSync()}
-                      className="rounded-xl border px-4 py-2 text-sm font-semibold text-[#2f765e] hover:bg-[#edf6f0] disabled:opacity-60"
-                    >
-                      {minutesSyncing || runningMinutesRun ? '同期中' : '直近1年同期'}
-                    </button>
+                    <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
+                      {currentFiscalYearMeetings.length.toLocaleString()}件
+                    </span>
                   </div>
-                  <ProgressMeter title="会議録同期の進捗" run={runningMinutesRun} />
-                  {minutesStatus.latestRun?.finishedAt ? <p className="mt-3 text-xs text-muted-foreground">最終同期: {formatDateTime(minutesStatus.latestRun.finishedAt)}</p> : null}
+                  <div className="mt-4 overflow-hidden rounded-2xl border">
+                    {currentFiscalYearMeetings.length === 0 ? (
+                      <p className="bg-[#fbfdfb] px-4 py-5 text-sm text-muted-foreground">今年度の会議録はまだ登録されていません。</p>
+                    ) : (
+                      <div className="max-h-80 divide-y overflow-auto">
+                        {currentFiscalYearMeetings.map((meeting) => (
+                          <button
+                            key={meeting.id}
+                            type="button"
+                            onClick={() => void openMinutesMeeting(meeting)}
+                            className={`w-full px-4 py-3 text-left transition hover:bg-[#edf7ef] ${
+                              minutesMeetingId === meeting.id ? 'bg-[#edf7ef]' : 'bg-white'
+                            }`}
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-[#2f765e]">{meeting.section || '未分類'}</p>
+                                <p className="mt-0.5 min-w-0 text-sm font-semibold leading-snug text-blue-700 underline-offset-2 hover:underline">
+                                  {formatMinutesMeetingBrowseTitle(meeting)}
+                                </p>
+                              </div>
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {meeting.dayCount}日程 / {meeting.utteranceCount.toLocaleString()}発言 / 表{meeting.tableCount}
+                              </span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="rounded-3xl border bg-white p-5">
                   <div className="flex items-center justify-between gap-3">
