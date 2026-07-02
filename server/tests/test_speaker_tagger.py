@@ -37,6 +37,15 @@ class SpeakerTaggerTest(unittest.TestCase):
         self.assertEqual(utterances[1].speaker_role, "report")
         self.assertEqual(utterances[1].speech_type, "report")
 
+    def test_unknown_report_closing_is_report(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○社会復帰サポート美祢常務取締役（太田幸充君） 今後とも御理解の上で支援いただきたいと思っております。"),
+            line(2, "私からの報告以上でございます。どうもありがとうございました。"),
+        ])
+        self.assertEqual(utterances[0].speaker_role, "report")
+        self.assertEqual(utterances[0].speaker_group, "報告")
+        self.assertEqual(utterances[0].speech_type, "report")
+
     def test_council_secretariat_is_not_reclassified_by_answer_opening(self) -> None:
         utterances = tag_utterances([
             line(1, "○議会事務局長（寺杢真輔君） お答えします。資料は配付済みです。"),

@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v6"
+ENGINE_VERSION = "speaker-rules-v7"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
@@ -51,6 +51,7 @@ REPORT_REQUEST_RE = re.compile(
     r"(報告を求め|報告.*お願いいたします|報告.*お願いをいたします|報告.*お願い申し上げます|進捗.*お願いいたします|説明を求め|説明.*お願いいたします|説明.*お願いをいたします|分科会長、お願いいたします|部会長、お願いいたします)"
 )
 REPORT_BODY_RE = re.compile(r"(報告させて|報告いた|御報告|ご報告|説明させて|説明いた|御説明|ご説明|進捗|分科会|部会|前回|協議|取組|取り組)")
+REPORT_CLOSING_RE = re.compile(r"(私からの報告|報告は|報告を).{0,20}(以上|終わり)|以上.{0,20}(報告|御報告|ご報告)")
 
 
 @dataclass
@@ -114,6 +115,8 @@ def looks_report_context(previous: TaggedUtterance | None, current: TaggedUttera
         return True
     if current.speaker_role != "unknown":
         return False
+    if REPORT_CLOSING_RE.search(current.text):
+        return True
     if "分科会長" not in title and "部会長" not in title:
         return False
     if REPORT_BODY_RE.search(current.text) and "報告" in next_text:
