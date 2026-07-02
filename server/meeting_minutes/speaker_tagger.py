@@ -7,8 +7,9 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v8"
+ENGINE_VERSION = "speaker-rules-v9"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
+SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
 PROCEDURAL_LINE_END_RE = re.compile(r"(休憩|再開|散会|閉会)$")
@@ -92,7 +93,7 @@ def classify_speaker(title: str, name: str) -> tuple[str, str, float, str]:
         return "answerer", "執行部", 0.9, "non-council secretariat title is executive staff"
     if any(token in title for token in EXTERNAL_ANSWERER_TITLES):
         return "answerer", "参考人・証人", 0.9, "title indicates external testimony answerer"
-    if re.search(r"\d+番|[一二三四五六七八九十]+番", title) or "議員" in title or title.endswith("委員") or title in {"部会長", "副委員長"}:
+    if SPEAKER_NUMBER_TITLE_RE.fullmatch(title) or "議員" in title or title.endswith("委員") or title in {"部会長", "副委員長"}:
         return "questioner", "議員・委員", 0.9, "title indicates elected member or committee member"
     if any(token in title for token in ANSWERER_TITLES):
         return "answerer", "執行部", 0.9, "title indicates executive staff"
@@ -148,6 +149,21 @@ def looks_question_context(current: TaggedUtterance) -> bool:
     return bool(QUESTION_CLOSING_RE.search(current.text))
 
 
+def looks_followup_question_context(utterances: list[TaggedUtterance], index: int) -> bool:
+    current = utterances[index]
+    if current.speaker_role != "unknown" or not current.speaker_name:
+        return False
+    start = max(0, index - 8)
+    for previous in reversed(utterances[start:index]):
+        if previous.speaker_name != current.speaker_name:
+            continue
+        if previous.speaker_role == "questioner":
+            return True
+        if previous.speaker_role not in {"answerer", "chair", "secretariat", "unknown"}:
+            return False
+    return False
+
+
 def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
     for index, utterance in enumerate(utterances):
         previous = utterances[index - 1] if index > 0 else None
@@ -172,6 +188,12 @@ def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[
             utterance.speech_type = "question"
             utterance.confidence = max(utterance.confidence, 0.82)
             utterance.reason = "closing phrase asks for answer"
+        if looks_followup_question_context(utterances, index):
+            utterance.speaker_role = "questioner"
+            utterance.speaker_group = "議員・委員"
+            utterance.speech_type = "question"
+            utterance.confidence = max(utterance.confidence, 0.84)
+            utterance.reason = "same speaker follows prior question after answer"
         if looks_report_context(previous, utterance, next_item):
             utterance.speaker_role = "report"
             utterance.speaker_group = "報告"
