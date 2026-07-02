@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v3"
+ENGINE_VERSION = "speaker-rules-v4"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
@@ -35,8 +35,15 @@ ANSWERER_TITLES = (
     "支所長",
     "センター長",
 )
-REPORT_REQUEST_RE = re.compile(r"(報告を求め|報告.*お願いいたします|進捗.*お願いいたします|分科会長、お願いいたします)")
-REPORT_BODY_RE = re.compile(r"(報告させて|報告いた|進捗|分科会|部会|前回|協議|取組|取り組)")
+EXTERNAL_ANSWERER_TITLES = (
+    "参考人",
+    "証人",
+)
+ANSWER_OPENING_RE = re.compile(r"^\s*(それでは、?|では、?|まず、?|ただいまの[^。]{0,40})?(お答え|御答え|ご答弁|答弁|回答|説明)(いたします|します|させていただきます|申し上げます)")
+REPORT_REQUEST_RE = re.compile(
+    r"(報告を求め|報告.*お願いいたします|報告.*お願いをいたします|報告.*お願い申し上げます|進捗.*お願いいたします|説明を求め|説明.*お願いいたします|説明.*お願いをいたします|分科会長、お願いいたします|部会長、お願いいたします)"
+)
+REPORT_BODY_RE = re.compile(r"(報告させて|報告いた|御報告|ご報告|説明させて|説明いた|御説明|ご説明|進捗|分科会|部会|前回|協議|取組|取り組)")
 
 
 @dataclass
@@ -69,6 +76,8 @@ def classify_speaker(title: str, name: str) -> tuple[str, str, float, str]:
         return "secretariat", "事務局", 0.95, "title includes secretariat alias"
     if "事務局" in title:
         return "answerer", "執行部", 0.9, "non-council secretariat title is executive staff"
+    if any(token in title for token in EXTERNAL_ANSWERER_TITLES):
+        return "answerer", "参考人・証人", 0.9, "title indicates external testimony answerer"
     if re.search(r"\d+番|[一二三四五六七八九十]+番", title) or "議員" in title or title in {"委員", "部会長", "副委員長"}:
         return "questioner", "議員・委員", 0.9, "title indicates elected member or committee member"
     if any(token in title for token in ANSWERER_TITLES):
@@ -89,15 +98,17 @@ def speech_type_from_role(role: str) -> str:
 
 
 def looks_report_context(previous: TaggedUtterance | None, current: TaggedUtterance, next_item: TaggedUtterance | None) -> bool:
-    if current.speaker_role != "unknown":
+    if current.speaker_role in {"chair", "secretariat"}:
         return False
     title = current.speaker_title
-    if "分科会長" not in title and "部会長" not in title:
-        return False
     previous_text = previous.text if previous else ""
     next_text = next_item.text if next_item else ""
     if previous and previous.speaker_role == "chair" and REPORT_REQUEST_RE.search(previous_text):
         return True
+    if current.speaker_role != "unknown":
+        return False
+    if "分科会長" not in title and "部会長" not in title:
+        return False
     if REPORT_BODY_RE.search(current.text) and "報告" in next_text:
         return True
     if REPORT_BODY_RE.search(current.text) and previous and previous.speaker_role == "chair":
@@ -105,10 +116,18 @@ def looks_report_context(previous: TaggedUtterance | None, current: TaggedUttera
     return False
 
 
-def reclassify_report_utterances(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
+def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
     for index, utterance in enumerate(utterances):
         previous = utterances[index - 1] if index > 0 else None
         next_item = utterances[index + 1] if index + 1 < len(utterances) else None
+        if utterance.speaker_role not in {"chair", "secretariat"} and ANSWER_OPENING_RE.search(utterance.text):
+            previous_role = utterance.speaker_role
+            utterance.speaker_role = "answerer"
+            if previous_role != "answerer":
+                utterance.speaker_group = "執行部"
+            utterance.speech_type = "answer"
+            utterance.confidence = max(utterance.confidence, 0.88)
+            utterance.reason = "opening phrase indicates answer"
         if looks_report_context(previous, utterance, next_item):
             utterance.speaker_role = "report"
             utterance.speaker_group = "報告"
@@ -229,4 +248,4 @@ def tag_utterances(lines: Iterable[ExtractedLine]) -> list[TaggedUtterance]:
             current["page_end"] = line.page
             current["position_top_end"] = line.top
     flush()
-    return reclassify_report_utterances(utterances)
+    return reclassify_contextual_utterances(utterances)
