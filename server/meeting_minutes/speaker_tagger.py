@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v4"
+ENGINE_VERSION = "speaker-rules-v5"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
@@ -19,7 +19,9 @@ ANSWERER_TITLES = (
     "市長",
     "副市長",
     "教育長",
+    "上下水道事業管理者",
     "病院事業管理者",
+    "事業管理者",
     "代表監査委員",
     "部長",
     "次長",
@@ -40,6 +42,7 @@ EXTERNAL_ANSWERER_TITLES = (
     "証人",
 )
 ANSWER_OPENING_RE = re.compile(r"^\s*(それでは、?|では、?|まず、?|ただいまの[^。]{0,40})?(お答え|御答え|ご答弁|答弁|回答|説明)(いたします|します|させていただきます|申し上げます)")
+ANSWER_CONTEXT_RE = re.compile(r"(御質問|ご質問|質問|お尋ね|御指摘|ご指摘|お答え|御答え|答弁|回答|説明|申し上げ)")
 REPORT_REQUEST_RE = re.compile(
     r"(報告を求め|報告.*お願いいたします|報告.*お願いをいたします|報告.*お願い申し上げます|進捗.*お願いいたします|説明を求め|説明.*お願いいたします|説明.*お願いをいたします|分科会長、お願いいたします|部会長、お願いいたします)"
 )
@@ -70,7 +73,7 @@ def normalize_name(name: str) -> str:
 
 def classify_speaker(title: str, name: str) -> tuple[str, str, float, str]:
     title = re.sub(r"\s+", "", title or "")
-    if "議長" in title or "委員長" in title:
+    if "議長" in title or "委員長" in title or "座長" in title:
         return "chair", "議事進行", 0.98, "title includes chair alias"
     if "議会事務局" in title or "書記" in title:
         return "secretariat", "事務局", 0.95, "title includes secretariat alias"
@@ -116,6 +119,16 @@ def looks_report_context(previous: TaggedUtterance | None, current: TaggedUttera
     return False
 
 
+def looks_answer_context(previous: TaggedUtterance | None, current: TaggedUtterance, next_item: TaggedUtterance | None) -> bool:
+    if current.speaker_role != "unknown":
+        return False
+    if previous and previous.speaker_role == "questioner" and ANSWER_CONTEXT_RE.search(current.text):
+        return True
+    if next_item and next_item.speaker_role == "questioner" and ANSWER_CONTEXT_RE.search(current.text):
+        return True
+    return False
+
+
 def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
     for index, utterance in enumerate(utterances):
         previous = utterances[index - 1] if index > 0 else None
@@ -128,6 +141,12 @@ def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[
             utterance.speech_type = "answer"
             utterance.confidence = max(utterance.confidence, 0.88)
             utterance.reason = "opening phrase indicates answer"
+        if looks_answer_context(previous, utterance, next_item):
+            utterance.speaker_role = "answerer"
+            utterance.speaker_group = "執行部"
+            utterance.speech_type = "answer"
+            utterance.confidence = max(utterance.confidence, 0.82)
+            utterance.reason = "surrounding questioner utterance and body indicate answer"
         if looks_report_context(previous, utterance, next_item):
             utterance.speaker_role = "report"
             utterance.speaker_group = "報告"

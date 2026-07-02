@@ -43,6 +43,22 @@ class SpeakerTaggerTest(unittest.TestCase):
         ])
         self.assertEqual(utterances[0].speaker_role, "secretariat")
 
+    def test_chair_alias_zacho_is_proceeding(self) -> None:
+        self.assertEqual(classify_speaker("座長", "美祢太郎")[0], "chair")
+
+    def test_waterworks_business_administrator_is_answerer(self) -> None:
+        role, group, _confidence, _reason = classify_speaker("上下水道事業管理者", "波佐間敏")
+        self.assertEqual(role, "answerer")
+        self.assertEqual(group, "執行部")
+
+    def test_unknown_between_question_context_is_reclassified_as_answerer(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○5番（山田太郎君） 水道事業についてお尋ねします。"),
+            line(2, "○水道担当（波佐間敏君） ただいまの御質問について説明申し上げます。"),
+        ])
+        self.assertEqual(utterances[1].speaker_role, "answerer")
+        self.assertEqual(utterances[1].speech_type, "answer")
+
 
 if __name__ == "__main__":
     unittest.main()
