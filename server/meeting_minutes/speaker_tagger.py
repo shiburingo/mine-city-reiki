@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v9"
+ENGINE_VERSION = "speaker-rules-v10"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
@@ -35,6 +35,7 @@ ANSWERER_TITLES = (
     "監",
     "参事",
     "主幹",
+    "主査",
     "室長",
     "支所長",
     "センター長",
@@ -48,6 +49,7 @@ ANSWER_OPENING_RE = re.compile(
     r"(お答え|御答え|ご答弁|答弁|回答|説明)(いたします|します|させていただきます|申し上げます)"
 )
 ANSWER_CONTEXT_RE = re.compile(r"(御質問|ご質問|質問|お尋ね|御指摘|ご指摘|お答え|御答え|答弁|回答|説明|申し上げ)")
+ANSWER_TO_QUESTION_RE = re.compile(r"(ただいま|只今|今|先ほど|先程)?[^。！？\n]{0,20}(御質問|ご質問|質問|お尋ね)[^。！？\n]{0,20}(ですが|について|に|の件)")
 QUESTION_CLOSING_RE = re.compile(
     r"(お答え|御答え|ご答弁|答弁|回答|説明)[^。！？\n]{0,40}"
     r"(いただいておきたい|いただきたい|願いたい|お願いしたい|求めたい)"
@@ -143,6 +145,17 @@ def looks_answer_context(previous: TaggedUtterance | None, current: TaggedUttera
     return False
 
 
+def looks_answer_after_chair_prompt(utterances: list[TaggedUtterance], index: int) -> bool:
+    current = utterances[index]
+    if current.speaker_role != "unknown" or not ANSWER_TO_QUESTION_RE.search(current.text):
+        return False
+    previous = utterances[index - 1] if index > 0 else None
+    if not previous or previous.speaker_role != "chair":
+        return False
+    start = max(0, index - 4)
+    return any(item.speaker_role == "questioner" for item in utterances[start:index])
+
+
 def looks_question_context(current: TaggedUtterance) -> bool:
     if current.speaker_role != "unknown":
         return False
@@ -182,6 +195,12 @@ def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[
             utterance.speech_type = "answer"
             utterance.confidence = max(utterance.confidence, 0.82)
             utterance.reason = "surrounding questioner utterance and body indicate answer"
+        if looks_answer_after_chair_prompt(utterances, index):
+            utterance.speaker_role = "answerer"
+            utterance.speaker_group = "執行部"
+            utterance.speech_type = "answer"
+            utterance.confidence = max(utterance.confidence, 0.84)
+            utterance.reason = "chair prompt follows question and body indicates answer"
         if looks_question_context(utterance):
             utterance.speaker_role = "questioner"
             utterance.speaker_group = "議員・委員"

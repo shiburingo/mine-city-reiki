@@ -74,6 +74,11 @@ class SpeakerTaggerTest(unittest.TestCase):
         self.assertEqual(utterances[0].speaker_group, "執行部")
         self.assertEqual(utterances[0].speech_type, "answer")
 
+    def test_chief_clerk_title_is_answerer(self) -> None:
+        role, group, _confidence, _reason = classify_speaker("建設経済部商工労働課主査", "河村充展")
+        self.assertEqual(role, "answerer")
+        self.assertEqual(group, "執行部")
+
     def test_unknown_between_question_context_is_reclassified_as_answerer(self) -> None:
         utterances = tag_utterances([
             line(1, "○5番（山田太郎君） 水道事業についてお尋ねします。"),
@@ -81,6 +86,16 @@ class SpeakerTaggerTest(unittest.TestCase):
         ])
         self.assertEqual(utterances[1].speaker_role, "answerer")
         self.assertEqual(utterances[1].speech_type, "answer")
+
+    def test_unknown_after_chair_prompt_and_question_context_is_answerer(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○委員（南口彰夫君） 地元中小企業対策について質問します。"),
+            line(2, "○委員長（南口彰夫君） はい、河村商工労働課主査。"),
+            line(3, "○地域担当（河村充展君） 只今のご質問ですが、商業の関係につきましては融資制度を設けております。"),
+        ])
+        self.assertEqual(utterances[2].speaker_role, "answerer")
+        self.assertEqual(utterances[2].speaker_group, "執行部")
+        self.assertEqual(utterances[2].speech_type, "answer")
 
     def test_unknown_question_closing_is_questioner(self) -> None:
         utterances = tag_utterances([
