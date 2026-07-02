@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v5"
+ENGINE_VERSION = "speaker-rules-v6"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
 SENTENCE_END_RE = re.compile(r"[。！？）」』]$")
@@ -27,6 +27,7 @@ ANSWERER_TITLES = (
     "次長",
     "課長",
     "所長",
+    "事務長",
     "局長",
     "消防長",
     "会計管理者",
@@ -41,7 +42,10 @@ EXTERNAL_ANSWERER_TITLES = (
     "参考人",
     "証人",
 )
-ANSWER_OPENING_RE = re.compile(r"^\s*(それでは、?|では、?|まず、?|ただいまの[^。]{0,40})?(お答え|御答え|ご答弁|答弁|回答|説明)(いたします|します|させていただきます|申し上げます)")
+ANSWER_OPENING_RE = re.compile(
+    r"^\s*(それでは、?|では、?|まず、?|ただいまの[^。]{0,40})?[^。！？\n]{0,40}"
+    r"(お答え|御答え|ご答弁|答弁|回答|説明)(いたします|します|させていただきます|申し上げます)"
+)
 ANSWER_CONTEXT_RE = re.compile(r"(御質問|ご質問|質問|お尋ね|御指摘|ご指摘|お答え|御答え|答弁|回答|説明|申し上げ)")
 REPORT_REQUEST_RE = re.compile(
     r"(報告を求め|報告.*お願いいたします|報告.*お願いをいたします|報告.*お願い申し上げます|進捗.*お願いいたします|説明を求め|説明.*お願いいたします|説明.*お願いをいたします|分科会長、お願いいたします|部会長、お願いいたします)"
