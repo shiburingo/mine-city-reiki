@@ -29,7 +29,7 @@ from werkzeug.exceptions import HTTPException
 from meeting_minutes.crawler import crawl_minutes_pdfs
 from meeting_minutes.pdf_extractor import download_pdf, extract_pdf_from_bytes
 from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERSION
-from meeting_minutes.speaker_tagger import tag_utterances
+from meeting_minutes.speaker_tagger import TaggedUtterance, classify_speaker, reclassify_contextual_utterances, speech_type_from_role, tag_utterances
 from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSION
 from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract_coordinate_tables, refine_person_roster_tables
 from dictionary_engine import (
@@ -3768,6 +3768,132 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
     return {"utterances": len(utterances), "tables": len(tables), "speakers": speaker_count}
 
 
+def build_minutes_utterance_search_text(
+    section: str,
+    meeting_name: str,
+    day_title: str,
+    speaker_name: str,
+    speaker_title: str,
+    speaker_role: str,
+    text: str,
+) -> str:
+    return "\n".join(
+        [
+            section,
+            meeting_name,
+            day_title,
+            speaker_name,
+            speaker_title,
+            speaker_role,
+            text,
+        ]
+    )
+
+
+def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
+    cur.execute(
+        """
+        SELECT
+          d.id AS day_id, d.meeting_date, d.title AS day_title,
+          s.section, s.meeting_name,
+          u.id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
+          u.speaker_group, u.speech_type, u.text, u.page_start, u.page_end,
+          u.position_top_start, u.position_top_end, u.confidence, u.reason,
+          u.search_text, u.engine_version
+        FROM meeting_days d
+        JOIN meeting_sessions s ON s.id=d.session_id
+        JOIN meeting_utterances u ON u.day_id=d.id
+        WHERE d.id=%s
+        ORDER BY u.utterance_order ASC
+        """,
+        (day_id,),
+    )
+    rows = cur.fetchall() or []
+    if not rows:
+        return {"processed": 0, "updated": 0, "roleChanged": 0}
+
+    tagged: list[TaggedUtterance] = []
+    for row in rows:
+        role, group, confidence, reason = classify_speaker(row.get("speaker_title") or "", row.get("speaker_name") or "")
+        tagged.append(
+            TaggedUtterance(
+                order=int(row.get("utterance_order") or 0),
+                speaker_name=row.get("speaker_name") or "",
+                speaker_title=row.get("speaker_title") or "",
+                speaker_role=role,
+                speaker_group=group,
+                speech_type=speech_type_from_role(role),
+                text=row.get("text") or "",
+                page_start=int(row.get("page_start") or 0),
+                page_end=int(row.get("page_end") or 0),
+                position_top_start=float(row.get("position_top_start") or 0),
+                position_top_end=float(row.get("position_top_end") or 0),
+                confidence=confidence,
+                reason=reason,
+            )
+        )
+    tagged = reclassify_contextual_utterances(tagged)
+
+    meeting_date = rows[0].get("meeting_date")
+    section = rows[0].get("section") or ""
+    meeting_name = rows[0].get("meeting_name") or ""
+    day_title = rows[0].get("day_title") or ""
+    updated = 0
+    role_changed = 0
+    for row, utterance in zip(rows, tagged):
+        search_text = build_minutes_utterance_search_text(
+            section,
+            meeting_name,
+            day_title,
+            utterance.speaker_name,
+            utterance.speaker_title,
+            utterance.speaker_role,
+            utterance.text,
+        )
+        speaker_id = upsert_meeting_speaker(
+            cur,
+            utterance.speaker_name,
+            utterance.speaker_title,
+            utterance.speaker_role,
+            utterance.speaker_group,
+        )
+        changed = (
+            row.get("speaker_role") != utterance.speaker_role
+            or row.get("speaker_group") != utterance.speaker_group
+            or row.get("speech_type") != utterance.speech_type
+            or row.get("reason") != utterance.reason
+            or row.get("search_text") != search_text
+            or row.get("engine_version") != SPEAKER_ENGINE_VERSION
+        )
+        if row.get("speaker_role") != utterance.speaker_role:
+            role_changed += 1
+        if changed:
+            cur.execute(
+                """
+                UPDATE meeting_utterances
+                SET speaker_id=%s, speaker_role=%s, speaker_group=%s, speech_type=%s,
+                    search_text=%s, confidence=%s, reason=%s, engine_version=%s
+                WHERE id=%s
+                """,
+                (
+                    speaker_id,
+                    utterance.speaker_role,
+                    utterance.speaker_group,
+                    utterance.speech_type,
+                    search_text,
+                    utterance.confidence,
+                    utterance.reason,
+                    SPEAKER_ENGINE_VERSION,
+                    int(row["id"]),
+                ),
+            )
+            cur.execute("DELETE FROM meeting_utterance_short_terms WHERE utterance_id=%s", (int(row["id"]),))
+            insert_minutes_short_terms_for_utterance(cur, int(row["id"]), day_id, search_text)
+            updated += 1
+    fiscal_year = fiscal_year_for_date(meeting_date) if meeting_date else None
+    return {"processed": len(rows), "updated": updated, "roleChanged": role_changed, "fiscalYear": fiscal_year}
+
+
 def update_minutes_run_summary(run_id: int, extract_run_id: int | None, summary: dict[str, Any]) -> None:
     with db_cursor(commit=True) as (_, cur):
         update_sync_run_summary(cur, run_id, summary)
@@ -3888,6 +4014,102 @@ def launch_minutes_sync_in_background(recent_days: int | None = 365) -> None:
     thread = threading.Thread(
         target=_runner,
         name="mine-city-reiki-minutes-sync",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
+def execute_minutes_retag(batch_size: int = 25) -> dict[str, Any]:
+    with db_cursor() as (_, cur):
+        cur.execute(
+            """
+            SELECT id
+            FROM meeting_days
+            WHERE extraction_status='success'
+            ORDER BY meeting_date ASC, id ASC
+            """
+        )
+        day_ids = [int(row["id"]) for row in (cur.fetchall() or [])]
+
+    with db_cursor(commit=True) as (_, cur):
+        summary: dict[str, Any] = {
+            "operation": "minutes-retag",
+            "engineVersion": SPEAKER_ENGINE_VERSION,
+            "batchSize": batch_size,
+            "days": len(day_ids),
+            "processedDays": 0,
+            "utterances": 0,
+            "updated": 0,
+            "roleChanged": 0,
+            "rebuiltYears": 0,
+            "progressCurrent": 0,
+            "progressTotal": max(1, len(day_ids)),
+            "progressLabel": "会議録の再タグ付けを開始します",
+        }
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps(summary, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+
+    years_to_rebuild: set[int] = set()
+    try:
+        if not day_ids:
+            with db_cursor(commit=True) as (_, cur):
+                summary["progressLabel"] = "再タグ付け対象の会議録はありません"
+                set_sync_run_status(cur, run_id, "success", summary, None)
+            return summary
+
+        for start in range(0, len(day_ids), batch_size):
+            batch = day_ids[start:start + batch_size]
+            with db_cursor(commit=True) as (_, cur):
+                summary["progressLabel"] = f"会議録再タグ付け {start + 1}-{start + len(batch)} / {len(day_ids)}"
+                update_sync_run_summary(cur, run_id, summary)
+                for day_id in batch:
+                    counts = retag_meeting_day_utterances(cur, day_id)
+                    summary["processedDays"] += 1
+                    summary["utterances"] += int(counts.get("processed") or 0)
+                    summary["updated"] += int(counts.get("updated") or 0)
+                    summary["roleChanged"] += int(counts.get("roleChanged") or 0)
+                    fiscal_year = counts.get("fiscalYear")
+                    if fiscal_year:
+                        years_to_rebuild.add(int(fiscal_year))
+                summary["progressCurrent"] = min(summary["processedDays"], len(day_ids))
+                update_sync_run_summary(cur, run_id, summary)
+
+        sorted_years = sorted(years_to_rebuild)
+        for index, fiscal_year in enumerate(sorted_years, start=1):
+            with db_cursor(commit=True) as (_, cur):
+                summary["progressLabel"] = f"発言者辞書を再構築しています {index}/{len(sorted_years)}"
+                update_sync_run_summary(cur, run_id, summary)
+                rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year)
+                summary["rebuiltYears"] = index
+                update_sync_run_summary(cur, run_id, summary)
+
+        with db_cursor(commit=True) as (_, cur):
+            summary["progressCurrent"] = len(day_ids)
+            summary["progressLabel"] = "会議録の再タグ付けが完了しました"
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
+            set_sync_run_status(cur, run_id, "success", summary, None)
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, "failed", summary, str(exc))
+        raise
+
+
+def launch_minutes_retag_in_background(batch_size: int = 25) -> None:
+    def _runner() -> None:
+        try:
+            execute_minutes_retag(batch_size=batch_size)
+        except Exception:
+            app.logger.exception("Background meeting minutes retag failed")
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-minutes-retag",
         daemon=True,
     )
     with SYNC_THREAD_LOCK:
@@ -5286,6 +5508,21 @@ def api_minutes_dictionary_update_run():
         'started': True,
         'summary': {
             'operation': 'minutes-dictionary-update',
+            'batchSize': batch_size,
+        },
+    }), 202
+
+
+@app.post('/api/minutes/retag')
+def api_minutes_retag_run():
+    payload = request.get_json(silent=True) or {}
+    batch_size = max(1, min(100, int(payload.get('batchSize') or 25)))
+    launch_minutes_retag_in_background(batch_size=batch_size)
+    return jsonify({
+        'ok': True,
+        'started': True,
+        'summary': {
+            'operation': 'minutes-retag',
             'batchSize': batch_size,
         },
     }), 202

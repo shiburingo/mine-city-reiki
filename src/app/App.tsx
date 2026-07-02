@@ -24,6 +24,7 @@ import {
   runMinutesSync,
   runDictionaryUpdate,
   runMinutesDictionaryUpdate,
+  runMinutesRetag,
   runReindex,
   runSync,
   searchLaws,
@@ -190,6 +191,7 @@ function syncRunLabel(run: SyncRun): string {
   if (operation === 'dictionary-update') return '関連語辞書更新';
   if (operation === 'minutes-dictionary-update') return '会議録辞書作成';
   if (operation === 'minutes-sync') return '会議録同期';
+  if (operation === 'minutes-retag') return '会議録再タグ付け';
   return run.runType === 'scheduled' ? '定期同期' : '手動同期';
 }
 
@@ -1463,6 +1465,27 @@ function AppShell() {
     }
   }
 
+  async function triggerMinutesRetag() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では会議録の再タグ付けを実行できません。');
+      return;
+    }
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runMinutesRetag(25);
+      const [status, runs, speakers] = await Promise.all([fetchMinutesStatus(), fetchSyncRuns(), fetchMinutesSpeakers()]);
+      setMinutesStatus(status);
+      setSyncRuns(runs);
+      setMinutesSpeakers(speakers);
+      setAllMinutesSpeakers(speakers);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録再タグ付けの起動に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDeleteSynonym(id: number) {
     if (user?.isGuest) {
       setGlobalError('ゲスト権限では同義語を削除できません。');
@@ -2075,7 +2098,7 @@ function AppShell() {
   }
 
   const runningSyncRun = useMemo(
-    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'minutes-dictionary-update', 'minutes-sync'].includes(String(run.summary?.operation || ''))) ?? null,
+    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'minutes-dictionary-update', 'minutes-sync', 'minutes-retag'].includes(String(run.summary?.operation || ''))) ?? null,
     [syncRuns],
   );
 
@@ -2096,6 +2119,11 @@ function AppShell() {
 
   const runningMinutesRun = useMemo(
     () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync') ?? null,
+    [syncRuns],
+  );
+
+  const runningMinutesRetagRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-retag') ?? null,
     [syncRuns],
   );
 
@@ -5250,6 +5278,25 @@ function AppShell() {
                   </button>
                 </div>
                 <ProgressMeter title="検索再構築の進捗" run={runningReindexRun} />
+              </div>
+              <div className="rounded-3xl border bg-card p-6 shadow-sm">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="size-5 text-primary" />
+                  <h2 className="text-xl font-semibold">会議録再タグ付け</h2>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  既存の会議録発言を対象に、最新の判定ルールで質問者・答弁者・議事進行・事務局・報告・未分類を付け直します。PDF再取得は行わず、発言者辞書も年度単位で再構築します。
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
+                    disabled={busy || Boolean(runningMinutesRetagRun)}
+                    onClick={() => void triggerMinutesRetag()}
+                  >
+                    会議録を再タグ付け
+                  </button>
+                </div>
+                <ProgressMeter title="会議録再タグ付けの進捗" run={runningMinutesRetagRun} />
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
                 <div className="flex items-center gap-2">
