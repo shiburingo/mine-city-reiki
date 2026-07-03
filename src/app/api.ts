@@ -92,6 +92,13 @@ export async function runMinutesRetag(batchSize = 25): Promise<{ ok: boolean; su
   });
 }
 
+export async function runMinutesCompile(trigger = 'manual'): Promise<{ ok: boolean; started: boolean; trigger: string }> {
+  return apiFetch<{ ok: boolean; started: boolean; trigger: string }>('/minutes/compile', {
+    method: 'POST',
+    body: JSON.stringify({ trigger }),
+  });
+}
+
 export async function searchLaws(params: { fields: SearchField[]; source?: string; limit?: number; offset?: number; lawType?: string; fromDate?: string; toDate?: string; fuzzy?: boolean }): Promise<SearchResponse> {
   const qs = new URLSearchParams();
   params.fields.forEach((f, i) => {

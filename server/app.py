@@ -772,6 +772,94 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_table(
+                cur,
+                "meeting_compile_versions",
+                """
+                CREATE TABLE meeting_compile_versions (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  version_key VARCHAR(64) NOT NULL,
+                  status VARCHAR(32) NOT NULL DEFAULT 'running',
+                  is_active TINYINT(1) NOT NULL DEFAULT 0,
+                  started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  finished_at TIMESTAMP NULL DEFAULT NULL,
+                  activated_at TIMESTAMP NULL DEFAULT NULL,
+                  summary_json LONGTEXT NOT NULL,
+                  error_text TEXT NULL,
+                  engine_versions VARCHAR(255) NOT NULL DEFAULT '',
+                  UNIQUE KEY uq_meeting_compile_versions_key (version_key),
+                  KEY idx_meeting_compile_versions_active (is_active, status, id),
+                  KEY idx_meeting_compile_versions_status (status, id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_compiled_days",
+                """
+                CREATE TABLE meeting_compiled_days (
+                  version_id BIGINT UNSIGNED NOT NULL,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  session_id BIGINT UNSIGNED NOT NULL,
+                  meeting_date DATE NULL,
+                  section VARCHAR(64) NOT NULL DEFAULT '',
+                  meeting_name VARCHAR(255) NOT NULL DEFAULT '',
+                  title VARCHAR(255) NOT NULL DEFAULT '',
+                  utterance_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  table_count INT UNSIGNED NOT NULL DEFAULT 0,
+                  detail_json LONGTEXT NOT NULL,
+                  content_hash CHAR(64) NOT NULL DEFAULT '',
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (version_id, day_id),
+                  KEY idx_meeting_compiled_days_day (day_id, version_id),
+                  KEY idx_meeting_compiled_days_session (version_id, session_id, meeting_date),
+                  CONSTRAINT fk_meeting_compiled_days_version FOREIGN KEY (version_id) REFERENCES meeting_compile_versions(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_meeting_compiled_days_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_meeting_compiled_days_session FOREIGN KEY (session_id) REFERENCES meeting_sessions(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_compiled_utterances",
+                """
+                CREATE TABLE meeting_compiled_utterances (
+                  version_id BIGINT UNSIGNED NOT NULL,
+                  utterance_id BIGINT UNSIGNED NOT NULL,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  session_id BIGINT UNSIGNED NOT NULL,
+                  meeting_date DATE NULL,
+                  section VARCHAR(64) NOT NULL DEFAULT '',
+                  meeting_name VARCHAR(255) NOT NULL DEFAULT '',
+                  day_title VARCHAR(255) NOT NULL DEFAULT '',
+                  pdf_url VARCHAR(512) NOT NULL DEFAULT '',
+                  page_url VARCHAR(512) NOT NULL DEFAULT '',
+                  utterance_order INT UNSIGNED NOT NULL,
+                  speaker_name VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_title VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_role VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                  speaker_group VARCHAR(64) NOT NULL DEFAULT '',
+                  speech_type VARCHAR(32) NOT NULL DEFAULT 'statement',
+                  page_start INT UNSIGNED NOT NULL DEFAULT 0,
+                  page_end INT UNSIGNED NOT NULL DEFAULT 0,
+                  position_top_start FLOAT NOT NULL DEFAULT 0,
+                  position_top_end FLOAT NOT NULL DEFAULT 0,
+                  text_preview TEXT NOT NULL,
+                  search_text LONGTEXT NOT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (version_id, utterance_id),
+                  KEY idx_minutes_compiled_day_order (version_id, day_id, utterance_order),
+                  KEY idx_minutes_compiled_date_section_order (version_id, meeting_date, section, utterance_order),
+                  KEY idx_minutes_compiled_speaker (version_id, speaker_name, day_id, utterance_order),
+                  KEY idx_minutes_compiled_role_title (version_id, speaker_role, speaker_title, day_id),
+                  FULLTEXT KEY ft_minutes_compiled_search_text (search_text),
+                  CONSTRAINT fk_minutes_compiled_version FOREIGN KEY (version_id) REFERENCES meeting_compile_versions(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_minutes_compiled_utterance FOREIGN KEY (utterance_id) REFERENCES meeting_utterances(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_minutes_compiled_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_minutes_compiled_session FOREIGN KEY (session_id) REFERENCES meeting_sessions(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
             seed_law_synonyms(cur)
         conn.commit()
 
@@ -4641,6 +4729,20 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
                 "UPDATE meeting_extract_runs SET status='success', finished_at=CURRENT_TIMESTAMP, summary_json=%s WHERE id=%s",
                 (json.dumps(summary, ensure_ascii=False), extract_run_id),
             )
+        try:
+            compile_summary = execute_minutes_compile(trigger="minutes-sync")
+            summary["compiled"] = True
+            summary["compileVersionKey"] = compile_summary.get("versionKey")
+        except Exception as compile_exc:
+            summary["compiled"] = False
+            summary["compileError"] = str(compile_exc)
+            app.logger.exception("Meeting minutes compile after sync failed")
+        with db_cursor(commit=True) as (_, cur):
+            update_sync_run_summary(cur, run_id, summary)
+            cur.execute(
+                "UPDATE meeting_extract_runs SET summary_json=%s WHERE id=%s",
+                (json.dumps(summary, ensure_ascii=False), extract_run_id),
+            )
         return summary
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
@@ -4895,6 +4997,316 @@ def serialize_minutes_content_items(utterances: list[dict[str, Any]], tables: li
         item.pop("sortPage", None)
         item.pop("sortTop", None)
     return items
+
+
+MINUTES_COMPILE_ENGINE_VERSION = f"minutes-compile:{APP_VERSION}:{SPEAKER_ENGINE_VERSION}:{TABLE_ENGINE_VERSION}"
+
+
+def active_minutes_compile_version_id(cur) -> int | None:
+    cur.execute(
+        """
+        SELECT id
+        FROM meeting_compile_versions
+        WHERE is_active=1 AND status='success'
+        ORDER BY activated_at DESC, id DESC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    return int(row["id"]) if row else None
+
+
+def latest_minutes_compile_status(cur) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT id, version_key, status, is_active, started_at, finished_at, activated_at, summary_json, error_text
+        FROM meeting_compile_versions
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "versionKey": row.get("version_key") or "",
+        "status": row.get("status") or "",
+        "isActive": bool(row.get("is_active")),
+        "startedAt": str(row["started_at"]) if row.get("started_at") else None,
+        "finishedAt": str(row["finished_at"]) if row.get("finished_at") else None,
+        "activatedAt": str(row["activated_at"]) if row.get("activated_at") else None,
+        "summary": json.loads(row.get("summary_json") or "{}"),
+        "errorText": row.get("error_text"),
+    }
+
+
+def compiled_minutes_day_detail(cur, day_id: int) -> dict[str, Any] | None:
+    version_id = active_minutes_compile_version_id(cur)
+    if not version_id:
+        return None
+    cur.execute(
+        """
+        SELECT detail_json
+        FROM meeting_compiled_days
+        WHERE version_id=%s AND day_id=%s
+        """,
+        (version_id, day_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return json.loads(row.get("detail_json") or "{}")
+
+
+def compiled_minutes_days_for_meeting(cur, meeting_id: int) -> dict[int, dict[str, Any]]:
+    version_id = active_minutes_compile_version_id(cur)
+    if not version_id:
+        return {}
+    cur.execute(
+        """
+        SELECT day_id, detail_json
+        FROM meeting_compiled_days
+        WHERE version_id=%s AND session_id=%s
+        """,
+        (version_id, meeting_id),
+    )
+    compiled: dict[int, dict[str, Any]] = {}
+    for row in cur.fetchall() or []:
+        compiled[int(row["day_id"])] = json.loads(row.get("detail_json") or "{}")
+    return compiled
+
+
+def build_minutes_day_detail_payload(day: dict[str, Any], utterance_rows: list[dict[str, Any]], table_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": int(day["id"]),
+        "meetingDate": str(day["meeting_date"]) if day.get("meeting_date") else None,
+        "section": day.get("section") or "",
+        "meetingName": day.get("meeting_name") or "",
+        "title": day.get("title") or "",
+        "pdfUrl": day.get("pdf_url") or "",
+        "pageUrl": day.get("page_url") or "",
+        "pageCount": int(day.get("page_count") or 0),
+        "utterances": serialize_minutes_exchange(utterance_rows),
+        "tables": [serialize_minutes_table(row) for row in table_rows],
+        "contentItems": serialize_minutes_content_items(utterance_rows, table_rows),
+    }
+
+
+def update_minutes_compile_run_summary(run_id: int, version_id: int, summary: dict[str, Any]) -> None:
+    payload = json.dumps(summary, ensure_ascii=False)
+    with db_cursor(commit=True) as (_, cur):
+        update_sync_run_summary(cur, run_id, summary)
+        cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (payload, version_id))
+
+
+def prune_old_minutes_compile_versions(cur, keep_success: int = 2) -> int:
+    cur.execute(
+        """
+        SELECT id
+        FROM meeting_compile_versions
+        WHERE status='success'
+        ORDER BY is_active DESC, activated_at DESC, id DESC
+        """
+    )
+    success_ids = [int(row["id"]) for row in (cur.fetchall() or [])]
+    keep_ids = set(success_ids[:keep_success])
+    if not keep_ids:
+        return 0
+    placeholders = ",".join(["%s"] * len(keep_ids))
+    cur.execute(
+        f"""
+        DELETE FROM meeting_compile_versions
+        WHERE status='success' AND id NOT IN ({placeholders})
+        """,
+        tuple(keep_ids),
+    )
+    return int(cur.rowcount or 0)
+
+
+def execute_minutes_compile(trigger: str = "manual") -> dict[str, Any]:
+    version_key = datetime.now().strftime("v%Y%m%d%H%M%S%f")
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_days WHERE extraction_status='success'")
+        day_total = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_utterances")
+        utterance_total = int((cur.fetchone() or {}).get("cnt") or 0)
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_tables")
+        table_total = int((cur.fetchone() or {}).get("cnt") or 0)
+        summary: dict[str, Any] = {
+            "operation": "minutes-compile",
+            "trigger": trigger,
+            "versionKey": version_key,
+            "engineVersion": MINUTES_COMPILE_ENGINE_VERSION,
+            "days": day_total,
+            "utterances": utterance_total,
+            "tables": table_total,
+            "compiledDays": 0,
+            "compiledUtterances": 0,
+            "compiledTables": 0,
+            "prunedVersions": 0,
+            "progressCurrent": 0,
+            "progressTotal": max(1, day_total + 2),
+            "progressLabel": "会議録コンパイルを開始します",
+        }
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps(summary, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+        cur.execute(
+            """
+            INSERT INTO meeting_compile_versions (version_key, status, is_active, summary_json, engine_versions)
+            VALUES (%s,'running',0,%s,%s)
+            """,
+            (version_key, json.dumps(summary, ensure_ascii=False), MINUTES_COMPILE_ENGINE_VERSION),
+        )
+        version_id = int(cur.lastrowid)
+
+    try:
+        with db_cursor(commit=True) as (_, cur):
+            summary["progressCurrent"] = 1
+            summary["progressLabel"] = "発言検索用の軽量テーブルを作成しています"
+            update_sync_run_summary(cur, run_id, summary)
+            cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
+            cur.execute(
+                """
+                INSERT INTO meeting_compiled_utterances
+                  (version_id, utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
+                   utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
+                   page_start, page_end, position_top_start, position_top_end, text_preview, search_text)
+                SELECT
+                  %s, u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
+                  u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
+                  u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+                  SUBSTRING(u.text, 1, %s), u.search_text
+                FROM meeting_utterances u
+                JOIN meeting_days d ON d.id=u.day_id
+                JOIN meeting_sessions s ON s.id=d.session_id
+                WHERE d.extraction_status='success'
+                ORDER BY d.meeting_date DESC, u.day_id ASC, u.utterance_order ASC
+                """,
+                (version_id, MINUTES_SEARCH_INDEX_PREVIEW_CHARS),
+            )
+            summary["compiledUtterances"] = int(cur.rowcount or 0)
+
+        with db_cursor() as (_, cur):
+            cur.execute(
+                """
+                SELECT d.id, d.session_id, d.meeting_date, d.title, d.pdf_url, d.page_url, d.page_count,
+                       s.section, s.meeting_name
+                FROM meeting_days d
+                JOIN meeting_sessions s ON s.id=d.session_id
+                WHERE d.extraction_status='success'
+                ORDER BY d.meeting_date ASC, d.id ASC
+                """
+            )
+            day_rows = cur.fetchall() or []
+
+        for index, day in enumerate(day_rows, start=1):
+            day_id = int(day["id"])
+            with db_cursor(commit=True) as (_, cur):
+                cur.execute(
+                    """
+                    SELECT id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
+                           page_start, page_end, position_top_start, position_top_end
+                    FROM meeting_utterances
+                    WHERE day_id=%s
+                    ORDER BY utterance_order ASC
+                    """,
+                    (day_id,),
+                )
+                utterance_rows = cur.fetchall() or []
+                cur.execute(
+                    """
+                    SELECT id, table_key, page, position_top, position_bottom, caption, rows_json, html, search_text, confidence
+                    FROM meeting_tables
+                    WHERE day_id=%s
+                    ORDER BY page ASC, position_top ASC, id ASC
+                    """,
+                    (day_id,),
+                )
+                table_rows = cur.fetchall() or []
+                detail_payload = build_minutes_day_detail_payload(day, utterance_rows, table_rows)
+                detail_json = json.dumps(detail_payload, ensure_ascii=False, separators=(",", ":"))
+                content_hash = hashlib.sha256(detail_json.encode("utf-8")).hexdigest()
+                cur.execute(
+                    """
+                    INSERT INTO meeting_compiled_days
+                      (version_id, day_id, session_id, meeting_date, section, meeting_name, title,
+                       utterance_count, table_count, detail_json, content_hash)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        version_id,
+                        day_id,
+                        int(day["session_id"]),
+                        day.get("meeting_date"),
+                        day.get("section") or "",
+                        day.get("meeting_name") or "",
+                        day.get("title") or "",
+                        len(utterance_rows),
+                        len(table_rows),
+                        detail_json,
+                        content_hash,
+                    ),
+                )
+                summary["compiledDays"] = index
+                summary["compiledTables"] += len(table_rows)
+                summary["progressCurrent"] = min(summary["progressTotal"], index + 1)
+                summary["progressLabel"] = f"閲覧用JSONを作成しています {index}/{len(day_rows)}"
+                update_sync_run_summary(cur, run_id, summary)
+                cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
+
+        with db_cursor(commit=True) as (_, cur):
+            summary["progressCurrent"] = summary["progressTotal"]
+            summary["progressLabel"] = "会議録コンパイルを有効化しています"
+            cur.execute("UPDATE meeting_compile_versions SET is_active=0 WHERE is_active=1")
+            cur.execute(
+                """
+                UPDATE meeting_compile_versions
+                SET status='success', is_active=1, finished_at=CURRENT_TIMESTAMP, activated_at=CURRENT_TIMESTAMP,
+                    summary_json=%s
+                WHERE id=%s
+                """,
+                (json.dumps(summary, ensure_ascii=False), version_id),
+            )
+            summary["prunedVersions"] = prune_old_minutes_compile_versions(cur, keep_success=2)
+            summary["progressLabel"] = "会議録コンパイルが完了しました"
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
+            set_sync_run_status(cur, run_id, "success", summary, None)
+            cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            summary["progressLabel"] = "会議録コンパイルに失敗しました"
+            set_sync_run_status(cur, run_id, "failed", summary, str(exc))
+            cur.execute(
+                """
+                UPDATE meeting_compile_versions
+                SET status='failed', finished_at=CURRENT_TIMESTAMP, summary_json=%s, error_text=%s
+                WHERE id=%s
+                """,
+                (json.dumps(summary, ensure_ascii=False), str(exc), version_id),
+            )
+        raise
+
+
+def launch_minutes_compile_in_background(trigger: str = "manual") -> None:
+    def _runner() -> None:
+        try:
+            execute_minutes_compile(trigger=trigger)
+        except Exception:
+            app.logger.exception("Background meeting minutes compile failed")
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-minutes-compile",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
 
 
 def minutes_snippet(text: str, keywords: list[str]) -> str:
@@ -5184,7 +5596,10 @@ def search_minutes_items(
             return cached
 
         rows: list[dict[str, Any]] = []
-        use_search_index = context != "wide" and is_meeting_search_index_ready(cur)
+        active_compile_version_id = active_minutes_compile_version_id(cur) if context != "wide" else None
+        use_compiled_index = active_compile_version_id is not None
+        use_search_index = context != "wide" and (use_compiled_index or is_meeting_search_index_ready(cur))
+        search_index_table = "meeting_compiled_utterances" if use_compiled_index else "meeting_utterance_search_index"
         short_index_term = ""
         if len(base_terms) == 1:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
@@ -5209,7 +5624,13 @@ def search_minutes_items(
         compact_results = context != "wide"
         preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
         index_body_join_sql = ""
-        if use_search_index and compact_results and preview_anchor:
+        if use_compiled_index and compact_results and preview_anchor:
+            text_select, text_select_params = minutes_hit_preview_select(
+                "u.search_text",
+                terms if match_mode == "related" else base_terms,
+                query,
+            )
+        elif use_search_index and compact_results and preview_anchor:
             text_select, text_select_params = minutes_hit_preview_select(
                 "body.text",
                 terms if match_mode == "related" else base_terms,
@@ -5259,10 +5680,12 @@ def search_minutes_items(
                 if short_index_term:
                     short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.id AND st.term=%s"
                     short_join_params.append(short_index_term)
-                query_params = text_select_params + short_join_params + params + ([limit] if limit is not None else [])
+                compiled_params = [active_compile_version_id] if use_compiled_index else []
+                query_params = text_select_params + short_join_params + params + compiled_params + ([limit] if limit is not None else [])
                 if use_search_index:
                     if short_index_term:
                         short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.utterance_id AND st.term=%s"
+                    compiled_where = " AND u.version_id=%s" if use_compiled_index else ""
                     cur.execute(
                         f"""
                         SELECT
@@ -5270,10 +5693,10 @@ def search_minutes_items(
                           u.speaker_role, u.speech_type, {text_select}, u.page_start, u.page_end,
                           u.position_top_start, u.position_top_end, u.meeting_date, u.day_title, u.pdf_url,
                           u.page_url, u.section, u.meeting_name, u.meeting_name AS session_title
-                        FROM meeting_utterance_search_index u
+                        FROM {search_index_table} u
                         {index_body_join_sql}
                         {short_join_sql}
-                        WHERE {where}
+                        WHERE {where}{compiled_where}
                         ORDER BY u.meeting_date DESC, u.section ASC, u.utterance_order ASC
                         {limit_clause}
                         """,
@@ -6389,12 +6812,14 @@ def api_minutes_status():
             """
         )
         latest_days = cur.fetchall() or []
+        latest_compile = latest_minutes_compile_status(cur)
     return jsonify(
         {
             "dayCount": day_count,
             "utteranceCount": utterance_count,
             "tableCount": table_count,
             "speakerCount": speaker_count,
+            "latestCompile": latest_compile,
             "latestRun": {
                 "id": int(run["id"]),
                 "status": run["status"],
@@ -6428,6 +6853,14 @@ def api_minutes_sync():
     recent_days = 0 if requested_recent_days <= 0 else max(1, min(36600, requested_recent_days))
     launch_minutes_sync_in_background(recent_days=recent_days)
     return jsonify({"ok": True, "started": True, "recentDays": recent_days}), 202
+
+
+@app.post('/api/minutes/compile')
+def api_minutes_compile():
+    payload = request.get_json(silent=True) or {}
+    trigger = normalize_text(str(payload.get("trigger") or "manual"))[:64] or "manual"
+    launch_minutes_compile_in_background(trigger=trigger)
+    return jsonify({"ok": True, "started": True, "trigger": trigger}), 202
 
 
 @app.get('/api/minutes/search')
@@ -6672,10 +7105,12 @@ def api_minutes_meeting_detail(meeting_id: int):
         )
         day_rows = cur.fetchall() or []
         day_ids = [int(row["id"]) for row in day_rows]
+        compiled_days = compiled_minutes_days_for_meeting(cur, meeting_id)
         utterances_by_day: dict[int, list[dict[str, Any]]] = {day_id: [] for day_id in day_ids}
         tables_by_day: dict[int, list[dict[str, Any]]] = {day_id: [] for day_id in day_ids}
-        if day_ids:
-            placeholders = ",".join(["%s"] * len(day_ids))
+        missing_day_ids = [day_id for day_id in day_ids if day_id not in compiled_days]
+        if missing_day_ids:
+            placeholders = ",".join(["%s"] * len(missing_day_ids))
             cur.execute(
                 f"""
                 SELECT day_id, id, utterance_order, speaker_name, speaker_title, speaker_role, speech_type, text,
@@ -6684,7 +7119,7 @@ def api_minutes_meeting_detail(meeting_id: int):
                 WHERE day_id IN ({placeholders})
                 ORDER BY day_id ASC, utterance_order ASC
                 """,
-                tuple(day_ids),
+                tuple(missing_day_ids),
             )
             for row in cur.fetchall() or []:
                 utterances_by_day.setdefault(int(row["day_id"]), []).append(row)
@@ -6695,7 +7130,7 @@ def api_minutes_meeting_detail(meeting_id: int):
                 WHERE day_id IN ({placeholders})
                 ORDER BY day_id ASC, page ASC, position_top ASC, id ASC
                 """,
-                tuple(day_ids),
+                tuple(missing_day_ids),
             )
             for row in cur.fetchall() or []:
                 tables_by_day.setdefault(int(row["day_id"]), []).append(row)
@@ -6712,22 +7147,12 @@ def api_minutes_meeting_detail(meeting_id: int):
             "utteranceCount": int(meeting.get("utterance_count") or 0),
             "tableCount": int(meeting.get("table_count") or 0),
             "days": [
-                {
-                    "id": int(day["id"]),
-                    "meetingDate": str(day["meeting_date"]) if day.get("meeting_date") else None,
-                    "section": day.get("section") or "",
-                    "meetingName": day.get("meeting_name") or "",
-                    "title": day.get("title") or "",
-                    "pdfUrl": day.get("pdf_url") or "",
-                    "pageUrl": day.get("page_url") or "",
-                    "pageCount": int(day.get("page_count") or 0),
-                    "utterances": serialize_minutes_exchange(utterances_by_day.get(int(day["id"]), [])),
-                    "tables": [serialize_minutes_table(row) for row in tables_by_day.get(int(day["id"]), [])],
-                    "contentItems": serialize_minutes_content_items(
-                        utterances_by_day.get(int(day["id"]), []),
-                        tables_by_day.get(int(day["id"]), []),
-                    ),
-                }
+                compiled_days.get(int(day["id"]))
+                or build_minutes_day_detail_payload(
+                    day,
+                    utterances_by_day.get(int(day["id"]), []),
+                    tables_by_day.get(int(day["id"]), []),
+                )
                 for day in day_rows
             ],
         }
@@ -6737,6 +7162,9 @@ def api_minutes_meeting_detail(meeting_id: int):
 @app.get('/api/minutes/days/<int:day_id>')
 def api_minutes_day_detail(day_id: int):
     with db_cursor() as (_, cur):
+        compiled = compiled_minutes_day_detail(cur, day_id)
+        if compiled:
+            return jsonify(compiled)
         cur.execute(
             """
             SELECT d.id, d.meeting_date, d.title, d.pdf_url, d.page_url, d.page_count,
@@ -6761,27 +7189,12 @@ def api_minutes_day_detail(day_id: int):
             (day_id,),
         )
         utterance_rows = cur.fetchall() or []
-        utterances = serialize_minutes_exchange(utterance_rows)
         cur.execute(
             "SELECT id, table_key, page, position_top, position_bottom, caption, rows_json, html, search_text, confidence FROM meeting_tables WHERE day_id=%s ORDER BY page ASC, position_top ASC, id ASC",
             (day_id,),
         )
         table_rows = cur.fetchall() or []
-    return jsonify(
-        {
-            "id": int(day["id"]),
-            "meetingDate": str(day["meeting_date"]) if day.get("meeting_date") else None,
-            "section": day.get("section") or "",
-            "meetingName": day.get("meeting_name") or "",
-            "title": day.get("title") or "",
-            "pdfUrl": day.get("pdf_url") or "",
-            "pageUrl": day.get("page_url") or "",
-            "pageCount": int(day.get("page_count") or 0),
-            "utterances": utterances,
-            "tables": [serialize_minutes_table(row) for row in table_rows],
-            "contentItems": serialize_minutes_content_items(utterance_rows, table_rows),
-        }
-    )
+    return jsonify(build_minutes_day_detail_payload(day, utterance_rows, table_rows))
 
 
 @app.get('/api/documents')

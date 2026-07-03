@@ -234,6 +234,17 @@ export type MinutesStatus = {
   utteranceCount: number;
   tableCount: number;
   speakerCount: number;
+  latestCompile: {
+    id: number;
+    versionKey: string;
+    status: string;
+    isActive: boolean;
+    startedAt: string | null;
+    finishedAt: string | null;
+    activatedAt: string | null;
+    summary: Record<string, any>;
+    errorText: string | null;
+  } | null;
   latestRun: MinutesRun | null;
   latestDays: {
     id: number;

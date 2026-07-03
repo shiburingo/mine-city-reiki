@@ -22,6 +22,7 @@ import {
   fetchSyncStatus,
   fetchSynonyms,
   runDictionaryCompile,
+  runMinutesCompile,
   runMinutesSync,
   runDictionaryUpdate,
   runInternetDictionaryUpdate,
@@ -196,6 +197,7 @@ function syncRunLabel(run: SyncRun): string {
   if (operation === 'dictionary-compile') return '検索用辞書コンパイル';
   if (operation === 'minutes-sync') return '会議録同期';
   if (operation === 'minutes-retag') return '会議録再タグ付け';
+  if (operation === 'minutes-compile') return '会議録コンパイル';
   return run.runType === 'scheduled' ? '定期同期' : '手動同期';
 }
 
@@ -239,6 +241,7 @@ const EMPTY_MINUTES_STATUS: MinutesStatus = {
   utteranceCount: 0,
   tableCount: 0,
   speakerCount: 0,
+  latestCompile: null,
   latestRun: null,
   latestDays: [],
 };
@@ -1189,6 +1192,9 @@ function AppShell() {
       if (minutesMeetings.length === 0) void loadMinutesMeetings();
       if (synonymStats.length === 0 && !synonymLoading) void loadSynonyms();
     }
+    if (tab === 'settings') {
+      void loadMinutesStatus();
+    }
   }, [tab]);
 
   useEffect(() => {
@@ -1198,9 +1204,10 @@ function AppShell() {
     const timer = window.setInterval(() => {
       void (async () => {
         try {
-          const [status, runs] = await Promise.all([fetchSyncStatus(), fetchSyncRuns()]);
+          const [status, runs, minutes] = await Promise.all([fetchSyncStatus(), fetchSyncRuns(), fetchMinutesStatus()]);
           setSyncStatus(status);
           setSyncRuns(runs);
+          setMinutesStatus(minutes);
           if (!runs.some((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync')) {
             setMinutesSyncing(false);
           }
@@ -1536,6 +1543,24 @@ function AppShell() {
       setAllMinutesSpeakers(speakers);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録再タグ付けの起動に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function triggerMinutesCompile() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では会議録コンパイルを実行できません。');
+      return;
+    }
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runMinutesCompile('manual');
+      const runs = await fetchSyncRuns();
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録コンパイルの起動に失敗しました。');
     } finally {
       setBusy(false);
     }
@@ -2162,7 +2187,7 @@ function AppShell() {
   }
 
   const runningSyncRun = useMemo(
-    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'internet-dictionary-update', 'minutes-dictionary-update', 'dictionary-compile', 'minutes-sync', 'minutes-retag'].includes(String(run.summary?.operation || ''))) ?? null,
+    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'internet-dictionary-update', 'minutes-dictionary-update', 'dictionary-compile', 'minutes-sync', 'minutes-retag', 'minutes-compile'].includes(String(run.summary?.operation || ''))) ?? null,
     [syncRuns],
   );
 
@@ -2198,6 +2223,11 @@ function AppShell() {
 
   const runningMinutesRetagRun = useMemo(
     () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-retag') ?? null,
+    [syncRuns],
+  );
+
+  const runningMinutesCompileRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-compile') ?? null,
     [syncRuns],
   );
 
@@ -5365,6 +5395,35 @@ function AppShell() {
                   </button>
                 </div>
                 <ProgressMeter title="会議録再タグ付けの進捗" run={runningMinutesRetagRun} />
+            </div>
+            <div className="h-full rounded-3xl border bg-card p-6 shadow-sm">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="size-5 text-primary" />
+                  <h2 className="text-xl font-semibold">会議録コンパイル</h2>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  会議録の検索結果軽量テーブルと閲覧用JSONを全件再作成し、成功後に新しい世代へ切り替えます。旧世代は直前分を保持します。
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
+                    disabled={busy || Boolean(runningMinutesCompileRun)}
+                    onClick={() => void triggerMinutesCompile()}
+                  >
+                    会議録を全数コンパイル
+                  </button>
+                </div>
+                {minutesStatus.latestCompile ? (
+                  <dl className="mt-5 space-y-2 text-sm text-muted-foreground">
+                    <div className="flex justify-between gap-4"><dt>状態</dt><dd>{minutesStatus.latestCompile.isActive ? '有効' : minutesStatus.latestCompile.status}</dd></div>
+                    <div className="flex justify-between gap-4"><dt>世代</dt><dd>{minutesStatus.latestCompile.versionKey}</dd></div>
+                    <div className="flex justify-between gap-4"><dt>有効化</dt><dd>{formatDateTime(minutesStatus.latestCompile.activatedAt)}</dd></div>
+                    <div className="flex justify-between gap-4"><dt>作成済み</dt><dd>{Number(minutesStatus.latestCompile.summary?.compiledDays || 0).toLocaleString()}日程 / {Number(minutesStatus.latestCompile.summary?.compiledUtterances || 0).toLocaleString()}発言</dd></div>
+                  </dl>
+                ) : (
+                  <p className="mt-5 text-sm text-muted-foreground">コンパイル済み会議録はまだありません。</p>
+                )}
+                <ProgressMeter title="会議録コンパイルの進捗" run={runningMinutesCompileRun} />
             </div>
             <div className="rounded-3xl border bg-card p-6 shadow-sm lg:col-span-2">
                 <div className="flex items-center gap-2">
