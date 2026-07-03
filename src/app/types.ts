@@ -164,6 +164,20 @@ export type SynonymStatsItem = {
   count: number;
 };
 
+export type SynonymCompiledStatus = {
+  exists: boolean;
+  path: string;
+  bytes?: number;
+  updatedAt?: string;
+  version?: string;
+  compiledAt?: string;
+  termCount?: number;
+  edgeCount?: number;
+  dbRows?: number;
+  maxEdgesPerTerm?: number;
+  error?: string;
+};
+
 export type DocHistoryItem = {
   id: number;
   contentHash: string;

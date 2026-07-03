@@ -21,6 +21,7 @@ import {
   fetchSyncRuns,
   fetchSyncStatus,
   fetchSynonyms,
+  runDictionaryCompile,
   runMinutesSync,
   runDictionaryUpdate,
   runInternetDictionaryUpdate,
@@ -34,7 +35,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymItem, SynonymStatsItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymCompiledStatus, SynonymItem, SynonymStatsItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -192,6 +193,7 @@ function syncRunLabel(run: SyncRun): string {
   if (operation === 'dictionary-update') return '関連語辞書更新';
   if (operation === 'internet-dictionary-update') return 'インターネット辞書取り込み';
   if (operation === 'minutes-dictionary-update') return '会議録辞書作成';
+  if (operation === 'dictionary-compile') return '検索用辞書コンパイル';
   if (operation === 'minutes-sync') return '会議録同期';
   if (operation === 'minutes-retag') return '会議録再タグ付け';
   return run.runType === 'scheduled' ? '定期同期' : '手動同期';
@@ -1000,6 +1002,7 @@ function AppShell() {
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [synonymItems, setSynonymItems] = useState<SynonymItem[]>([]);
   const [synonymStats, setSynonymStats] = useState<SynonymStatsItem[]>([]);
+  const [synonymCompiled, setSynonymCompiled] = useState<SynonymCompiledStatus | null>(null);
   const [synonymLoading, setSynonymLoading] = useState(false);
   const [newSynonymCanonical, setNewSynonymCanonical] = useState('');
   const [newSynonymTerm, setNewSynonymTerm] = useState('');
@@ -1408,9 +1411,10 @@ function AppShell() {
   async function loadSynonyms() {
     setSynonymLoading(true);
     try {
-      const { items, stats } = await fetchSynonyms();
+      const { items, stats, compiled } = await fetchSynonyms();
       setSynonymItems(items);
       setSynonymStats(stats);
+      setSynonymCompiled(compiled ?? null);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '同義語取得に失敗しました。');
     } finally {
@@ -1491,6 +1495,24 @@ function AppShell() {
       setSyncRuns(runs);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '会議録辞書作成の起動に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function triggerDictionaryCompile() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限では関連語辞書をコンパイルできません。');
+      return;
+    }
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runDictionaryCompile();
+      const runs = await fetchSyncRuns();
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '検索用関連語辞書コンパイルの起動に失敗しました。');
     } finally {
       setBusy(false);
     }
@@ -2129,7 +2151,7 @@ function AppShell() {
   }
 
   const runningSyncRun = useMemo(
-    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'internet-dictionary-update', 'minutes-dictionary-update', 'minutes-sync', 'minutes-retag'].includes(String(run.summary?.operation || ''))) ?? null,
+    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'internet-dictionary-update', 'minutes-dictionary-update', 'dictionary-compile', 'minutes-sync', 'minutes-retag'].includes(String(run.summary?.operation || ''))) ?? null,
     [syncRuns],
   );
 
@@ -2150,6 +2172,11 @@ function AppShell() {
 
   const runningMinutesDictionaryRun = useMemo(
     () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'minutes-dictionary-update') ?? null,
+    [syncRuns],
+  );
+
+  const runningDictionaryCompileRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'dictionary-compile') ?? null,
     [syncRuns],
   );
 
@@ -5343,24 +5370,31 @@ function AppShell() {
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerDictionaryUpdate()}
                   >
                     最新辞書を取得して再作成
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerInternetDictionaryUpdate()}
                   >
                     インターネット辞書を取り込む
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerMinutesDictionaryUpdate()}
                   >
                     会議録から増分作成
+                  </button>
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
+                    onClick={() => void triggerDictionaryCompile()}
+                  >
+                    検索用辞書をコンパイル
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border bg-background px-4 font-medium hover:bg-accent"
@@ -5400,6 +5434,18 @@ function AppShell() {
                   </p>
                 </div>
                 <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
+                  {synonymCompiled ? (
+                    <div className="flex justify-between gap-3 rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 sm:col-span-2">
+                      <span className="text-muted-foreground">
+                        コンパイル済み辞書{synonymCompiled.updatedAt ? ` / ${synonymCompiled.updatedAt}` : ''}
+                      </span>
+                      <span className="font-semibold">
+                        {synonymCompiled.exists
+                          ? `${(synonymCompiled.termCount ?? 0).toLocaleString()}語 / ${(synonymCompiled.edgeCount ?? 0).toLocaleString()}関連`
+                          : '未作成'}
+                      </span>
+                    </div>
+                  ) : null}
                   {synonymStats.length === 0 ? (
                     <p className="text-muted-foreground">辞書統計はまだ取得されていません。</p>
                   ) : synonymStats.map((item) => (
@@ -5412,6 +5458,7 @@ function AppShell() {
                 <ProgressMeter title="関連語辞書更新の進捗" run={runningDictionaryRun} />
                 <ProgressMeter title="インターネット辞書取り込みの進捗" run={runningInternetDictionaryRun} />
                 <ProgressMeter title="会議録辞書作成の進捗" run={runningMinutesDictionaryRun} />
+                <ProgressMeter title="検索用辞書コンパイルの進捗" run={runningDictionaryCompileRun} />
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">
                 <h2 className="text-xl font-semibold">同期履歴</h2>

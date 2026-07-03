@@ -1,0 +1,11 @@
+[Unit]
+Description=Mine City Reiki daily dictionary maintenance
+After=network-online.target mine-city-reiki-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mine-city-reiki/server
+EnvironmentFile=/etc/mine-city-reiki-api.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/mine-city-reiki/server/venv/bin/python /opt/mine-city-reiki/server/run_daily_dictionary_update.py

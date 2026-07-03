@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymCompiledStatus, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -78,6 +78,13 @@ export async function runMinutesDictionaryUpdate(batchSize = 1000): Promise<{ ok
   });
 }
 
+export async function runDictionaryCompile(): Promise<{ ok: boolean; summary: Record<string, any> }> {
+  return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/dictionary/compile', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 export async function runMinutesRetag(batchSize = 25): Promise<{ ok: boolean; summary: Record<string, any> }> {
   return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/minutes/retag', {
     method: 'POST',
@@ -127,9 +134,9 @@ export async function fetchDocumentHistory(id: number): Promise<DocHistoryItem[]
   return data.items || [];
 }
 
-export async function fetchSynonyms(): Promise<{ items: SynonymItem[]; stats: SynonymStatsItem[] }> {
-  const data = await apiFetch<{ items: SynonymItem[]; stats?: SynonymStatsItem[] }>('/synonyms');
-  return { items: data.items || [], stats: data.stats || [] };
+export async function fetchSynonyms(): Promise<{ items: SynonymItem[]; stats: SynonymStatsItem[]; compiled?: SynonymCompiledStatus }> {
+  const data = await apiFetch<{ items: SynonymItem[]; stats?: SynonymStatsItem[]; compiled?: SynonymCompiledStatus }>('/synonyms');
+  return { items: data.items || [], stats: data.stats || [], compiled: data.compiled };
 }
 
 export async function createSynonym(canonicalTerm: string, synonymTerm: string, priority?: number): Promise<SynonymItem> {

@@ -25,8 +25,10 @@ WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/downlo
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
 INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-03"
+COMPILED_DICTIONARY_VERSION = "compiled-synonyms-2026-07-03"
 WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_REQUEST_INTERVAL_SECONDS = 0.8
+DEFAULT_COMPILED_DICTIONARY_PATH = Path(__file__).resolve().parent / "data" / "compiled_synonyms.json"
 
 MIN_TERM_LEN = 2
 MAX_TERM_LEN = 40
@@ -495,6 +497,136 @@ def insert_pairs(cur, pairs: Iterable[tuple[str, str]], source_type: str, source
         )
         count += 1
     return count
+
+
+def compiled_dictionary_path(path: str | Path | None = None) -> Path:
+    return Path(path).expanduser().resolve() if path else DEFAULT_COMPILED_DICTIONARY_PATH
+
+
+def compile_synonym_dictionary(
+    cur,
+    *,
+    output_path: str | Path | None = None,
+    min_priority: int = 1,
+    max_edges_per_term: int = 64,
+) -> dict[str, Any]:
+    target_path = compiled_dictionary_path(output_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    cur.execute(
+        """
+        SELECT canonical_term, synonym_term, priority, source_type, source_version
+        FROM law_synonyms
+        WHERE is_active=1 AND priority >= %s
+        ORDER BY priority DESC, canonical_term, synonym_term
+        """,
+        (min_priority,),
+    )
+    graph: dict[str, dict[str, dict[str, Any]]] = {}
+    source_counts: Counter[str] = Counter()
+    db_rows = 0
+    for row in cur.fetchall() or []:
+        canonical = normalize_term(row.get("canonical_term") or "")
+        synonym = normalize_term(row.get("synonym_term") or "")
+        if not canonical or not synonym or canonical == synonym:
+            continue
+        priority = int(row.get("priority") or 0)
+        if priority < min_priority:
+            continue
+        source_type = row.get("source_type") or "manual"
+        source_version = row.get("source_version") or ""
+        db_rows += 1
+        source_counts[source_type] += 1
+        for left, right in ((canonical, synonym), (synonym, canonical)):
+            existing = graph.setdefault(left, {}).get(right)
+            if existing is None or priority > int(existing.get("priority") or 0):
+                graph[left][right] = {
+                    "term": right,
+                    "priority": priority,
+                    "sourceType": source_type,
+                    "sourceVersion": source_version,
+                }
+
+    terms: dict[str, list[dict[str, Any]]] = {}
+    edge_count = 0
+    for term, related in graph.items():
+        edges = sorted(
+            related.values(),
+            key=lambda item: (-int(item["priority"]), len(str(item["term"])), str(item["term"])),
+        )[:max_edges_per_term]
+        if edges:
+            terms[term] = edges
+            edge_count += len(edges)
+
+    payload = {
+        "version": COMPILED_DICTIONARY_VERSION,
+        "compiledAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "minPriority": min_priority,
+        "maxEdgesPerTerm": max_edges_per_term,
+        "dbRows": db_rows,
+        "termCount": len(terms),
+        "edgeCount": edge_count,
+        "sourceCounts": dict(sorted(source_counts.items())),
+        "terms": terms,
+    }
+    tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp_path.replace(target_path)
+    return {
+        "operation": "dictionary-compile",
+        "engineVersion": COMPILED_DICTIONARY_VERSION,
+        "path": str(target_path),
+        "bytes": target_path.stat().st_size,
+        "compiledAt": payload["compiledAt"],
+        "dbRows": db_rows,
+        "termCount": len(terms),
+        "edgeCount": edge_count,
+        "minPriority": min_priority,
+        "maxEdgesPerTerm": max_edges_per_term,
+        "sourceCounts": payload["sourceCounts"],
+    }
+
+
+def load_compiled_synonym_dictionary(path: str | Path | None = None) -> dict[str, list[tuple[str, int]]]:
+    source_path = compiled_dictionary_path(path)
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    terms = payload.get("terms") or {}
+    result: dict[str, list[tuple[str, int]]] = {}
+    for term, edges in terms.items():
+        normalized_term = normalize_term(term)
+        if not normalized_term:
+            continue
+        result[normalized_term] = [
+            (normalize_term(edge.get("term") or ""), int(edge.get("priority") or 0))
+            for edge in (edges or [])
+            if normalize_term(edge.get("term") or "")
+        ]
+    return result
+
+
+def compiled_synonym_dictionary_status(path: str | Path | None = None) -> dict[str, Any]:
+    source_path = compiled_dictionary_path(path)
+    if not source_path.exists():
+        return {"exists": False, "path": str(source_path)}
+    stat = source_path.stat()
+    status: dict[str, Any] = {
+        "exists": True,
+        "path": str(source_path),
+        "bytes": stat.st_size,
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stat.st_mtime)),
+    }
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        status.update({
+            "version": payload.get("version") or "",
+            "compiledAt": payload.get("compiledAt") or "",
+            "termCount": int(payload.get("termCount") or 0),
+            "edgeCount": int(payload.get("edgeCount") or 0),
+            "dbRows": int(payload.get("dbRows") or 0),
+            "maxEdgesPerTerm": int(payload.get("maxEdgesPerTerm") or 0),
+        })
+    except Exception as exc:
+        status["error"] = str(exc)
+    return status
 
 
 def count_unprocessed_minutes_dictionary_rows(cur, engine_version: str = MINUTES_DICTIONARY_ENGINE_VERSION) -> int:

@@ -15,4 +15,10 @@ fi
 cd "${APP_DIR}/server"
 source venv/bin/activate
 pip install -q -r requirements.txt
+if [ -f "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.service" ] && [ -f "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.timer" ]; then
+  sudo install -m 0644 "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.service" /etc/systemd/system/mine-city-reiki-dictionary.service
+  sudo install -m 0644 "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.timer" /etc/systemd/system/mine-city-reiki-dictionary.timer
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now mine-city-reiki-dictionary.timer
+fi
 sudo systemctl restart mine-city-reiki-api.service

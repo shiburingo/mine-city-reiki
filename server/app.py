@@ -37,9 +37,13 @@ from dictionary_engine import (
     build_hybrid_dictionary,
     build_internet_dictionary,
     build_minutes_pairs_from_rows,
+    compile_synonym_dictionary,
+    compiled_synonym_dictionary_status,
+    compiled_dictionary_path,
     count_unprocessed_minutes_dictionary_rows,
     fetch_unprocessed_minutes_dictionary_rows,
     insert_pairs,
+    load_compiled_synonym_dictionary,
     mark_minutes_dictionary_rows_processed,
 )
 
@@ -155,6 +159,7 @@ LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_MINUTES_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
 LOCAL_SCORED_SYNONYM_CACHE: tuple[float, dict[str, list[tuple[str, int]]]] | None = None
+LOCAL_COMPILED_SYNONYM_CACHE: tuple[float, float, dict[str, list[tuple[str, int]]]] | None = None
 SYNC_THREAD_LOCK = threading.Lock()
 MINUTES_SHORT_TERM_INDEX_VERSION = "short-term-v1"
 BUILTIN_SYNONYM_GROUPS = [
@@ -1200,8 +1205,14 @@ def clear_local_caches() -> None:
     LOCAL_MINUTES_SEARCH_CACHE.clear()
     global LOCAL_SYNONYM_CACHE
     global LOCAL_SCORED_SYNONYM_CACHE
+    global LOCAL_COMPILED_SYNONYM_CACHE
     LOCAL_SYNONYM_CACHE = None
     LOCAL_SCORED_SYNONYM_CACHE = None
+    LOCAL_COMPILED_SYNONYM_CACHE = None
+
+
+def get_compiled_dictionary_path() -> Path:
+    return compiled_dictionary_path(os.getenv("REIKI_SYNONYM_COMPILED_PATH") or None)
 
 
 def get_cache_generation(cur) -> int:
@@ -1251,9 +1262,27 @@ def synonyms_map(cur=None) -> dict[str, list[str]]:
 
 def scored_synonyms_map(cur=None) -> dict[str, list[tuple[str, int]]]:
     global LOCAL_SCORED_SYNONYM_CACHE
+    global LOCAL_COMPILED_SYNONYM_CACHE
     now = time.time()
     if LOCAL_SCORED_SYNONYM_CACHE and now - LOCAL_SCORED_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS:
         return LOCAL_SCORED_SYNONYM_CACHE[1]
+    compiled_path = get_compiled_dictionary_path()
+    if compiled_path.exists():
+        try:
+            compiled_mtime = compiled_path.stat().st_mtime
+            if (
+                LOCAL_COMPILED_SYNONYM_CACHE
+                and LOCAL_COMPILED_SYNONYM_CACHE[1] == compiled_mtime
+                and now - LOCAL_COMPILED_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS
+            ):
+                result = LOCAL_COMPILED_SYNONYM_CACHE[2]
+            else:
+                result = load_compiled_synonym_dictionary(compiled_path)
+                LOCAL_COMPILED_SYNONYM_CACHE = (now, compiled_mtime, result)
+            LOCAL_SCORED_SYNONYM_CACHE = (now, result)
+            return result
+        except Exception:
+            app.logger.exception("Compiled synonym dictionary load failed; falling back to database")
     if cur is None:
         with db_cursor() as (_, inner_cur):
             return scored_synonyms_map(inner_cur)
@@ -3521,6 +3550,9 @@ def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool
                 include_domain=include_domain,
                 progress=_progress,
             )
+            summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
+            update_sync_run_summary(cur, run_id, summary)
+            summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
             bump_cache_generation(cur)
             prune_expired_caches(cur)
         with db_cursor(commit=True) as (_, cur):
@@ -3586,6 +3618,9 @@ def execute_internet_dictionary_update(
                 source_url=source_url,
                 progress=_progress,
             )
+            summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
+            update_sync_run_summary(cur, run_id, summary)
+            summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
             bump_cache_generation(cur)
             prune_expired_caches(cur)
         with db_cursor(commit=True) as (_, cur):
@@ -3649,6 +3684,8 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
         if total == 0:
             summary['progressLabel'] = '未抽出の会議録はありません'
             with db_cursor(commit=True) as (_, cur):
+                summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
+                bump_cache_generation(cur)
                 set_sync_run_status(cur, run_id, 'success', summary, None)
             return summary
 
@@ -3680,6 +3717,9 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
 
         with db_cursor(commit=True) as (_, cur):
             summary['progressCurrent'] = total
+            summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
+            update_sync_run_summary(cur, run_id, summary)
+            summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
             summary['progressLabel'] = '会議録固有名詞辞書作成が完了しました'
             bump_cache_generation(cur)
             prune_expired_caches(cur)
@@ -3701,6 +3741,58 @@ def launch_minutes_dictionary_update_in_background(batch_size: int = 1000) -> No
     thread = threading.Thread(
         target=_runner,
         name="mine-city-reiki-minutes-dictionary-update",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
+def execute_dictionary_compile(min_priority: int = 1, max_edges_per_term: int = 64) -> dict[str, Any]:
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps({'operation': 'dictionary-compile'}, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+
+    summary: dict[str, Any] = {
+        'operation': 'dictionary-compile',
+        'minPriority': min_priority,
+        'maxEdgesPerTerm': max_edges_per_term,
+        'progressCurrent': 0,
+        'progressTotal': 1,
+        'progressLabel': '検索用関連語辞書をコンパイルしています',
+    }
+    try:
+        with db_cursor(commit=True) as (_, cur):
+            compiled = compile_synonym_dictionary(
+                cur,
+                output_path=get_compiled_dictionary_path(),
+                min_priority=min_priority,
+                max_edges_per_term=max_edges_per_term,
+            )
+            summary.update(compiled)
+            summary['progressCurrent'] = 1
+            summary['progressLabel'] = '検索用関連語辞書のコンパイルが完了しました'
+            bump_cache_generation(cur)
+            set_sync_run_status(cur, run_id, 'success', summary, None)
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
+        raise
+
+
+def launch_dictionary_compile_in_background(min_priority: int = 1, max_edges_per_term: int = 64) -> None:
+    def _runner() -> None:
+        try:
+            execute_dictionary_compile(min_priority=min_priority, max_edges_per_term=max_edges_per_term)
+        except Exception:
+            app.logger.exception('Background dictionary compile failed')
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-dictionary-compile",
         daemon=True,
     )
     with SYNC_THREAD_LOCK:
@@ -6169,6 +6261,18 @@ def api_minutes_dictionary_update_run():
     }), 202
 
 
+@app.post('/api/dictionary/compile')
+def api_dictionary_compile_run():
+    launch_dictionary_compile_in_background()
+    return jsonify({
+        'ok': True,
+        'started': True,
+        'summary': {
+            'operation': 'dictionary-compile',
+        },
+    }), 202
+
+
 @app.post('/api/minutes/retag')
 def api_minutes_retag_run():
     payload = request.get_json(silent=True) or {}
@@ -7293,6 +7397,7 @@ def api_synonyms_list():
             }
             for r in stats
         ],
+        'compiled': compiled_synonym_dictionary_status(get_compiled_dictionary_path()),
     })
 
 
@@ -7314,9 +7419,9 @@ def api_synonyms_create():
             (canonical, synonym, priority, priority),
         )
         new_id = int(cur.lastrowid) if cur.lastrowid else 0
+        compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
         bump_cache_generation(cur)
-    global LOCAL_SYNONYM_CACHE
-    LOCAL_SYNONYM_CACHE = None
+    clear_local_caches()
     return jsonify({'id': new_id, 'canonicalTerm': canonical, 'synonymTerm': synonym, 'priority': priority, 'isActive': True, 'sourceType': 'manual', 'sourceVersion': ''})
 
 
@@ -7326,9 +7431,9 @@ def api_synonyms_delete(synonym_id: int):
         cur.execute("DELETE FROM law_synonyms WHERE id=%s", (synonym_id,))
         if cur.rowcount == 0:
             raise ValueError('同義語が見つかりません。')
+        compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
         bump_cache_generation(cur)
-    global LOCAL_SYNONYM_CACHE
-    LOCAL_SYNONYM_CACHE = None
+    clear_local_caches()
     return jsonify({'ok': True})
 
 
@@ -7465,6 +7570,9 @@ def api_openapi():
             '/synonyms': {
                 'get': {'summary': '同義語一覧', 'responses': {'200': {'description': '同義語リスト'}}},
                 'post': {'summary': '同義語追加', 'responses': {'200': {'description': '追加結果'}}},
+            },
+            '/dictionary/compile': {
+                'post': {'summary': '検索用関連語辞書コンパイル', 'responses': {'202': {'description': 'コンパイル開始'}}},
             },
             '/analytics': {'get': {'summary': '利用統計', 'responses': {'200': {'description': '統計データ'}}}},
         },
