@@ -23,6 +23,7 @@ import {
   fetchSynonyms,
   runMinutesSync,
   runDictionaryUpdate,
+  runInternetDictionaryUpdate,
   runMinutesDictionaryUpdate,
   runMinutesRetag,
   runReindex,
@@ -189,6 +190,7 @@ function syncRunLabel(run: SyncRun): string {
   const operation = String(run.summary?.operation || '');
   if (operation === 'reindex') return '再索引';
   if (operation === 'dictionary-update') return '関連語辞書更新';
+  if (operation === 'internet-dictionary-update') return 'インターネット辞書取り込み';
   if (operation === 'minutes-dictionary-update') return '会議録辞書作成';
   if (operation === 'minutes-sync') return '会議録同期';
   if (operation === 'minutes-retag') return '会議録再タグ付け';
@@ -1001,6 +1003,9 @@ function AppShell() {
   const [synonymLoading, setSynonymLoading] = useState(false);
   const [newSynonymCanonical, setNewSynonymCanonical] = useState('');
   const [newSynonymTerm, setNewSynonymTerm] = useState('');
+  const [internetDictionaryUrl, setInternetDictionaryUrl] = useState('');
+  const [includeInternetWikidata, setIncludeInternetWikidata] = useState(true);
+  const [includeInternetCurated, setIncludeInternetCurated] = useState(true);
 
   const [historyDoc, setHistoryDoc] = useState<{ id: number; title: string; currentFullText?: string } | null>(null);
   const [docHistory, setDocHistory] = useState<DocHistoryItem[]>([]);
@@ -1442,6 +1447,32 @@ function AppShell() {
       setSyncRuns(runs);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '関連語辞書更新の起動に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function triggerInternetDictionaryUpdate() {
+    if (user?.isGuest) {
+      setGlobalError('ゲスト権限ではインターネット辞書を取り込めません。');
+      return;
+    }
+    if (!includeInternetWikidata && !includeInternetCurated && !internetDictionaryUrl.trim()) {
+      setGlobalError('取り込み対象を1つ以上選択してください。');
+      return;
+    }
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      await runInternetDictionaryUpdate({
+        includeWikidata: includeInternetWikidata,
+        includeCurated: includeInternetCurated,
+        sourceUrl: internetDictionaryUrl.trim(),
+      });
+      const runs = await fetchSyncRuns();
+      setSyncRuns(runs);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : 'インターネット辞書取り込みの起動に失敗しました。');
     } finally {
       setBusy(false);
     }
@@ -2098,7 +2129,7 @@ function AppShell() {
   }
 
   const runningSyncRun = useMemo(
-    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'minutes-dictionary-update', 'minutes-sync', 'minutes-retag'].includes(String(run.summary?.operation || ''))) ?? null,
+    () => syncRuns.find((run) => run.status === 'running' && !['reindex', 'dictionary-update', 'internet-dictionary-update', 'minutes-dictionary-update', 'minutes-sync', 'minutes-retag'].includes(String(run.summary?.operation || ''))) ?? null,
     [syncRuns],
   );
 
@@ -2109,6 +2140,11 @@ function AppShell() {
 
   const runningDictionaryRun = useMemo(
     () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'dictionary-update') ?? null,
+    [syncRuns],
+  );
+
+  const runningInternetDictionaryRun = useMemo(
+    () => syncRuns.find((run) => run.status === 'running' && run.summary?.operation === 'internet-dictionary-update') ?? null,
     [syncRuns],
   );
 
@@ -5303,18 +5339,25 @@ function AppShell() {
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">関連語辞書更新</h2>
                 </div>
-                <p className="mt-2 text-sm text-muted-foreground">日本語 WordNet の最新版取得と、既存DB（例規・法令・会議録）からの関連語再作成を実行します。検索・質問・会議録の関連語検索で共通利用します。</p>
+                <p className="mt-2 text-sm text-muted-foreground">日本語 WordNet の最新版取得、Wikidata の日本語別名、既存DB（例規・法令・会議録）からの関連語再作成を実行します。検索・質問・会議録の関連語検索で共通利用します。</p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
                     onClick={() => void triggerDictionaryUpdate()}
                   >
                     最新辞書を取得して再作成
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
+                    onClick={() => void triggerInternetDictionaryUpdate()}
+                  >
+                    インターネット辞書を取り込む
+                  </button>
+                  <button
+                    className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
+                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun)}
                     onClick={() => void triggerMinutesDictionaryUpdate()}
                   >
                     会議録から増分作成
@@ -5327,6 +5370,35 @@ function AppShell() {
                     件数を再読み込み
                   </button>
                 </div>
+                <div className="mt-4 rounded-2xl border bg-background p-4">
+                  <div className="grid gap-3 lg:grid-cols-[1fr_1fr_2fr]">
+                    <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={includeInternetCurated}
+                        onChange={(event) => setIncludeInternetCurated(event.target.checked)}
+                      />
+                      同義語・言い換えシード
+                    </label>
+                    <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={includeInternetWikidata}
+                        onChange={(event) => setIncludeInternetWikidata(event.target.checked)}
+                      />
+                      Wikidata日本語別名
+                    </label>
+                    <input
+                      className="h-11 rounded-2xl border bg-card px-4 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      value={internetDictionaryUrl}
+                      onChange={(event) => setInternetDictionaryUrl(event.target.value)}
+                      placeholder="任意: CSV/JSON辞書URL（canonical,synonym,priority）"
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    任意サイトの本文を解析するのではなく、公開ライセンスまたは管理者が用意したCSV/JSONの関連語ペアのみ取り込みます。
+                  </p>
+                </div>
                 <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
                   {synonymStats.length === 0 ? (
                     <p className="text-muted-foreground">辞書統計はまだ取得されていません。</p>
@@ -5338,6 +5410,7 @@ function AppShell() {
                   ))}
                 </div>
                 <ProgressMeter title="関連語辞書更新の進捗" run={runningDictionaryRun} />
+                <ProgressMeter title="インターネット辞書取り込みの進捗" run={runningInternetDictionaryRun} />
                 <ProgressMeter title="会議録辞書作成の進捗" run={runningMinutesDictionaryRun} />
               </div>
               <div className="rounded-3xl border bg-card p-6 shadow-sm">

@@ -7,6 +7,9 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import csv
+import io
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -19,6 +22,8 @@ WORDNET_SQLITE_ASSET = "wnjpn.db.gz"
 WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/download/v{WORDNET_FALLBACK_VERSION}/{WORDNET_SQLITE_ASSET}"
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
+INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-03"
+WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 
 MIN_TERM_LEN = 2
 MAX_TERM_LEN = 40
@@ -58,6 +63,23 @@ MINUTES_ROLE_ALIASES = {
     "report": ["報告"],
 }
 
+CURATED_SYNONYM_GROUPS: list[tuple[int, list[str]]] = [
+    (10, ["老人", "お年寄り", "高齢者", "年寄り", "高齢の方", "シニア", "老年者"]),
+    (9, ["高齢者", "65歳以上", "高齢世帯", "高齢の世帯"]),
+    (9, ["後期高齢者", "75歳以上", "後期高齢"]),
+    (10, ["マイナンバー", "個人番号"]),
+    (9, ["障害者", "障がい者", "障害のある人", "障がいのある人"]),
+    (9, ["子ども", "こども", "児童", "子供"]),
+    (9, ["保育園", "保育所", "保育施設"]),
+    (9, ["認定こども園", "こども園", "認定子ども園"]),
+    (8, ["ごみ", "ゴミ", "廃棄物"]),
+    (8, ["空き家", "空家", "空き家等"]),
+    (8, ["観光客", "来訪者", "旅行者"]),
+    (8, ["公共交通", "地域交通", "生活交通"]),
+    (8, ["上下水道", "水道", "下水道"]),
+    (8, ["養鱒場", "養ます場", "養魚場", "鱒養殖"]),
+]
+
 MINUTES_PROPER_NOUN_PATTERN = re.compile(
     r"[一-龯ぁ-んァ-ヴー]{2,30}"
     r"(?:市|町|村|地区|地域|川|山|台|湖|公園|学校|小学校|中学校|高等学校|高校|"
@@ -95,6 +117,193 @@ def add_pair(pairs: set[tuple[str, str]], left: str | None, right: str | None) -
     if not is_good_term(a) or not is_good_term(b):
         return
     pairs.add((a, b))
+
+
+def build_curated_synonym_pairs() -> tuple[dict[int, set[tuple[str, str]]], dict[str, Any]]:
+    grouped: dict[int, set[tuple[str, str]]] = defaultdict(set)
+    for priority, terms in CURATED_SYNONYM_GROUPS:
+        normalized_terms = [normalize_term(term) for term in terms if is_good_term(term)]
+        for left, right in itertools.combinations(dict.fromkeys(normalized_terms), 2):
+            add_pair(grouped[priority], left, right)
+    return grouped, {
+        "groups": len(CURATED_SYNONYM_GROUPS),
+        "pairs": sum(len(pairs) for pairs in grouped.values()),
+    }
+
+
+def _fetch_json(url: str, params: dict[str, str] | None = None, timeout: int = 20) -> Any:
+    full_url = url
+    if params:
+        full_url = f"{url}?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(
+        full_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "mine-city-reiki-dictionary-engine/0.1",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def cjk_chars(value: str) -> set[str]:
+    return {ch for ch in normalize_term(value) if "\u3400" <= ch <= "\u9fff"}
+
+
+def is_safe_wikidata_alias(seed: str, label: str, alias: str) -> bool:
+    normalized_seed = normalize_term(seed)
+    normalized_label = normalize_term(label)
+    normalized_alias = normalize_term(alias)
+    if not is_good_term(normalized_alias) or normalized_alias in {normalized_seed, normalized_label}:
+        return False
+    if len(normalized_alias) > 16:
+        return False
+    seed_cjk = cjk_chars(normalized_seed)
+    alias_cjk = cjk_chars(normalized_alias)
+    if seed_cjk and alias_cjk:
+        return bool(seed_cjk & alias_cjk)
+    if not seed_cjk and not alias_cjk:
+        return normalized_seed[:3] in normalized_alias or normalized_alias[:3] in normalized_seed
+    return False
+
+
+def wikidata_aliases_for_term(term: str, *, limit: int = 3) -> set[str]:
+    aliases: set[str] = set()
+    search_payload = _fetch_json(
+        WIKIDATA_API_URL,
+        {
+            "action": "wbsearchentities",
+            "format": "json",
+            "language": "ja",
+            "uselang": "ja",
+            "type": "item",
+            "limit": str(limit),
+            "search": term,
+        },
+    )
+    ids = []
+    normalized_term = normalize_term(term)
+    for item in search_payload.get("search") or []:
+        label = normalize_term(item.get("label") or "")
+        if item.get("id") and label == normalized_term:
+            ids.append(str(item.get("id")))
+        if len(ids) >= limit:
+            break
+    if not ids:
+        return aliases
+    entity_payload = _fetch_json(
+        WIKIDATA_API_URL,
+        {
+            "action": "wbgetentities",
+            "format": "json",
+            "languages": "ja",
+            "props": "labels|aliases",
+            "ids": "|".join(ids),
+        },
+    )
+    for entity in (entity_payload.get("entities") or {}).values():
+        label = ((entity.get("labels") or {}).get("ja") or {}).get("value")
+        if label:
+            aliases.add(str(label))
+        for alias in ((entity.get("aliases") or {}).get("ja") or []):
+            value = alias.get("value")
+            if value and is_safe_wikidata_alias(term, label or term, str(value)):
+                aliases.add(str(value))
+    return {alias for alias in aliases if is_good_term(alias)}
+
+
+def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 80) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+    seeds = list(dict.fromkeys(
+        normalize_term(term)
+        for term in (
+            list(seed_terms or [])
+            + [term for _, terms in CURATED_SYNONYM_GROUPS for term in terms]
+            + ["介護", "福祉", "年金", "住民票", "戸籍", "税金", "観光", "防災", "農業", "水道", "下水道"]
+        )
+        if is_good_term(term)
+    ))[:max_terms]
+    pairs: set[tuple[str, str]] = set()
+    fetched = 0
+    for seed in seeds:
+        try:
+            aliases = wikidata_aliases_for_term(seed)
+        except Exception:
+            continue
+        fetched += 1
+        for alias in aliases:
+            add_pair(pairs, seed, alias)
+        for left, right in itertools.combinations(sorted(aliases), 2):
+            add_pair(pairs, left, right)
+    return pairs, {"seedTerms": len(seeds), "fetchedTerms": fetched, "pairs": len(pairs)}
+
+
+def _pairs_from_json_payload(payload: Any) -> tuple[dict[int, set[tuple[str, str]]], int]:
+    grouped: dict[int, set[tuple[str, str]]] = defaultdict(set)
+    rows: Iterable[Any]
+    if isinstance(payload, dict):
+        rows = payload.get("items") or payload.get("pairs") or payload.get("synonyms") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+    count = 0
+    for row in rows:
+        priority = 8
+        if isinstance(row, dict):
+            left = row.get("canonical") or row.get("canonicalTerm") or row.get("term") or row.get("left")
+            right = row.get("synonym") or row.get("synonymTerm") or row.get("related") or row.get("right")
+            priority = int(row.get("priority") or row.get("score") or priority)
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            left, right = row[0], row[1]
+            if len(row) >= 3:
+                priority = int(row[2] or priority)
+        else:
+            continue
+        before = len(grouped[priority])
+        add_pair(grouped[priority], left, right)
+        if len(grouped[priority]) > before:
+            count += 1
+    return grouped, count
+
+
+def build_url_dictionary_pairs(source_url: str) -> tuple[dict[int, set[tuple[str, str]]], dict[str, Any]]:
+    parsed = urllib.parse.urlparse(source_url)
+    if parsed.scheme not in {"https", "http"}:
+        raise ValueError("辞書URLは http または https のみ対応しています。")
+    request = urllib.request.Request(
+        source_url,
+        headers={
+            "Accept": "application/json,text/csv,text/plain;q=0.8",
+            "User-Agent": "mine-city-reiki-dictionary-engine/0.1",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        content_type = response.headers.get("Content-Type", "")
+        body = response.read(5 * 1024 * 1024)
+    text = body.decode("utf-8-sig")
+    if "json" in content_type or source_url.lower().endswith(".json"):
+        grouped, count = _pairs_from_json_payload(json.loads(text))
+    else:
+        grouped: dict[int, set[tuple[str, str]]] = defaultdict(set)
+        count = 0
+        reader = csv.DictReader(io.StringIO(text))
+        if reader.fieldnames and {"canonical", "synonym"} <= set(reader.fieldnames):
+            for row in reader:
+                priority = int(row.get("priority") or row.get("score") or 8)
+                before = len(grouped[priority])
+                add_pair(grouped[priority], row.get("canonical"), row.get("synonym"))
+                if len(grouped[priority]) > before:
+                    count += 1
+        else:
+            for row in csv.reader(io.StringIO(text)):
+                if len(row) < 2:
+                    continue
+                priority = int(row[2]) if len(row) >= 3 and str(row[2]).isdigit() else 8
+                before = len(grouped[priority])
+                add_pair(grouped[priority], row[0], row[1])
+                if len(grouped[priority]) > before:
+                    count += 1
+    return grouped, {"url": source_url, "pairs": count}
 
 
 def resolve_wordnet_release() -> tuple[str, str]:
@@ -444,4 +653,75 @@ def build_hybrid_dictionary(
     summary["inserted"] = inserted
     summary["progressCurrent"] = current
     summary["progressLabel"] = "関連語辞書更新が完了しました"
+    return summary
+
+
+def build_internet_dictionary(
+    cur,
+    *,
+    include_wikidata: bool = True,
+    include_curated: bool = True,
+    source_url: str = "",
+    progress: Callable[[str, int, int], None] | None = None,
+) -> dict[str, Any]:
+    enabled_steps = int(include_curated) + int(include_wikidata) + int(bool(source_url))
+    summary: dict[str, Any] = {
+        "operation": "internet-dictionary-update",
+        "engineVersion": INTERNET_DICTIONARY_ENGINE_VERSION,
+        "includeCurated": include_curated,
+        "includeWikidata": include_wikidata,
+        "sourceUrl": source_url,
+        "curatedPairs": 0,
+        "wikidataPairs": 0,
+        "urlPairs": 0,
+        "inserted": 0,
+        "progressCurrent": 0,
+        "progressTotal": max(1, enabled_steps + 1),
+        "progressLabel": "インターネット辞書取り込みを準備しています",
+    }
+    if enabled_steps == 0:
+        raise ValueError("取り込み対象を1つ以上選択してください。")
+
+    cur.execute("DELETE FROM law_synonyms WHERE source_type IN ('wikidata','internet','curated')")
+    if progress:
+        progress("既存のインターネット由来辞書を削除しました", 0, summary["progressTotal"])
+
+    inserted = 0
+    current = 0
+    if include_curated:
+        grouped, stats = build_curated_synonym_pairs()
+        current += 1
+        summary["curatedStats"] = stats
+        summary["curatedPairs"] = stats["pairs"]
+        if progress:
+            progress(f"同義語・言い換えシード {stats['pairs']:,}件を登録しています", current, summary["progressTotal"])
+        for priority, pairs in grouped.items():
+            inserted += insert_pairs(cur, pairs, "curated", INTERNET_DICTIONARY_ENGINE_VERSION, priority)
+
+    if include_wikidata:
+        if progress:
+            progress("Wikidata から日本語別名を取得しています", current, summary["progressTotal"])
+        pairs, stats = build_wikidata_pairs()
+        current += 1
+        summary["wikidataStats"] = stats
+        summary["wikidataPairs"] = len(pairs)
+        if progress:
+            progress(f"Wikidata 別名 {len(pairs):,}件を登録しています", current, summary["progressTotal"])
+        inserted += insert_pairs(cur, pairs, "wikidata", INTERNET_DICTIONARY_ENGINE_VERSION, 8)
+
+    if source_url:
+        if progress:
+            progress("指定URLから辞書を取得しています", current, summary["progressTotal"])
+        grouped, stats = build_url_dictionary_pairs(source_url)
+        current += 1
+        summary["urlStats"] = stats
+        summary["urlPairs"] = stats["pairs"]
+        if progress:
+            progress(f"指定URL辞書 {stats['pairs']:,}件を登録しています", current, summary["progressTotal"])
+        for priority, pairs in grouped.items():
+            inserted += insert_pairs(cur, pairs, "internet", INTERNET_DICTIONARY_ENGINE_VERSION, max(1, min(20, priority)))
+
+    summary["inserted"] = inserted
+    summary["progressCurrent"] = summary["progressTotal"]
+    summary["progressLabel"] = "インターネット辞書取り込みが完了しました"
     return summary

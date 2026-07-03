@@ -35,6 +35,7 @@ from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract
 from dictionary_engine import (
     MINUTES_DICTIONARY_ENGINE_VERSION,
     build_hybrid_dictionary,
+    build_internet_dictionary,
     build_minutes_pairs_from_rows,
     count_unprocessed_minutes_dictionary_rows,
     fetch_unprocessed_minutes_dictionary_rows,
@@ -393,7 +394,7 @@ def ensure_schema() -> None:
             )
             ensure_column(cur, "law_synonyms", "source_type", "source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual' AFTER is_active")
             ensure_column(cur, "law_synonyms", "source_version", "source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type")
-            ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain"])
+            ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain", "curated", "wikidata", "internet"])
             ensure_index(cur, "law_synonyms", "idx_law_synonyms_source", "(source_type, is_active)")
             ensure_table(
                 cur,
@@ -3547,6 +3548,79 @@ def launch_dictionary_update_in_background(include_wordnet: bool = True, include
         thread.start()
 
 
+def execute_internet_dictionary_update(
+    include_wikidata: bool = True,
+    include_curated: bool = True,
+    source_url: str = "",
+) -> dict[str, Any]:
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
+            (now_iso(), json.dumps({'operation': 'internet-dictionary-update'}, ensure_ascii=False)),
+        )
+        run_id = int(cur.lastrowid)
+
+    summary: dict[str, Any] = {
+        'operation': 'internet-dictionary-update',
+        'includeWikidata': include_wikidata,
+        'includeCurated': include_curated,
+        'sourceUrl': source_url,
+        'progressCurrent': 0,
+        'progressTotal': int(include_wikidata) + int(include_curated) + int(bool(source_url)) + 1,
+        'progressLabel': 'インターネット辞書取り込みを開始します',
+    }
+
+    def _progress(label: str, current: int, total: int) -> None:
+        summary['progressLabel'] = label
+        summary['progressCurrent'] = current
+        summary['progressTotal'] = total
+        with db_cursor(commit=True) as (_, progress_cur):
+            update_sync_run_summary(progress_cur, run_id, summary)
+
+    try:
+        with db_cursor(commit=True) as (_, cur):
+            summary = build_internet_dictionary(
+                cur,
+                include_wikidata=include_wikidata,
+                include_curated=include_curated,
+                source_url=source_url,
+                progress=_progress,
+            )
+            bump_cache_generation(cur)
+            prune_expired_caches(cur)
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'success', summary, None)
+        return summary
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
+        raise
+
+
+def launch_internet_dictionary_update_in_background(
+    include_wikidata: bool = True,
+    include_curated: bool = True,
+    source_url: str = "",
+) -> None:
+    def _runner() -> None:
+        try:
+            execute_internet_dictionary_update(
+                include_wikidata=include_wikidata,
+                include_curated=include_curated,
+                source_url=source_url,
+            )
+        except Exception:
+            app.logger.exception('Background internet dictionary update failed')
+
+    thread = threading.Thread(
+        target=_runner,
+        name="mine-city-reiki-internet-dictionary-update",
+        daemon=True,
+    )
+    with SYNC_THREAD_LOCK:
+        thread.start()
+
+
 def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
     with db_cursor(commit=True) as (_, cur):
         cur.execute(
@@ -6049,6 +6123,33 @@ def api_dictionary_update_run():
             'operation': 'dictionary-update',
             'includeWordnet': include_wordnet,
             'includeDomain': include_domain,
+        },
+    }), 202
+
+
+@app.post('/api/dictionary/internet/update')
+def api_internet_dictionary_update_run():
+    payload = request.get_json(silent=True) or {}
+    include_wikidata = bool(payload.get('includeWikidata', True))
+    include_curated = bool(payload.get('includeCurated', True))
+    source_url = normalize_text(payload.get('sourceUrl') or '')
+    if source_url and not source_url.startswith(('https://', 'http://')):
+        raise ValueError('辞書URLは http または https のみ対応しています。')
+    if not include_wikidata and not include_curated and not source_url:
+        raise ValueError('取り込み対象を1つ以上選択してください。')
+    launch_internet_dictionary_update_in_background(
+        include_wikidata=include_wikidata,
+        include_curated=include_curated,
+        source_url=source_url,
+    )
+    return jsonify({
+        'ok': True,
+        'started': True,
+        'summary': {
+            'operation': 'internet-dictionary-update',
+            'includeWikidata': include_wikidata,
+            'includeCurated': include_curated,
+            'sourceUrl': source_url,
         },
     }), 202
 

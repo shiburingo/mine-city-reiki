@@ -60,6 +60,17 @@ export async function runDictionaryUpdate(includeWordnet = true, includeDomain =
   });
 }
 
+export async function runInternetDictionaryUpdate(params: { includeWikidata?: boolean; includeCurated?: boolean; sourceUrl?: string } = {}): Promise<{ ok: boolean; summary: Record<string, any> }> {
+  return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/dictionary/internet/update', {
+    method: 'POST',
+    body: JSON.stringify({
+      includeWikidata: params.includeWikidata ?? true,
+      includeCurated: params.includeCurated ?? true,
+      sourceUrl: params.sourceUrl ?? '',
+    }),
+  });
+}
+
 export async function runMinutesDictionaryUpdate(batchSize = 1000): Promise<{ ok: boolean; summary: Record<string, any> }> {
   return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/dictionary/minutes/update', {
     method: 'POST',
