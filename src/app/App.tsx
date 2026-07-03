@@ -5236,8 +5236,8 @@ function AppShell() {
         ) : null}
 
         {tab === 'settings' ? (
-          <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
-            <div className="rounded-3xl border bg-card p-6 shadow-sm">
+          <section className="grid items-start gap-6 lg:grid-cols-2">
+            <div className="h-fit rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">月次同期設定</h2>
               <p className="mt-2 text-sm text-muted-foreground">毎月指定日時を過ぎたタイミングで更新確認を実行します。サーバー側では定期実行 CLI を 1 時間ごとに起動し、DB設定を見て実行可否を判断します。</p>
               <div className="mt-6 space-y-4">
@@ -5273,8 +5273,7 @@ function AppShell() {
                 </button>
               </div>
             </div>
-            <div className="space-y-6">
-              <div className="rounded-3xl border bg-card p-6 shadow-sm">
+            <div className="h-fit rounded-3xl border bg-card p-6 shadow-sm">
                 <div className="flex items-center gap-2">
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">手動同期</h2>
@@ -5328,8 +5327,8 @@ function AppShell() {
                 <ProgressMeter title="手動同期の進捗" run={runningSyncRun} />
                 <ProgressMeter title="会議録差分同期の進捗" run={runningMinutesRun} />
                 {syncStatus.lastError ? <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{syncStatus.lastError}</p> : null}
-              </div>
-              <div className="rounded-3xl border bg-card p-6 shadow-sm">
+            </div>
+            <div className="h-full rounded-3xl border bg-card p-6 shadow-sm">
                 <div className="flex items-center gap-2">
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">検索再構築</h2>
@@ -5341,8 +5340,8 @@ function AppShell() {
                   </button>
                 </div>
                 <ProgressMeter title="検索再構築の進捗" run={runningReindexRun} />
-              </div>
-              <div className="rounded-3xl border bg-card p-6 shadow-sm">
+            </div>
+            <div className="h-full rounded-3xl border bg-card p-6 shadow-sm">
                 <div className="flex items-center gap-2">
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">会議録再タグ付け</h2>
@@ -5360,8 +5359,8 @@ function AppShell() {
                   </button>
                 </div>
                 <ProgressMeter title="会議録再タグ付けの進捗" run={runningMinutesRetagRun} />
-              </div>
-              <div className="rounded-3xl border bg-card p-6 shadow-sm">
+            </div>
+            <div className="rounded-3xl border bg-card p-6 shadow-sm lg:col-span-2">
                 <div className="flex items-center gap-2">
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">関連語辞書更新</h2>
@@ -5460,7 +5459,7 @@ function AppShell() {
                 <ProgressMeter title="会議録辞書作成の進捗" run={runningMinutesDictionaryRun} />
                 <ProgressMeter title="検索用辞書コンパイルの進捗" run={runningDictionaryCompileRun} />
               </div>
-              <div className="rounded-3xl border bg-card p-6 shadow-sm">
+              <div className="rounded-3xl border bg-card p-6 shadow-sm lg:col-span-2">
                 <h2 className="text-xl font-semibold">同期履歴</h2>
                 <div className="mt-4 space-y-3">
                   {syncRuns.length === 0 ? (
@@ -5495,7 +5494,6 @@ function AppShell() {
                   )}
                 </div>
               </div>
-            </div>
             {/* キャッシュ管理 */}
             <div className="rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">キャッシュ管理</h2>
