@@ -82,6 +82,18 @@ class SpeakerTaggerTest(unittest.TestCase):
         self.assertEqual(role, "answerer")
         self.assertEqual(group, "執行部")
 
+    def test_executive_subtitle_aliases_are_answerers(self) -> None:
+        for title in [
+            "総合政策部地域情報課係長",
+            "まちづくり推進班長",
+            "病院事業統括管理者",
+            "山口ケーブルビジョン株式会社顧問",
+        ]:
+            with self.subTest(title=title):
+                role, group, _confidence, _reason = classify_speaker(title, "美祢太郎")
+                self.assertEqual(role, "answerer")
+                self.assertEqual(group, "執行部")
+
     def test_unknown_between_question_context_is_reclassified_as_answerer(self) -> None:
         utterances = tag_utterances([
             line(1, "○5番（山田太郎君） 水道事業についてお尋ねします。"),

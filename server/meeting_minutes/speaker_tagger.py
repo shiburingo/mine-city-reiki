@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v11"
+ENGINE_VERSION = "speaker-rules-v12"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
@@ -27,18 +27,23 @@ ANSWERER_TITLES = (
     "部長",
     "次長",
     "課長",
+    "係長",
+    "班長",
     "所長",
     "事務長",
     "局長",
     "消防長",
     "会計管理者",
+    "統括管理者",
     "監",
     "参事",
     "主幹",
     "主査",
+    "主任",
     "室長",
     "支所長",
     "センター長",
+    "顧問",
 )
 EXTERNAL_ANSWERER_TITLES = (
     "参考人",

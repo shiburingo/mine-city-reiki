@@ -3683,14 +3683,24 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
     tables = refine_person_roster_tables(extract_coordinate_tables(extracted.pages, document_key), utterances)
     reset_meeting_day_content(cur, day_id)
     speaker_count = 0
+    speaker_id_cache: dict[tuple[str, str, str, str], int] = {}
     for utterance in utterances:
-        speaker_id = upsert_meeting_speaker(
-            cur,
+        speaker_key = (
             utterance.speaker_name,
             utterance.speaker_title,
             utterance.speaker_role,
             utterance.speaker_group,
         )
+        speaker_id = speaker_id_cache.get(speaker_key)
+        if speaker_id is None:
+            speaker_id = upsert_meeting_speaker(
+                cur,
+                utterance.speaker_name,
+                utterance.speaker_title,
+                utterance.speaker_role,
+                utterance.speaker_group,
+            )
+            speaker_id_cache[speaker_key] = speaker_id
         speaker_count += 1
         search_text = "\n".join(
             [
@@ -3755,7 +3765,6 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
                 else TABLE_ENGINE_VERSION,
             ),
         )
-    rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year_for_date(item.meeting_date))
     cur.execute(
         """
         UPDATE meeting_days
@@ -3765,7 +3774,12 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
         """,
         (extracted.sha256, extracted.page_count, len(extracted.text or ""), day_id),
     )
-    return {"utterances": len(utterances), "tables": len(tables), "speakers": speaker_count}
+    return {
+        "utterances": len(utterances),
+        "tables": len(tables),
+        "speakers": speaker_count,
+        "fiscalYear": fiscal_year_for_date(item.meeting_date),
+    }
 
 
 def build_minutes_utterance_search_text(
@@ -3840,6 +3854,8 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
     day_title = rows[0].get("day_title") or ""
     updated = 0
     role_changed = 0
+    dictionary_changed = False
+    speaker_id_cache: dict[tuple[str, str, str, str], int] = {}
     for row, utterance in zip(rows, tagged):
         search_text = build_minutes_utterance_search_text(
             section,
@@ -3850,24 +3866,39 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
             utterance.speaker_role,
             utterance.text,
         )
-        speaker_id = upsert_meeting_speaker(
-            cur,
-            utterance.speaker_name,
-            utterance.speaker_title,
-            utterance.speaker_role,
-            utterance.speaker_group,
-        )
-        changed = (
+        search_text_changed = row.get("search_text") != search_text
+        speaker_changed = (
             row.get("speaker_role") != utterance.speaker_role
             or row.get("speaker_group") != utterance.speaker_group
             or row.get("speech_type") != utterance.speech_type
+        )
+        changed = (
+            speaker_changed
             or row.get("reason") != utterance.reason
-            or row.get("search_text") != search_text
+            or search_text_changed
             or row.get("engine_version") != SPEAKER_ENGINE_VERSION
         )
         if row.get("speaker_role") != utterance.speaker_role:
             role_changed += 1
+        if speaker_changed:
+            dictionary_changed = True
         if changed:
+            speaker_key = (
+                utterance.speaker_name,
+                utterance.speaker_title,
+                utterance.speaker_role,
+                utterance.speaker_group,
+            )
+            speaker_id = speaker_id_cache.get(speaker_key)
+            if speaker_id is None:
+                speaker_id = upsert_meeting_speaker(
+                    cur,
+                    utterance.speaker_name,
+                    utterance.speaker_title,
+                    utterance.speaker_role,
+                    utterance.speaker_group,
+                )
+                speaker_id_cache[speaker_key] = speaker_id
             cur.execute(
                 """
                 UPDATE meeting_utterances
@@ -3887,11 +3918,18 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
                     int(row["id"]),
                 ),
             )
-            cur.execute("DELETE FROM meeting_utterance_short_terms WHERE utterance_id=%s", (int(row["id"]),))
-            insert_minutes_short_terms_for_utterance(cur, int(row["id"]), day_id, search_text)
+            if search_text_changed:
+                cur.execute("DELETE FROM meeting_utterance_short_terms WHERE utterance_id=%s", (int(row["id"]),))
+                insert_minutes_short_terms_for_utterance(cur, int(row["id"]), day_id, search_text)
             updated += 1
     fiscal_year = fiscal_year_for_date(meeting_date) if meeting_date else None
-    return {"processed": len(rows), "updated": updated, "roleChanged": role_changed, "fiscalYear": fiscal_year}
+    return {
+        "processed": len(rows),
+        "updated": updated,
+        "roleChanged": role_changed,
+        "fiscalYear": fiscal_year,
+        "dictionaryChanged": dictionary_changed,
+    }
 
 
 def update_minutes_run_summary(run_id: int, extract_run_id: int | None, summary: dict[str, Any]) -> None:
@@ -3917,6 +3955,7 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
             "failed": 0,
             "utterances": 0,
             "tables": 0,
+            "rebuiltYears": 0,
             "progressCurrent": 0,
             "progressTotal": 1,
             "progressLabel": "会議録PDFリンクを収集しています",
@@ -3944,6 +3983,7 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
         summary["progressTotal"] = max(1, len(items))
         summary["progressLabel"] = f"{len(items)}件のPDFを検出しました"
         update_minutes_run_summary(run_id, extract_run_id, summary)
+        years_to_rebuild: set[int] = set()
         for index, item in enumerate(items, start=1):
             summary["progressCurrent"] = index - 1
             summary["progressLabel"] = f"{index}/{len(items)} {item.section} {item.title} を抽出しています"
@@ -3973,6 +4013,9 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
                     summary["processed"] += 1
                     summary["utterances"] += counts["utterances"]
                     summary["tables"] += counts["tables"]
+                    fiscal_year = counts.get("fiscalYear")
+                    if fiscal_year:
+                        years_to_rebuild.add(int(fiscal_year))
             except Exception as exc:
                 summary["failed"] += 1
                 if day_id:
@@ -3984,6 +4027,14 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
                 app.logger.exception("Meeting minutes extraction failed: %s", item.pdf_url)
             summary["progressCurrent"] = index
             update_minutes_run_summary(run_id, extract_run_id, summary)
+        sorted_years = sorted(years_to_rebuild)
+        for index, fiscal_year in enumerate(sorted_years, start=1):
+            with db_cursor(commit=True) as (_, cur):
+                summary["progressLabel"] = f"発言者辞書を再構築しています {index}/{len(sorted_years)}"
+                update_minutes_run_summary(run_id, extract_run_id, summary)
+                rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year)
+                summary["rebuiltYears"] = index
+                update_minutes_run_summary(run_id, extract_run_id, summary)
         with db_cursor(commit=True) as (_, cur):
             summary["progressLabel"] = "会議録同期が完了しました"
             bump_cache_generation(cur)
@@ -4073,7 +4124,7 @@ def execute_minutes_retag(batch_size: int = 25) -> dict[str, Any]:
                     summary["updated"] += int(counts.get("updated") or 0)
                     summary["roleChanged"] += int(counts.get("roleChanged") or 0)
                     fiscal_year = counts.get("fiscalYear")
-                    if fiscal_year:
+                    if fiscal_year and counts.get("dictionaryChanged"):
                         years_to_rebuild.add(int(fiscal_year))
                 summary["progressCurrent"] = min(summary["processedDays"], len(day_ids))
                 update_sync_run_summary(cur, run_id, summary)
