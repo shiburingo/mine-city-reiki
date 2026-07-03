@@ -88,6 +88,9 @@ class SpeakerTaggerTest(unittest.TestCase):
             "まちづくり推進班長",
             "病院事業統括管理者",
             "山口ケーブルビジョン株式会社顧問",
+            "山口ケーブルビジョン株式会社常務",
+            "市民福祉部地域福祉課",
+            "総務部財政長",
         ]:
             with self.subTest(title=title):
                 role, group, _confidence, _reason = classify_speaker(title, "美祢太郎")

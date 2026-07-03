@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v12"
+ENGINE_VERSION = "speaker-rules-v13"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
@@ -44,6 +44,15 @@ ANSWERER_TITLES = (
     "支所長",
     "センター長",
     "顧問",
+    "常務",
+    "取締役",
+)
+EXECUTIVE_TITLE_SUFFIXES = (
+    "長",
+    "課",
+    "室",
+    "局",
+    "部",
 )
 EXTERNAL_ANSWERER_TITLES = (
     "参考人",
@@ -106,6 +115,8 @@ def classify_speaker(title: str, name: str) -> tuple[str, str, float, str]:
         return "questioner", "議員・委員", 0.9, "title indicates elected member or committee member"
     if any(token in title for token in ANSWERER_TITLES):
         return "answerer", "執行部", 0.9, "title indicates executive staff"
+    if title.endswith(EXECUTIVE_TITLE_SUFFIXES):
+        return "answerer", "執行部", 0.78, "title suffix indicates executive organization or staff"
     return "unknown", "未分類", 0.45, "no rule matched"
 
 
@@ -129,10 +140,10 @@ def looks_report_context(previous: TaggedUtterance | None, current: TaggedUttera
     next_text = next_item.text if next_item else ""
     if previous and previous.speaker_role == "chair" and REPORT_REQUEST_RE.search(previous_text):
         return True
-    if current.speaker_role != "unknown":
-        return False
     if REPORT_CLOSING_RE.search(current.text):
         return True
+    if current.speaker_role != "unknown":
+        return False
     if "分科会長" not in title and "部会長" not in title:
         return False
     if REPORT_BODY_RE.search(current.text) and "報告" in next_text:
