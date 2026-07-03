@@ -832,7 +832,8 @@ function scrollElementIntoContainer(
     const containerRect = container.getBoundingClientRect();
     const offset = block === 'center' ? (container.clientHeight - targetRect.height) / 2 : offsetPixels;
     const top = targetRect.top - containerRect.top + container.scrollTop - offset;
-    const nextTop = Math.max(top, 0);
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const nextTop = Math.min(Math.max(top, 0), maxTop);
     if (Math.abs(container.scrollTop - nextTop) > 1) {
       container.scrollTo({ top: nextTop, behavior });
     }
@@ -1021,7 +1022,7 @@ function AppShell() {
   const browseArticleScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollFrameRef = useRef<number | null>(null);
-  const minutesReaderPendingScrollRef = useRef<number | null>(null);
+  const minutesReaderScrollRequestSeqRef = useRef(0);
   const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
   const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
@@ -1067,6 +1068,7 @@ function AppShell() {
   const [minutesBrowseSection, setMinutesBrowseSection] = useState<MinutesBrowseSectionFilter>('all');
   const [minutesResultMode, setMinutesResultMode] = useState<'utterance' | 'meeting' | 'table'>('utterance');
   const [minutesReaderMode, setMinutesReaderMode] = useState<MinutesReaderMode>('unit');
+  const [minutesReaderScrollRequest, setMinutesReaderScrollRequest] = useState<{ utteranceId: number; requestId: number } | null>(null);
   const [minutesExpandedResultIds, setMinutesExpandedResultIds] = useState<Set<number>>(new Set());
   const [minutesHistory, setMinutesHistory] = useState<MinutesSearchHistoryItem[]>(() => loadMinutesSearchHistory());
   const [minutesResults, setMinutesResults] = useState<MinutesSearchResult[]>([]);
@@ -1907,24 +1909,33 @@ function AppShell() {
   }
 
   function cancelMinutesReaderScroll() {
-    minutesReaderPendingScrollRef.current = null;
     if (minutesReaderScrollFrameRef.current != null) {
       window.cancelAnimationFrame(minutesReaderScrollFrameRef.current);
       minutesReaderScrollFrameRef.current = null;
     }
+    setMinutesReaderScrollRequest(null);
   }
 
-  function scheduleMinutesReaderScroll(utteranceId: number | null | undefined) {
-    minutesReaderPendingScrollRef.current = utteranceId || null;
+  function requestMinutesReaderScroll(utteranceId: number | null | undefined) {
+    if (!utteranceId) return;
+    minutesReaderScrollRequestSeqRef.current += 1;
+    setMinutesReaderScrollRequest({
+      utteranceId,
+      requestId: minutesReaderScrollRequestSeqRef.current,
+    });
   }
 
   function changeMinutesReaderMode(mode: MinutesReaderMode) {
-    cancelMinutesReaderScroll();
     setMinutesReaderMode(mode);
+    if (['unit', 'full', 'list'].includes(mode) && selectedMinutesResult?.id) {
+      requestMinutesReaderScroll(selectedMinutesResult.id);
+    } else {
+      cancelMinutesReaderScroll();
+    }
   }
 
   function selectMinutesResult(result: MinutesSearchResult) {
-    scheduleMinutesReaderScroll(result.id);
+    requestMinutesReaderScroll(result.id);
     setSelectedMinutesResult(result);
     setMinutesReaderMode('unit');
     setMinutesPage('detail');
@@ -2670,33 +2681,34 @@ function AppShell() {
   }
 
   function selectMinutesHit(hit: MinutesSearchResult) {
-    scheduleMinutesReaderScroll(hit.id);
+    requestMinutesReaderScroll(hit.id);
     setSelectedMinutesResult(hit);
     if (!['unit', 'full', 'list'].includes(minutesReaderMode)) {
       setMinutesReaderMode('unit');
     }
+    setMinutesPage('detail');
   }
 
   useEffect(() => {
+    if (!minutesReaderScrollRequest) return;
     if (minutesPage !== 'detail' || !['unit', 'full', 'list'].includes(minutesReaderMode)) return;
     if (!currentDayUtterances.length) return;
-    const targetId = minutesReaderPendingScrollRef.current;
-    if (!targetId) return;
+    const targetId = minutesReaderScrollRequest.utteranceId;
     if (!currentDayUtterances.some((item) => item.id === targetId)) return;
-    minutesReaderPendingScrollRef.current = null;
+    setMinutesReaderScrollRequest(null);
     scrollMinutesUtteranceIntoView(targetId);
   }, [
+    minutesReaderScrollRequest,
     minutesPage,
     minutesReaderMode,
     currentDayUtterances,
-    selectedMinutesResult?.id,
   ]);
 
   function moveSelectedMinutesUtterance(delta: number) {
     if (!minutesDayDetail || selectedMinutesUtteranceIndex < 0) return;
     const next = minutesDayDetail.utterances[selectedMinutesUtteranceIndex + delta];
     if (!next || !selectedMinutesResult) return;
-    scheduleMinutesReaderScroll(next.id);
+    requestMinutesReaderScroll(next.id);
     setSelectedMinutesResult({
       ...selectedMinutesResult,
       id: next.id,
@@ -3579,8 +3591,6 @@ function AppShell() {
                       key={item.id}
                       className={`mb-4 min-w-0 rounded-2xl border p-4 last:mb-0 sm:p-5 ${
                         item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
-                      } ${
-                        item.id === selectedMinutesResult.id ? '' : '[content-visibility:auto] [contain-intrinsic-size:0_14rem]'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -3607,7 +3617,7 @@ function AppShell() {
                           onClick={() => {
                             if (!selectedMinutesResult || !minutesDayDetail) return;
                             const index = minutesDayDetail.utterances.findIndex((u) => u.id === item.id);
-                            scheduleMinutesReaderScroll(item.id);
+                            requestMinutesReaderScroll(item.id);
                             setSelectedMinutesResult({
                               ...selectedMinutesResult,
                               id: item.id,
@@ -3632,8 +3642,6 @@ function AppShell() {
                               : selectedDayMinutesHitIds.has(item.id)
                                 ? 'border-[#79b28d] bg-[#f0faf3]'
                                 : 'bg-[#fbfdfb]'
-                          } ${
-                            item.id === selectedMinutesResult.id ? '' : '[content-visibility:auto] [contain-intrinsic-size:0_5rem]'
                           }`}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -3666,8 +3674,6 @@ function AppShell() {
                               : isHit
                                 ? 'border-[#79b28d] bg-[#f0faf3]'
                                 : 'border-transparent'
-                          } ${
-                            item.id === selectedMinutesResult.id ? '' : '[content-visibility:auto] [contain-intrinsic-size:0_16rem]'
                           }`}
                         >
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
