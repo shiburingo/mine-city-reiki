@@ -4744,6 +4744,31 @@ def minutes_preview_anchor(terms: list[str], query: str) -> str:
     return normalize_text(query)[:80]
 
 
+def minutes_preview_terms(terms: list[str], query: str, limit: int = 8) -> list[str]:
+    values = [normalize_text(term) for term in terms if normalize_text(term)]
+    if not values:
+        values = [normalize_text(query)] if normalize_text(query) else []
+    return _dedupe_terms(values, limit=limit)
+
+
+def minutes_hit_preview_select(text_column: str, terms: list[str], query: str) -> tuple[str, list[Any]]:
+    preview_terms = minutes_preview_terms(terms, query)
+    if not preview_terms:
+        return f"SUBSTRING({text_column}, 1, %s) AS text", [MINUTES_SEARCH_PREVIEW_CHARS]
+
+    cases: list[str] = []
+    params: list[Any] = []
+    for term in preview_terms:
+        cases.append(
+            f"WHEN LOCATE(%s, {text_column}) > 0 "
+            f"THEN SUBSTRING({text_column}, GREATEST(1, LOCATE(%s, {text_column}) - %s), %s)"
+        )
+        params.extend([term, term, MINUTES_SEARCH_PREVIEW_BACKTRACK, MINUTES_SEARCH_PREVIEW_CHARS])
+    sql = "CASE " + " ".join(cases) + f" ELSE SUBSTRING({text_column}, 1, %s) END AS text"
+    params.append(MINUTES_SEARCH_PREVIEW_CHARS)
+    return sql, params
+
+
 MINUTES_SEARCH_PREVIEW_CHARS = 260
 MINUTES_SEARCH_PREVIEW_BACKTRACK = 55
 MINUTES_SEARCH_SNIPPET_CHARS = 180
@@ -4815,6 +4840,16 @@ def append_minutes_query_filter(
             "MATCH(u.search_text) AGAINST (%s IN BOOLEAN MODE)"
         )
         params.append(boolean_query)
+        # MySQL FULLTEXT/ngram can return broad Japanese candidates for
+        # katakana and short terms. Keep FULLTEXT as the fast candidate source,
+        # but require at least one expanded term to exist in the actual text.
+        presence_terms = _dedupe_terms(terms, limit=16)
+        if presence_terms:
+            presence_conditions: list[str] = []
+            for term in presence_terms:
+                presence_conditions.append("u.search_text LIKE %s")
+                params.append(f"%{term}%")
+            conditions.append("(" + " OR ".join(presence_conditions) + ")")
         return
 
     if match_mode == "exact":
@@ -5007,18 +5042,23 @@ def search_minutes_items(
         seen_attempts: set[tuple[bool, bool]] = set()
         compact_results = context != "wide"
         preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
-        if use_search_index and compact_results:
+        index_body_join_sql = ""
+        if use_search_index and compact_results and preview_anchor:
+            text_select, text_select_params = minutes_hit_preview_select(
+                "body.text",
+                terms if match_mode == "related" else base_terms,
+                query,
+            )
+            index_body_join_sql = "JOIN meeting_utterances body ON body.id=u.utterance_id"
+        elif use_search_index and compact_results:
             text_select = "u.text_preview AS text"
             text_select_params = []
         elif compact_results and preview_anchor:
-            text_select = "CASE WHEN LOCATE(%s, u.text) > 0 THEN SUBSTRING(u.text, GREATEST(1, LOCATE(%s, u.text) - %s), %s) ELSE SUBSTRING(u.text, 1, %s) END AS text"
-            text_select_params: list[Any] = [
-                preview_anchor,
-                preview_anchor,
-                MINUTES_SEARCH_PREVIEW_BACKTRACK,
-                MINUTES_SEARCH_PREVIEW_CHARS,
-                MINUTES_SEARCH_PREVIEW_CHARS,
-            ]
+            text_select, text_select_params = minutes_hit_preview_select(
+                "u.text",
+                terms if match_mode == "related" else base_terms,
+                query,
+            )
         elif compact_results:
             text_select = "SUBSTRING(u.text, 1, %s) AS text"
             text_select_params = [MINUTES_SEARCH_PREVIEW_CHARS]
@@ -5065,6 +5105,7 @@ def search_minutes_items(
                           u.position_top_start, u.position_top_end, u.meeting_date, u.day_title, u.pdf_url,
                           u.page_url, u.section, u.meeting_name, u.meeting_name AS session_title
                         FROM meeting_utterance_search_index u
+                        {index_body_join_sql}
                         {short_join_sql}
                         WHERE {where}
                         ORDER BY u.meeting_date DESC, u.section ASC, u.utterance_order ASC
