@@ -9,8 +9,10 @@ import sqlite3
 import tempfile
 import csv
 import io
+import time
 import urllib.parse
 import urllib.request
+import urllib.error
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -24,6 +26,7 @@ ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
 INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-03"
 WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
+WIKIDATA_REQUEST_INTERVAL_SECONDS = 0.8
 
 MIN_TERM_LEN = 2
 MAX_TERM_LEN = 40
@@ -80,6 +83,8 @@ CURATED_SYNONYM_GROUPS: list[tuple[int, list[str]]] = [
     (8, ["養鱒場", "養ます場", "養魚場", "鱒養殖"]),
 ]
 
+_LAST_WIKIDATA_REQUEST_AT = 0.0
+
 MINUTES_PROPER_NOUN_PATTERN = re.compile(
     r"[一-龯ぁ-んァ-ヴー]{2,30}"
     r"(?:市|町|村|地区|地域|川|山|台|湖|公園|学校|小学校|中学校|高等学校|高校|"
@@ -132,6 +137,7 @@ def build_curated_synonym_pairs() -> tuple[dict[int, set[tuple[str, str]]], dict
 
 
 def _fetch_json(url: str, params: dict[str, str] | None = None, timeout: int = 20) -> Any:
+    global _LAST_WIKIDATA_REQUEST_AT
     full_url = url
     if params:
         full_url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -142,12 +148,34 @@ def _fetch_json(url: str, params: dict[str, str] | None = None, timeout: int = 2
             "User-Agent": "mine-city-reiki-dictionary-engine/0.1",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    for attempt in range(2):
+        wait = WIKIDATA_REQUEST_INTERVAL_SECONDS - (time.monotonic() - _LAST_WIKIDATA_REQUEST_AT)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                _LAST_WIKIDATA_REQUEST_AT = time.monotonic()
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            _LAST_WIKIDATA_REQUEST_AT = time.monotonic()
+            if exc.code != 429 or attempt >= 1:
+                raise
+            retry_after = exc.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after and retry_after.isdigit() else 1.5 * (attempt + 1)
+            time.sleep(min(delay, 5.0))
 
 
 def cjk_chars(value: str) -> set[str]:
     return {ch for ch in normalize_term(value) if "\u3400" <= ch <= "\u9fff"}
+
+
+def curated_peer_terms() -> dict[str, set[str]]:
+    peers: dict[str, set[str]] = {}
+    for _, terms in CURATED_SYNONYM_GROUPS:
+        normalized_terms = {normalize_term(term) for term in terms if is_good_term(term)}
+        for term in normalized_terms:
+            peers.setdefault(term, set()).update(normalized_terms)
+    return peers
 
 
 def is_safe_wikidata_alias(seed: str, label: str, alias: str) -> bool:
@@ -167,7 +195,7 @@ def is_safe_wikidata_alias(seed: str, label: str, alias: str) -> bool:
     return False
 
 
-def wikidata_aliases_for_term(term: str, *, limit: int = 3) -> set[str]:
+def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set[str] | None = None) -> set[str]:
     aliases: set[str] = set()
     search_payload = _fetch_json(
         WIKIDATA_API_URL,
@@ -183,9 +211,10 @@ def wikidata_aliases_for_term(term: str, *, limit: int = 3) -> set[str]:
     )
     ids = []
     normalized_term = normalize_term(term)
+    allowed_labels = {normalized_term, *(accepted_labels or set())}
     for item in search_payload.get("search") or []:
         label = normalize_term(item.get("label") or "")
-        if item.get("id") and label == normalized_term:
+        if item.get("id") and label in allowed_labels:
             ids.append(str(item.get("id")))
         if len(ids) >= limit:
             break
@@ -212,29 +241,32 @@ def wikidata_aliases_for_term(term: str, *, limit: int = 3) -> set[str]:
     return {alias for alias in aliases if is_good_term(alias)}
 
 
-def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 80) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 30) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+    peer_lookup = curated_peer_terms()
+    default_seeds = [terms[0] for _, terms in CURATED_SYNONYM_GROUPS if terms]
     seeds = list(dict.fromkeys(
         normalize_term(term)
         for term in (
-            list(seed_terms or [])
-            + [term for _, terms in CURATED_SYNONYM_GROUPS for term in terms]
+            list(seed_terms or default_seeds)
             + ["介護", "福祉", "年金", "住民票", "戸籍", "税金", "観光", "防災", "農業", "水道", "下水道"]
         )
         if is_good_term(term)
     ))[:max_terms]
     pairs: set[tuple[str, str]] = set()
     fetched = 0
+    failed = 0
     for seed in seeds:
         try:
-            aliases = wikidata_aliases_for_term(seed)
+            aliases = wikidata_aliases_for_term(seed, accepted_labels=peer_lookup.get(seed, set()))
         except Exception:
+            failed += 1
             continue
         fetched += 1
         for alias in aliases:
             add_pair(pairs, seed, alias)
         for left, right in itertools.combinations(sorted(aliases), 2):
             add_pair(pairs, left, right)
-    return pairs, {"seedTerms": len(seeds), "fetchedTerms": fetched, "pairs": len(pairs)}
+    return pairs, {"seedTerms": len(seeds), "fetchedTerms": fetched, "failedTerms": failed, "pairs": len(pairs)}
 
 
 def _pairs_from_json_payload(payload: Any) -> tuple[dict[int, set[tuple[str, str]]], int]:
