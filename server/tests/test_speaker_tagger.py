@@ -144,6 +144,23 @@ class SpeakerTaggerTest(unittest.TestCase):
         self.assertEqual(utterances[3].speaker_group, "議員・委員")
         self.assertEqual(utterances[3].speech_type, "question")
 
+    def test_dialogue_flow_reclassifies_same_unknown_speaker_after_answer_as_questioner(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○10番（秋枝秀稔君） 採用試験について質問します。"),
+            line(2, "○総務企画部次長（古屋敦子君） 秋枝議員の御質問にお答えします。"),
+            line(3, "○地域代表（秋枝秀稔君） ここで、大体分かりました。そういうことでよろしいですか。"),
+        ])
+        self.assertEqual(utterances[2].speaker_role, "questioner")
+        self.assertEqual(utterances[2].speech_type, "question")
+
+    def test_dialogue_flow_reclassifies_report_after_chair_request(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○委員長（山田太郎君） 分科会長、お願いいたします。"),
+            line(2, "○総務企画部長（佐々木昭治君） 前回の協議内容を報告いたします。以上、報告を終わります。"),
+        ])
+        self.assertEqual(utterances[1].speaker_role, "report")
+        self.assertEqual(utterances[1].speech_type, "report")
+
 
 if __name__ == "__main__":
     unittest.main()

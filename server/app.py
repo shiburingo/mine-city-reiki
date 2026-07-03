@@ -153,6 +153,7 @@ LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_MINUTES_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
+LOCAL_SCORED_SYNONYM_CACHE: tuple[float, dict[str, list[tuple[str, int]]]] | None = None
 SYNC_THREAD_LOCK = threading.Lock()
 MINUTES_SHORT_TERM_INDEX_VERSION = "short-term-v1"
 BUILTIN_SYNONYM_GROUPS = [
@@ -574,6 +575,29 @@ def ensure_schema() -> None:
             )
             ensure_table(
                 cur,
+                "meeting_day_speaker_roster",
+                """
+                CREATE TABLE meeting_day_speaker_roster (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  normalized_name VARCHAR(191) NOT NULL,
+                  display_name VARCHAR(191) NOT NULL,
+                  title VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_group VARCHAR(64) NOT NULL DEFAULT '',
+                  role VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                  source_table_key VARCHAR(191) NOT NULL DEFAULT '',
+                  confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  UNIQUE KEY uq_meeting_day_roster_identity (day_id, normalized_name, title, role),
+                  KEY idx_meeting_day_roster_day_name (day_id, normalized_name),
+                  KEY idx_meeting_day_roster_day_role (day_id, role),
+                  CONSTRAINT fk_meeting_day_roster_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
                 "meeting_utterances",
                 """
                 CREATE TABLE meeting_utterances (
@@ -603,6 +627,44 @@ def ensure_schema() -> None:
                   FULLTEXT KEY ft_meeting_utterances_search (search_text),
                   CONSTRAINT fk_meeting_utterances_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE,
                   CONSTRAINT fk_meeting_utterances_speaker FOREIGN KEY (speaker_id) REFERENCES meeting_speakers(id) ON DELETE SET NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+            )
+            ensure_table(
+                cur,
+                "meeting_utterance_search_index",
+                """
+                CREATE TABLE meeting_utterance_search_index (
+                  utterance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                  day_id BIGINT UNSIGNED NOT NULL,
+                  session_id BIGINT UNSIGNED NOT NULL,
+                  meeting_date DATE NULL,
+                  section VARCHAR(64) NOT NULL DEFAULT '',
+                  meeting_name VARCHAR(255) NOT NULL DEFAULT '',
+                  day_title VARCHAR(255) NOT NULL DEFAULT '',
+                  pdf_url VARCHAR(512) NOT NULL DEFAULT '',
+                  page_url VARCHAR(512) NOT NULL DEFAULT '',
+                  utterance_order INT UNSIGNED NOT NULL,
+                  speaker_name VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_title VARCHAR(191) NOT NULL DEFAULT '',
+                  speaker_role VARCHAR(32) NOT NULL DEFAULT 'unknown',
+                  speaker_group VARCHAR(64) NOT NULL DEFAULT '',
+                  speech_type VARCHAR(32) NOT NULL DEFAULT 'statement',
+                  page_start INT UNSIGNED NOT NULL DEFAULT 0,
+                  page_end INT UNSIGNED NOT NULL DEFAULT 0,
+                  position_top_start FLOAT NOT NULL DEFAULT 0,
+                  position_top_end FLOAT NOT NULL DEFAULT 0,
+                  text_preview TEXT NOT NULL,
+                  search_text LONGTEXT NOT NULL,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  KEY idx_minutes_search_day_order (day_id, utterance_order),
+                  KEY idx_minutes_search_date_section_order (meeting_date, section, utterance_order),
+                  KEY idx_minutes_search_speaker (speaker_name, day_id, utterance_order),
+                  KEY idx_minutes_search_role_title (speaker_role, speaker_title, day_id),
+                  FULLTEXT KEY ft_minutes_search_index_text (search_text),
+                  CONSTRAINT fk_minutes_search_index_utterance FOREIGN KEY (utterance_id) REFERENCES meeting_utterances(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_minutes_search_index_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE,
+                  CONSTRAINT fk_minutes_search_index_session FOREIGN KEY (session_id) REFERENCES meeting_sessions(id) ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
@@ -1136,7 +1198,9 @@ def clear_local_caches() -> None:
     LOCAL_ASK_CACHE.clear()
     LOCAL_MINUTES_SEARCH_CACHE.clear()
     global LOCAL_SYNONYM_CACHE
+    global LOCAL_SCORED_SYNONYM_CACHE
     LOCAL_SYNONYM_CACHE = None
+    LOCAL_SCORED_SYNONYM_CACHE = None
 
 
 def get_cache_generation(cur) -> int:
@@ -1181,6 +1245,39 @@ def synonyms_map(cur=None) -> dict[str, list[str]]:
         graph.setdefault(synonym_term, set()).add(canonical_term)
     result = {key: sorted(values) for key, values in graph.items()}
     LOCAL_SYNONYM_CACHE = (now, result)
+    return result
+
+
+def scored_synonyms_map(cur=None) -> dict[str, list[tuple[str, int]]]:
+    global LOCAL_SCORED_SYNONYM_CACHE
+    now = time.time()
+    if LOCAL_SCORED_SYNONYM_CACHE and now - LOCAL_SCORED_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS:
+        return LOCAL_SCORED_SYNONYM_CACHE[1]
+    if cur is None:
+        with db_cursor() as (_, inner_cur):
+            return scored_synonyms_map(inner_cur)
+    cur.execute(
+        """
+        SELECT canonical_term, synonym_term, priority
+        FROM law_synonyms
+        WHERE is_active=1
+        ORDER BY priority DESC, id ASC
+        """
+    )
+    graph: dict[str, dict[str, int]] = {}
+    for row in cur.fetchall() or []:
+        canonical = normalize_text(row.get("canonical_term") or "").lower()
+        synonym = normalize_text(row.get("synonym_term") or "").lower()
+        priority = int(row.get("priority") or 0)
+        if not canonical or not synonym or canonical == synonym:
+            continue
+        graph.setdefault(canonical, {})[synonym] = max(priority, graph.setdefault(canonical, {}).get(synonym, 0))
+        graph.setdefault(synonym, {})[canonical] = max(priority, graph.setdefault(synonym, {}).get(canonical, 0))
+    result = {
+        term: sorted(items.items(), key=lambda item: (-item[1], len(item[0]), item[0]))
+        for term, items in graph.items()
+    }
+    LOCAL_SCORED_SYNONYM_CACHE = (now, result)
     return result
 
 
@@ -1469,17 +1566,24 @@ def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
     }
 
 
-def expand_keywords_with_synonyms(keywords: list[str], cur=None, max_keywords: int = 16) -> list[str]:
+def expand_keywords_with_synonyms(
+    keywords: list[str],
+    cur=None,
+    max_keywords: int = 16,
+    min_priority: int = 0,
+) -> list[str]:
     expanded: list[str] = []
     seen: set[str] = set()
-    synonym_lookup = synonyms_map(cur)
+    synonym_lookup = scored_synonyms_map(cur)
     for keyword in keywords:
         token = normalize_text(keyword).lower()
         if not token or token in seen:
             continue
         seen.add(token)
         expanded.append(token)
-        for synonym in synonym_lookup.get(token, []):
+        for synonym, priority in synonym_lookup.get(token, []):
+            if priority < min_priority:
+                continue
             if synonym and synonym not in seen:
                 seen.add(synonym)
                 expanded.append(synonym)
@@ -3542,6 +3646,219 @@ def fiscal_year_for_date(value: date | datetime | None) -> int:
     return value.year if value.month >= 4 else value.year - 1
 
 
+def role_group_for_roster_caption(caption: str) -> tuple[str, str, float] | None:
+    caption = caption or ""
+    if caption.startswith(("出席者番号名簿", "一般質問者名簿", "出席委員名簿")):
+        return "questioner", "議員・委員", 0.96
+    if caption.startswith(("説明員名簿", "役職者名簿")):
+        return "answerer", "執行部", 0.94
+    return None
+
+
+def iter_roster_pairs(caption: str, rows: list[list[str]]) -> Iterable[tuple[str, str]]:
+    """Yield (title, name) pairs from normalized roster tables."""
+    if not rows:
+        return
+    header = [normalize_text(cell) for cell in rows[0]]
+    for row in rows[1:]:
+        values = [normalize_text(cell) for cell in row]
+        width = min(len(header), len(values))
+        index = 0
+        while index + 1 < width:
+            left = header[index]
+            right = header[index + 1]
+            first = values[index].strip()
+            second = values[index + 1].strip()
+            if not first or not second:
+                index += 2
+                continue
+            if left in {"番号", "役職"} and right == "氏名":
+                yield first, second
+            elif left == "氏名" and right == "役職":
+                yield second, first
+            index += 2
+
+
+def extract_roster_profiles_from_tables(tables: list[Any]) -> dict[str, dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = {}
+    for table in tables:
+        caption = getattr(table, "caption", "") if not isinstance(table, dict) else table.get("caption", "")
+        role_info = role_group_for_roster_caption(caption)
+        if not role_info:
+            continue
+        role, group, confidence = role_info
+        rows = getattr(table, "rows", []) if not isinstance(table, dict) else table.get("rows", [])
+        table_key = getattr(table, "table_key", "") if not isinstance(table, dict) else table.get("table_key", "")
+        for title, name in iter_roster_pairs(caption, rows):
+            normalized = normalize_minutes_speaker_name(name)
+            if not normalized:
+                continue
+            current = profiles.get(normalized)
+            profile = {
+                "normalizedName": normalized,
+                "displayName": name,
+                "title": re.sub(r"\s+", "", title or ""),
+                "role": role,
+                "speakerGroup": group,
+                "confidence": confidence,
+                "sourceTableKey": table_key,
+            }
+            if current is None or confidence > float(current.get("confidence") or 0):
+                profiles[normalized] = profile
+    return profiles
+
+
+def apply_roster_profiles_to_utterances(
+    utterances: list[TaggedUtterance],
+    profiles: dict[str, dict[str, Any]],
+) -> list[TaggedUtterance]:
+    if not profiles:
+        return reclassify_contextual_utterances(utterances)
+    for utterance in utterances:
+        if utterance.speaker_role in {"chair", "secretariat"}:
+            continue
+        profile = profiles.get(normalize_minutes_speaker_name(utterance.speaker_name))
+        if not profile:
+            continue
+        role = str(profile.get("role") or "")
+        group = str(profile.get("speakerGroup") or "")
+        if not role or role == utterance.speaker_role:
+            continue
+        can_override = (
+            utterance.speaker_role == "unknown"
+            or utterance.confidence < float(profile.get("confidence") or 0)
+            or (role == "questioner" and re.search(r"(仮議席|[0-9０-９]+番)", utterance.speaker_title))
+        )
+        if not can_override:
+            continue
+        utterance.speaker_role = role
+        utterance.speaker_group = group
+        utterance.speech_type = speech_type_from_role(role)
+        utterance.confidence = max(utterance.confidence, float(profile.get("confidence") or 0))
+        utterance.reason = "same-day roster table identifies speaker role"
+    return reclassify_contextual_utterances(utterances)
+
+
+def persist_meeting_day_roster_profiles(cur, day_id: int, profiles: dict[str, dict[str, Any]]) -> None:
+    cur.execute("DELETE FROM meeting_day_speaker_roster WHERE day_id=%s", (day_id,))
+    if not profiles:
+        return
+    cur.executemany(
+        """
+        INSERT INTO meeting_day_speaker_roster
+          (day_id, normalized_name, display_name, title, speaker_group, role, source_table_key, confidence)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          display_name=VALUES(display_name),
+          speaker_group=VALUES(speaker_group),
+          source_table_key=VALUES(source_table_key),
+          confidence=GREATEST(confidence, VALUES(confidence)),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        [
+            (
+                day_id,
+                profile["normalizedName"],
+                profile["displayName"],
+                profile["title"],
+                profile["speakerGroup"],
+                profile["role"],
+                profile["sourceTableKey"],
+                profile["confidence"],
+            )
+            for profile in profiles.values()
+        ],
+    )
+
+
+def load_meeting_day_roster_profiles(cur, day_id: int) -> dict[str, dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT normalized_name, display_name, title, speaker_group, role, source_table_key, confidence
+        FROM meeting_day_speaker_roster
+        WHERE day_id=%s
+        """,
+        (day_id,),
+    )
+    profiles: dict[str, dict[str, Any]] = {}
+    for row in cur.fetchall() or []:
+        profiles[row["normalized_name"]] = {
+            "normalizedName": row["normalized_name"],
+            "displayName": row.get("display_name") or "",
+            "title": row.get("title") or "",
+            "speakerGroup": row.get("speaker_group") or "",
+            "role": row.get("role") or "unknown",
+            "sourceTableKey": row.get("source_table_key") or "",
+            "confidence": float(row.get("confidence") or 0),
+        }
+    return profiles
+
+
+def load_meeting_year_speaker_profiles(cur, meeting_date: date | datetime | None) -> dict[str, dict[str, Any]]:
+    fiscal_year = fiscal_year_for_date(meeting_date)
+    cur.execute(
+        """
+        SELECT normalized_name, display_name, title, speaker_group, role, source_type, confidence, occurrences
+        FROM meeting_speaker_dictionary
+        WHERE fiscal_year=%s AND role IN ('questioner','answerer','report')
+        ORDER BY confidence DESC, occurrences DESC
+        """,
+        (fiscal_year,),
+    )
+    profiles: dict[str, dict[str, Any]] = {}
+    for row in cur.fetchall() or []:
+        normalized = row.get("normalized_name") or ""
+        if not normalized or normalized in profiles:
+            continue
+        profiles[normalized] = {
+            "normalizedName": normalized,
+            "displayName": row.get("display_name") or "",
+            "title": row.get("title") or "",
+            "speakerGroup": row.get("speaker_group") or "",
+            "role": row.get("role") or "unknown",
+            "sourceTableKey": row.get("source_type") or "year-dictionary",
+            "confidence": min(0.9, float(row.get("confidence") or 0.75)),
+        }
+    return profiles
+
+
+def merge_speaker_profiles(*profile_sets: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for profiles in profile_sets:
+        for normalized, profile in profiles.items():
+            if normalized not in merged:
+                merged[normalized] = profile
+    return merged
+
+
+def rebuild_meeting_day_roster_profiles_from_tables(cur, day_id: int) -> dict[str, dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT table_key, caption, rows_json
+        FROM meeting_tables
+        WHERE day_id=%s
+        ORDER BY page ASC, position_top ASC, id ASC
+        """,
+        (day_id,),
+    )
+    tables: list[dict[str, Any]] = []
+    for row in cur.fetchall() or []:
+        try:
+            rows = json.loads(row.get("rows_json") or "[]")
+        except Exception:
+            rows = []
+        caption, rows, _html, _search_text = normalize_minutes_table_for_display(
+            row.get("caption") or "",
+            rows,
+            "",
+            "",
+        )
+        tables.append({"table_key": row.get("table_key") or "", "caption": caption, "rows": rows})
+    profiles = extract_roster_profiles_from_tables(tables)
+    persist_meeting_day_roster_profiles(cur, day_id, profiles)
+    return profiles
+
+
 def upsert_meeting_session(cur, item: Any) -> int:
     cur.execute(
         """
@@ -3642,7 +3959,7 @@ def upsert_meeting_speaker_dictionary(cur, day_id: int, meeting_date: date | dat
 def rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year: int) -> None:
     start = date(fiscal_year, 4, 1)
     end = date(fiscal_year + 1, 4, 1)
-    cur.execute("DELETE FROM meeting_speaker_dictionary WHERE fiscal_year=%s AND source_type='utterance'", (fiscal_year,))
+    cur.execute("DELETE FROM meeting_speaker_dictionary WHERE fiscal_year=%s AND source_type IN ('utterance','roster')", (fiscal_year,))
     cur.execute(
         """
         INSERT INTO meeting_speaker_dictionary
@@ -3669,6 +3986,41 @@ def rebuild_meeting_speaker_dictionary_for_year(cur, fiscal_year: int) -> None:
         """,
         (fiscal_year, start, end),
     )
+    cur.execute(
+        """
+        INSERT INTO meeting_speaker_dictionary
+          (fiscal_year, valid_from, valid_to, normalized_name, display_name, title, speaker_group, role,
+           source_type, confidence, first_day_id, last_day_id, occurrences)
+        SELECT
+          %s AS fiscal_year,
+          MIN(d.meeting_date) AS valid_from,
+          MAX(d.meeting_date) AS valid_to,
+          r.normalized_name,
+          MIN(r.display_name) AS display_name,
+          r.title,
+          MIN(r.speaker_group) AS speaker_group,
+          r.role,
+          'roster' AS source_type,
+          MAX(r.confidence) AS confidence,
+          MIN(d.id) AS first_day_id,
+          MAX(d.id) AS last_day_id,
+          COUNT(*) AS occurrences
+        FROM meeting_day_speaker_roster r
+        JOIN meeting_days d ON d.id=r.day_id
+        WHERE d.meeting_date >= %s AND d.meeting_date < %s AND r.normalized_name <> ''
+        GROUP BY r.normalized_name, r.title, r.role
+        ON DUPLICATE KEY UPDATE
+          valid_from=LEAST(COALESCE(valid_from, VALUES(valid_from)), COALESCE(VALUES(valid_from), valid_from)),
+          valid_to=GREATEST(COALESCE(valid_to, VALUES(valid_to)), COALESCE(VALUES(valid_to), valid_to)),
+          speaker_group=VALUES(speaker_group),
+          confidence=GREATEST(confidence, VALUES(confidence)),
+          first_day_id=LEAST(COALESCE(first_day_id, VALUES(first_day_id)), COALESCE(VALUES(first_day_id), first_day_id)),
+          last_day_id=GREATEST(COALESCE(last_day_id, VALUES(last_day_id)), COALESCE(VALUES(last_day_id), last_day_id)),
+          occurrences=occurrences + VALUES(occurrences),
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        (fiscal_year, start, end),
+    )
 
 
 def reset_meeting_day_content(cur, day_id: int) -> None:
@@ -3676,12 +4028,72 @@ def reset_meeting_day_content(cur, day_id: int) -> None:
     cur.execute("DELETE FROM meeting_utterances WHERE day_id=%s", (day_id,))
 
 
+MINUTES_SEARCH_INDEX_PREVIEW_CHARS = 420
+
+
+def rebuild_meeting_search_index_for_day(cur, day_id: int) -> int:
+    cur.execute("DELETE FROM meeting_utterance_search_index WHERE day_id=%s", (day_id,))
+    cur.execute(
+        """
+        INSERT INTO meeting_utterance_search_index
+          (utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
+           utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
+           page_start, page_end, position_top_start, position_top_end, text_preview, search_text)
+        SELECT
+          u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
+          u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
+          u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+          SUBSTRING(u.text, 1, %s), u.search_text
+        FROM meeting_utterances u
+        JOIN meeting_days d ON d.id=u.day_id
+        JOIN meeting_sessions s ON s.id=d.session_id
+        WHERE u.day_id=%s
+        ORDER BY u.utterance_order ASC
+        """,
+        (MINUTES_SEARCH_INDEX_PREVIEW_CHARS, day_id),
+    )
+    return int(cur.rowcount or 0)
+
+
+def rebuild_meeting_search_index(cur) -> int:
+    cur.execute("DELETE FROM meeting_utterance_search_index")
+    cur.execute(
+        """
+        INSERT INTO meeting_utterance_search_index
+          (utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
+           utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
+           page_start, page_end, position_top_start, position_top_end, text_preview, search_text)
+        SELECT
+          u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
+          u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
+          u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+          SUBSTRING(u.text, 1, %s), u.search_text
+        FROM meeting_utterances u
+        JOIN meeting_days d ON d.id=u.day_id
+        JOIN meeting_sessions s ON s.id=d.session_id
+        ORDER BY d.meeting_date DESC, u.day_id ASC, u.utterance_order ASC
+        """,
+        (MINUTES_SEARCH_INDEX_PREVIEW_CHARS,),
+    )
+    return int(cur.rowcount or 0)
+
+
+def is_meeting_search_index_ready(cur) -> bool:
+    cur.execute("SELECT 1 FROM meeting_utterance_search_index LIMIT 1")
+    return cur.fetchone() is not None
+
+
 def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> dict[str, int]:
     all_lines = [line for page in extracted.pages for line in page.lines]
     utterances = tag_utterances(all_lines)
     document_key = f"minutes-{day_id}"
     tables = refine_person_roster_tables(extract_coordinate_tables(extracted.pages, document_key), utterances)
+    roster_profiles = extract_roster_profiles_from_tables(tables)
+    year_profiles = load_meeting_year_speaker_profiles(cur, item.meeting_date)
+    speaker_profiles = merge_speaker_profiles(roster_profiles, year_profiles)
+    utterances = apply_roster_profiles_to_utterances(utterances, speaker_profiles)
     reset_meeting_day_content(cur, day_id)
+    persist_meeting_day_roster_profiles(cur, day_id, roster_profiles)
     speaker_count = 0
     speaker_id_cache: dict[tuple[str, str, str, str], int] = {}
     for utterance in utterances:
@@ -3742,6 +4154,7 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
             ),
         )
         insert_minutes_short_terms_for_utterance(cur, int(cur.lastrowid), day_id, search_text)
+    indexed = rebuild_meeting_search_index_for_day(cur, day_id)
     for table in tables:
         cur.execute(
             """
@@ -3778,6 +4191,9 @@ def persist_meeting_day_content(cur, day_id: int, item: Any, extracted: Any) -> 
         "utterances": len(utterances),
         "tables": len(tables),
         "speakers": speaker_count,
+        "indexed": indexed,
+        "rosterProfiles": len(roster_profiles),
+        "speakerProfiles": len(speaker_profiles),
         "fiscalYear": fiscal_year_for_date(item.meeting_date),
     }
 
@@ -3846,12 +4262,17 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
                 reason=reason,
             )
         )
-    tagged = reclassify_contextual_utterances(tagged)
-
     meeting_date = rows[0].get("meeting_date")
     section = rows[0].get("section") or ""
     meeting_name = rows[0].get("meeting_name") or ""
     day_title = rows[0].get("day_title") or ""
+    roster_profiles = load_meeting_day_roster_profiles(cur, day_id)
+    if not roster_profiles:
+        roster_profiles = rebuild_meeting_day_roster_profiles_from_tables(cur, day_id)
+    year_profiles = load_meeting_year_speaker_profiles(cur, meeting_date)
+    speaker_profiles = merge_speaker_profiles(roster_profiles, year_profiles)
+    tagged = apply_roster_profiles_to_utterances(tagged, speaker_profiles)
+
     updated = 0
     role_changed = 0
     dictionary_changed = False
@@ -3922,11 +4343,15 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
                 cur.execute("DELETE FROM meeting_utterance_short_terms WHERE utterance_id=%s", (int(row["id"]),))
                 insert_minutes_short_terms_for_utterance(cur, int(row["id"]), day_id, search_text)
             updated += 1
+    indexed = rebuild_meeting_search_index_for_day(cur, day_id)
     fiscal_year = fiscal_year_for_date(meeting_date) if meeting_date else None
     return {
         "processed": len(rows),
         "updated": updated,
         "roleChanged": role_changed,
+        "indexed": indexed,
+        "rosterProfiles": len(roster_profiles),
+        "speakerProfiles": len(speaker_profiles),
         "fiscalYear": fiscal_year,
         "dictionaryChanged": dictionary_changed,
     }
@@ -3955,6 +4380,9 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
             "failed": 0,
             "utterances": 0,
             "tables": 0,
+            "indexed": 0,
+            "rosterProfiles": 0,
+            "speakerProfiles": 0,
             "rebuiltYears": 0,
             "progressCurrent": 0,
             "progressTotal": 1,
@@ -4013,6 +4441,9 @@ def execute_minutes_sync(recent_days: int | None = 365) -> dict[str, Any]:
                     summary["processed"] += 1
                     summary["utterances"] += counts["utterances"]
                     summary["tables"] += counts["tables"]
+                    summary["indexed"] += int(counts.get("indexed") or 0)
+                    summary["rosterProfiles"] += int(counts.get("rosterProfiles") or 0)
+                    summary["speakerProfiles"] += int(counts.get("speakerProfiles") or 0)
                     fiscal_year = counts.get("fiscalYear")
                     if fiscal_year:
                         years_to_rebuild.add(int(fiscal_year))
@@ -4093,6 +4524,9 @@ def execute_minutes_retag(batch_size: int = 25) -> dict[str, Any]:
             "utterances": 0,
             "updated": 0,
             "roleChanged": 0,
+            "indexed": 0,
+            "rosterProfiles": 0,
+            "speakerProfiles": 0,
             "rebuiltYears": 0,
             "progressCurrent": 0,
             "progressTotal": max(1, len(day_ids)),
@@ -4123,6 +4557,9 @@ def execute_minutes_retag(batch_size: int = 25) -> dict[str, Any]:
                     summary["utterances"] += int(counts.get("processed") or 0)
                     summary["updated"] += int(counts.get("updated") or 0)
                     summary["roleChanged"] += int(counts.get("roleChanged") or 0)
+                    summary["indexed"] += int(counts.get("indexed") or 0)
+                    summary["rosterProfiles"] += int(counts.get("rosterProfiles") or 0)
+                    summary["speakerProfiles"] += int(counts.get("speakerProfiles") or 0)
                     fiscal_year = counts.get("fiscalYear")
                     if fiscal_year and counts.get("dictionaryChanged"):
                         years_to_rebuild.add(int(fiscal_year))
@@ -4412,6 +4849,7 @@ def build_minutes_where(
     op: str,
     use_fulltext: bool,
     speaker_exact_only: bool = True,
+    use_search_index: bool = False,
 ) -> tuple[str, list[Any]]:
     conditions = ["1=1"]
     params: list[Any] = []
@@ -4425,25 +4863,26 @@ def build_minutes_where(
             params.extend([speaker, speaker, f"%{speaker}%", f"%{speaker}%"])
     append_minutes_role_filter(conditions, params, role, "u.speaker_role", "u.speaker_title")
     if section and section != "all":
-        conditions.append("s.section=%s")
+        conditions.append(("u.section" if use_search_index else "s.section") + "=%s")
         params.append(section)
     if meeting_id:
-        conditions.append("s.id=%s")
+        conditions.append(("u.session_id" if use_search_index else "s.id") + "=%s")
         params.append(meeting_id)
     if day_id:
-        conditions.append("d.id=%s")
+        conditions.append("u.day_id=%s" if use_search_index else "d.id=%s")
         params.append(day_id)
     if years:
         year_ranges = []
+        date_column = "u.meeting_date" if use_search_index else "d.meeting_date"
         for year in years:
-            year_ranges.append("(d.meeting_date >= %s AND d.meeting_date <= %s)")
+            year_ranges.append(f"({date_column} >= %s AND {date_column} <= %s)")
             params.extend([f"{year}-01-01", f"{year}-12-31"])
         conditions.append(f"({' OR '.join(year_ranges)})")
     if from_date:
-        conditions.append("d.meeting_date >= %s")
+        conditions.append(("u.meeting_date" if use_search_index else "d.meeting_date") + " >= %s")
         params.append(from_date)
     if to_date:
-        conditions.append("d.meeting_date <= %s")
+        conditions.append(("u.meeting_date" if use_search_index else "d.meeting_date") + " <= %s")
         params.append(to_date)
     return " AND ".join(conditions), params
 
@@ -4517,7 +4956,7 @@ def search_minutes_items(
 ) -> list[dict[str, Any]]:
     base_terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
-        terms = expand_keywords_with_synonyms(base_terms, cur=cur, max_keywords=20) if match_mode == "related" else base_terms
+        terms = expand_keywords_with_synonyms(base_terms, cur=cur, max_keywords=14, min_priority=5) if match_mode == "related" else base_terms
         related_terms = related_keywords_for_highlight(base_terms, terms) if match_mode == "related" else []
         generation = get_cache_generation(cur)
         cache_key = make_cache_key(
@@ -4544,6 +4983,7 @@ def search_minutes_items(
             return cached
 
         rows: list[dict[str, Any]] = []
+        use_search_index = context != "wide" and is_meeting_search_index_ready(cur)
         short_index_term = ""
         if len(base_terms) == 1:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
@@ -4567,7 +5007,10 @@ def search_minutes_items(
         seen_attempts: set[tuple[bool, bool]] = set()
         compact_results = context != "wide"
         preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
-        if compact_results and preview_anchor:
+        if use_search_index and compact_results:
+            text_select = "u.text_preview AS text"
+            text_select_params = []
+        elif compact_results and preview_anchor:
             text_select = "CASE WHEN LOCATE(%s, u.text) > 0 THEN SUBSTRING(u.text, GREATEST(1, LOCATE(%s, u.text) - %s), %s) ELSE SUBSTRING(u.text, 1, %s) END AS text"
             text_select_params: list[Any] = [
                 preview_anchor,
@@ -4601,6 +5044,7 @@ def search_minutes_items(
                 op,
                 use_fulltext,
                 speaker_exact_only=speaker_exact_only,
+                use_search_index=use_search_index,
             )
             try:
                 limit_clause = "LIMIT %s" if limit is not None else ""
@@ -4610,23 +5054,42 @@ def search_minutes_items(
                     short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.id AND st.term=%s"
                     short_join_params.append(short_index_term)
                 query_params = text_select_params + short_join_params + params + ([limit] if limit is not None else [])
-                cur.execute(
-                    f"""
-                    SELECT
-                      u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
-                      u.speech_type, {text_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
-                      d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
-                      s.section, s.meeting_name, s.title AS session_title
-                    FROM meeting_utterances u
-                    {short_join_sql}
-                    JOIN meeting_days d ON d.id=u.day_id
-                    JOIN meeting_sessions s ON s.id=d.session_id
-                    WHERE {where}
-                    ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
-                    {limit_clause}
-                    """,
-                    tuple(query_params),
-                )
+                if use_search_index:
+                    if short_index_term:
+                        short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.utterance_id AND st.term=%s"
+                    cur.execute(
+                        f"""
+                        SELECT
+                          u.utterance_id AS id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title,
+                          u.speaker_role, u.speech_type, {text_select}, u.page_start, u.page_end,
+                          u.position_top_start, u.position_top_end, u.meeting_date, u.day_title, u.pdf_url,
+                          u.page_url, u.section, u.meeting_name, u.meeting_name AS session_title
+                        FROM meeting_utterance_search_index u
+                        {short_join_sql}
+                        WHERE {where}
+                        ORDER BY u.meeting_date DESC, u.section ASC, u.utterance_order ASC
+                        {limit_clause}
+                        """,
+                        tuple(query_params),
+                    )
+                else:
+                    cur.execute(
+                        f"""
+                        SELECT
+                          u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
+                          u.speech_type, {text_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+                          d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
+                          s.section, s.meeting_name, s.title AS session_title
+                        FROM meeting_utterances u
+                        {short_join_sql}
+                        JOIN meeting_days d ON d.id=u.day_id
+                        JOIN meeting_sessions s ON s.id=d.session_id
+                        WHERE {where}
+                        ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
+                        {limit_clause}
+                        """,
+                        tuple(query_params),
+                    )
             except pymysql.err.OperationalError:
                 if use_fulltext:
                     app.logger.warning("Minutes FULLTEXT search unavailable; falling back to LIKE search", exc_info=True)

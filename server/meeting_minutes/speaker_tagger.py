@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v13"
+ENGINE_VERSION = "speaker-rules-v14"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
@@ -195,6 +195,43 @@ def looks_followup_question_context(utterances: list[TaggedUtterance], index: in
     return False
 
 
+def apply_dialogue_state_machine(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
+    active_questioner = ""
+    awaiting_report = False
+    for index, utterance in enumerate(utterances):
+        previous = utterances[index - 1] if index > 0 else None
+        if utterance.speaker_role == "chair":
+            awaiting_report = bool(REPORT_REQUEST_RE.search(utterance.text))
+            continue
+        if awaiting_report and utterance.speaker_role not in {"chair", "secretariat"}:
+            if utterance.speaker_role in {"unknown", "answerer"} and (REPORT_BODY_RE.search(utterance.text) or REPORT_CLOSING_RE.search(utterance.text)):
+                utterance.speaker_role = "report"
+                utterance.speaker_group = "報告"
+                utterance.speech_type = "report"
+                utterance.confidence = max(utterance.confidence, 0.88)
+                utterance.reason = "dialogue flow after chair report request"
+            awaiting_report = False
+        if utterance.speaker_role == "questioner":
+            active_questioner = utterance.speaker_name
+            continue
+        if (
+            utterance.speaker_role == "unknown"
+            and active_questioner
+            and utterance.speaker_name == active_questioner
+            and previous
+            and previous.speaker_role in {"answerer", "chair"}
+        ):
+            utterance.speaker_role = "questioner"
+            utterance.speaker_group = "議員・委員"
+            utterance.speech_type = "question"
+            utterance.confidence = max(utterance.confidence, 0.83)
+            utterance.reason = "dialogue flow returns to active questioner"
+            continue
+        if utterance.speaker_role == "answerer":
+            continue
+    return utterances
+
+
 def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[TaggedUtterance]:
     for index, utterance in enumerate(utterances):
         previous = utterances[index - 1] if index > 0 else None
@@ -237,7 +274,7 @@ def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[
             utterance.speech_type = "report"
             utterance.confidence = max(utterance.confidence, 0.86)
             utterance.reason = "surrounding chair utterance and body indicate report"
-    return utterances
+    return apply_dialogue_state_machine(utterances)
 
 
 def is_printed_page_number(text: str) -> bool:
