@@ -10,5 +10,6 @@ dist
 !.env.production
 server/.venv
 server/venv
+server/data/
 __pycache__
 *.pyc
