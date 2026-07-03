@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v10"
+ENGINE_VERSION = "speaker-rules-v11"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
@@ -52,9 +52,11 @@ ANSWER_CONTEXT_RE = re.compile(r"(御質問|ご質問|質問|お尋ね|御指摘
 ANSWER_TO_QUESTION_RE = re.compile(r"(ただいま|只今|今|先ほど|先程)?[^。！？\n]{0,20}(御質問|ご質問|質問|お尋ね)[^。！？\n]{0,20}(ですが|について|に|の件)")
 QUESTION_CLOSING_RE = re.compile(
     r"(お答え|御答え|ご答弁|答弁|回答|説明)[^。！？\n]{0,40}"
-    r"(いただいておきたい|いただきたい|願いたい|お願いしたい|求めたい)"
+    r"(いただいておきたい|いただきたい|願いたい|お願いしたい|求めたい|あってもいい)"
     r"|"
     r"(お伺い|伺い|お尋ね|質問|確認)[^。！？\n]{0,40}(したい|します|させていただきたい)"
+    r"|"
+    r"(この点|その点|この辺|その辺|この件|その件)[^。！？\n]{0,30}(よろしくお願い|お願いし)"
 )
 REPORT_REQUEST_RE = re.compile(
     r"(報告を求め|報告.*お願いいたします|報告.*お願いをいたします|報告.*お願い申し上げます|進捗.*お願いいたします|説明を求め|説明.*お願いいたします|説明.*お願いをいたします|分科会長、お願いいたします|部会長、お願いいたします)"
@@ -95,7 +97,7 @@ def classify_speaker(title: str, name: str) -> tuple[str, str, float, str]:
         return "answerer", "執行部", 0.9, "non-council secretariat title is executive staff"
     if any(token in title for token in EXTERNAL_ANSWERER_TITLES):
         return "answerer", "参考人・証人", 0.9, "title indicates external testimony answerer"
-    if SPEAKER_NUMBER_TITLE_RE.fullmatch(title) or "議員" in title or title.endswith("委員") or title in {"部会長", "副委員長"}:
+    if "仮議席" in title or SPEAKER_NUMBER_TITLE_RE.fullmatch(title) or "議員" in title or title.endswith("委員") or title in {"部会長", "副委員長"}:
         return "questioner", "議員・委員", 0.9, "title indicates elected member or committee member"
     if any(token in title for token in ANSWERER_TITLES):
         return "answerer", "執行部", 0.9, "title indicates executive staff"

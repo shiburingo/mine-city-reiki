@@ -61,6 +61,9 @@ class SpeakerTaggerTest(unittest.TestCase):
     def test_number_only_title_is_questioner(self) -> None:
         self.assertEqual(classify_speaker("10", "秋枝秀稔")[0], "questioner")
 
+    def test_temporary_seat_title_is_questioner(self) -> None:
+        self.assertEqual(classify_speaker("仮議席6番", "岡山隆")[0], "questioner")
+
     def test_waterworks_business_administrator_is_answerer(self) -> None:
         role, group, _confidence, _reason = classify_speaker("上下水道事業管理者", "波佐間敏")
         self.assertEqual(role, "answerer")
@@ -101,6 +104,15 @@ class SpeakerTaggerTest(unittest.TestCase):
         utterances = tag_utterances([
             line(1, "○地域代表（安富法明君） 今南口委員の質問と市長の答弁というのはどうかと思いました。"),
             line(2, "直接これとは関係ないかもしれませんけれども、まずお答えをいただいておきたいというふうに思います。"),
+        ])
+        self.assertEqual(utterances[0].speaker_role, "questioner")
+        self.assertEqual(utterances[0].speaker_group, "議員・委員")
+        self.assertEqual(utterances[0].speech_type, "question")
+
+    def test_answer_request_closing_is_questioner(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○地域代表（岡山隆君） 経緯だけでもお答えがあってもいいのではないかと思います。"),
+            line(2, "この点についてよろしくお願いします。"),
         ])
         self.assertEqual(utterances[0].speaker_role, "questioner")
         self.assertEqual(utterances[0].speaker_group, "議員・委員")
