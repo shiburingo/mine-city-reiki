@@ -5415,7 +5415,7 @@ def append_minutes_query_filter(
     if not normalized_query:
         return
     if use_fulltext:
-        boolean_query = minutes_boolean_query(terms, normalized_query, require_all=match_mode != "related")
+        boolean_query = minutes_boolean_query(terms, normalized_query, require_all=match_mode == "exact" and op != "OR")
         if not boolean_query:
             return
         conditions.append(
@@ -5431,13 +5431,20 @@ def append_minutes_query_filter(
             for term in presence_terms:
                 presence_conditions.append("u.search_text LIKE %s")
                 params.append(f"%{term}%")
-            conditions.append("(" + " OR ".join(presence_conditions) + ")")
+            presence_joiner = " AND " if match_mode == "exact" and op != "OR" else " OR "
+            conditions.append("(" + presence_joiner.join(presence_conditions) + ")")
         return
 
     if match_mode == "exact":
-        like = f"%{normalized_query}%"
-        conditions.append("u.search_text LIKE %s")
-        params.append(like)
+        exact_terms = _dedupe_terms(terms or [normalized_query], limit=16)
+        if not exact_terms:
+            return
+        term_conditions: list[str] = []
+        for term in exact_terms:
+            term_conditions.append("u.search_text LIKE %s")
+            params.append(f"%{term}%")
+        joiner = " OR " if op == "OR" else " AND "
+        conditions.append("(" + joiner.join(term_conditions) + ")")
         return
 
     if not terms:
