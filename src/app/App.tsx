@@ -105,6 +105,7 @@ type MinutesSearchHistoryItem = {
   matchMode: 'exact' | 'related';
   op: 'AND' | 'OR';
   includeReplies: boolean;
+  includeSpeakerMeta?: boolean;
   createdAt: string;
 };
 type MinutesPage = 'home' | 'browse' | 'keyword' | 'speaker' | 'collection' | 'collectionResults' | 'history' | 'results' | 'detail' | 'meetingDetail';
@@ -116,6 +117,7 @@ const DEFAULT_MINUTES_MATCH_MODE: MinutesSearchHistoryItem['matchMode'] = 'exact
 const DEFAULT_MINUTES_OP: MinutesSearchHistoryItem['op'] = 'AND';
 const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
 const DEFAULT_MINUTES_INCLUDE_CHAIR = false;
+const DEFAULT_MINUTES_INCLUDE_SPEAKER_META = false;
 const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
 const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 60;
 const MINUTES_INITIAL_RENDER_LIMIT = 200;
@@ -1063,6 +1065,7 @@ function AppShell() {
   const [minutesOp, setMinutesOp] = useState<'AND' | 'OR'>(DEFAULT_MINUTES_OP);
   const [minutesIncludeReplies, setMinutesIncludeReplies] = useState(DEFAULT_MINUTES_INCLUDE_REPLIES);
   const [minutesIncludeChair, setMinutesIncludeChair] = useState(DEFAULT_MINUTES_INCLUDE_CHAIR);
+  const [minutesIncludeSpeakerMeta, setMinutesIncludeSpeakerMeta] = useState(DEFAULT_MINUTES_INCLUDE_SPEAKER_META);
   const [minutesSortOrder, setMinutesSortOrder] = useState<'new' | 'old'>(DEFAULT_MINUTES_SORT_ORDER);
   const [minutesLimit, setMinutesLimit] = useState<MinutesSearchLimit>(DEFAULT_MINUTES_SEARCH_LIMIT);
   const [minutesPage, setMinutesPage] = useState<MinutesPage>('home');
@@ -1702,6 +1705,7 @@ function AppShell() {
     matchMode: 'exact' | 'related';
     op: 'AND' | 'OR';
     includeReplies: boolean;
+    includeSpeakerMeta: boolean;
     limit: MinutesSearchLimit;
     context: 'none' | 'wide';
     resultMode: 'utterance' | 'meeting' | 'table';
@@ -1718,6 +1722,7 @@ function AppShell() {
     const matchMode = overrides.matchMode ?? minutesMatchMode;
     const op = overrides.op ?? minutesOp;
     const includeReplies = overrides.includeReplies ?? minutesIncludeReplies;
+    const includeSpeakerMeta = overrides.includeSpeakerMeta ?? minutesIncludeSpeakerMeta;
     const limit = overrides.limit ?? minutesLimit;
     const context = overrides.context ?? 'none';
     const resultMode = overrides.resultMode;
@@ -1757,6 +1762,7 @@ function AppShell() {
         matchMode,
         op,
         includeReplies,
+        includeSpeakerMeta,
         createdAt: new Date().toISOString(),
       };
       setMinutesHistory((prev) => {
@@ -1777,6 +1783,7 @@ function AppShell() {
         toDate: toDate || undefined,
         limit,
         context,
+        includeSpeakerMeta: query ? includeSpeakerMeta : false,
       });
       startTransition(() => {
         setMinutesResults(resp.items);
@@ -1808,6 +1815,7 @@ function AppShell() {
     setMinutesMatchMode(item.matchMode);
     setMinutesOp(item.op);
     setMinutesIncludeReplies(item.includeReplies);
+    setMinutesIncludeSpeakerMeta(item.includeSpeakerMeta ?? DEFAULT_MINUTES_INCLUDE_SPEAKER_META);
     if (run) {
       void submitMinutesSearch({
         query: item.query,
@@ -1821,6 +1829,7 @@ function AppShell() {
         matchMode: item.matchMode,
         op: item.op,
         includeReplies: item.includeReplies,
+        includeSpeakerMeta: item.includeSpeakerMeta ?? DEFAULT_MINUTES_INCLUDE_SPEAKER_META,
       });
     }
   }
@@ -1841,6 +1850,7 @@ function AppShell() {
     setMinutesOp(DEFAULT_MINUTES_OP);
     setMinutesIncludeReplies(DEFAULT_MINUTES_INCLUDE_REPLIES);
     setMinutesIncludeChair(DEFAULT_MINUTES_INCLUDE_CHAIR);
+    setMinutesIncludeSpeakerMeta(DEFAULT_MINUTES_INCLUDE_SPEAKER_META);
     setMinutesSortOrder(DEFAULT_MINUTES_SORT_ORDER);
     setMinutesLimit(DEFAULT_MINUTES_SEARCH_LIMIT);
   }
@@ -3031,6 +3041,20 @@ function AppShell() {
           </div>
         </div>
       </div>
+      <label className="flex items-start gap-3 rounded-2xl border bg-[#fbfdfb] px-4 py-3 text-sm">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={minutesIncludeSpeakerMeta}
+          onChange={(e) => setMinutesIncludeSpeakerMeta(e.target.checked)}
+        />
+        <span>
+          <span className="block font-semibold text-[#173f36]">発言者名・役職も検索対象に含める</span>
+          <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+            通常は本文のみを検索します。肩書きや発言者名でも探したい場合だけ有効にしてください。
+          </span>
+        </span>
+      </label>
 
       <label className="space-y-2 text-sm">
         <span className="font-semibold text-[#173f36]">発言区分</span>
@@ -3271,9 +3295,16 @@ function AppShell() {
               <h4 className="mt-1 text-lg font-semibold leading-snug">{result.meetingName || result.dayTitle}</h4>
               <p className="mt-2 text-sm text-muted-foreground">発言{result.order} / {result.speakerTitle} {result.speakerName} / p.{result.pageStart}-{result.pageEnd}</p>
             </div>
-            <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${minutesRoleClass(result.speakerRole)}`}>
-              {minutesRoleLabel(result.speakerRole)}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {result.hitScope === 'speaker' ? (
+                <span className="w-fit rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                  肩書きヒット
+                </span>
+              ) : null}
+              <span className={`w-fit rounded-full border px-3 py-1 text-xs font-semibold ${minutesRoleClass(result.speakerRole)}`}>
+                {minutesRoleLabel(result.speakerRole)}
+              </span>
+            </div>
           </div>
           <p className="mt-4 line-clamp-3 text-sm leading-7 text-muted-foreground">
             {renderHighlightedText(result.snippet, minutesExactHighlightTerms(result), minutesRelatedHighlightTerms(result))}

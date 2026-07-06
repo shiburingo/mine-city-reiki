@@ -212,6 +212,7 @@ export async function searchMinutes(params: {
   toDate?: string;
   limit?: number | 'all';
   context?: 'none' | 'wide';
+  includeSpeakerMeta?: boolean;
 }): Promise<{ items: MinutesSearchResult[]; total: number }> {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
@@ -227,6 +228,7 @@ export async function searchMinutes(params: {
   if (params.toDate) qs.set('toDate', params.toDate);
   if (params.limit) qs.set('limit', String(params.limit));
   if (params.context) qs.set('context', params.context);
+  if (params.includeSpeakerMeta) qs.set('includeSpeakerMeta', 'true');
   const data = await apiFetch<{ items: MinutesSearchResult[]; total: number }>(`/minutes/search?${qs.toString()}`);
   return { items: data.items || [], total: data.total ?? data.items?.length ?? 0 };
 }

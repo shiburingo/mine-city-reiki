@@ -291,6 +291,7 @@ export type MinutesSearchResult = {
   exchange: MinutesExchangeItem[];
   highlightTerms?: string[];
   relatedHighlightTerms?: string[];
+  hitScope?: 'body' | 'speaker';
 };
 
 export type MinutesSpeaker = {

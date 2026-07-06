@@ -323,6 +323,25 @@ def ensure_index(cur, table: str, index_name: str, definition: str) -> None:
             raise
 
 
+def ensure_fulltext_index(cur, table: str, index_name: str, columns: str) -> None:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND INDEX_NAME=%s
+        """,
+        (CFG.db_name, table, index_name),
+    )
+    exists = int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    if not exists:
+        try:
+            cur.execute(f"ALTER TABLE `{table}` ADD FULLTEXT KEY `{index_name}` {columns}")
+        except pymysql.err.OperationalError as exc:
+            if exc.args and exc.args[0] == 1061:
+                return
+            raise
+
+
 def ensure_enum_values(cur, table: str, column: str, values: list[str]) -> None:
     enum_values = ",".join([f"'{v}'" for v in values])
     cur.execute(f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` ENUM({enum_values}) NOT NULL")
@@ -661,12 +680,14 @@ def ensure_schema() -> None:
                   position_top_start FLOAT NOT NULL DEFAULT 0,
                   position_top_end FLOAT NOT NULL DEFAULT 0,
                   text_preview TEXT NOT NULL,
+                  body_search_text LONGTEXT NULL,
                   search_text LONGTEXT NOT NULL,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                   KEY idx_minutes_search_day_order (day_id, utterance_order),
                   KEY idx_minutes_search_date_section_order (meeting_date, section, utterance_order),
                   KEY idx_minutes_search_speaker (speaker_name, day_id, utterance_order),
                   KEY idx_minutes_search_role_title (speaker_role, speaker_title, day_id),
+                  FULLTEXT KEY ft_minutes_search_body_text (body_search_text),
                   FULLTEXT KEY ft_minutes_search_index_text (search_text),
                   CONSTRAINT fk_minutes_search_index_utterance FOREIGN KEY (utterance_id) REFERENCES meeting_utterances(id) ON DELETE CASCADE,
                   CONSTRAINT fk_minutes_search_index_day FOREIGN KEY (day_id) REFERENCES meeting_days(id) ON DELETE CASCADE,
@@ -846,6 +867,7 @@ def ensure_schema() -> None:
                   position_top_end FLOAT NOT NULL DEFAULT 0,
                   text_preview TEXT NOT NULL,
                   display_text LONGTEXT NULL,
+                  body_search_text LONGTEXT NULL,
                   search_text LONGTEXT NOT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   PRIMARY KEY (version_id, utterance_id),
@@ -853,6 +875,7 @@ def ensure_schema() -> None:
                   KEY idx_minutes_compiled_date_section_order (version_id, meeting_date, section, utterance_order),
                   KEY idx_minutes_compiled_speaker (version_id, speaker_name, day_id, utterance_order),
                   KEY idx_minutes_compiled_role_title (version_id, speaker_role, speaker_title, day_id),
+                  FULLTEXT KEY ft_minutes_compiled_body_text (body_search_text),
                   FULLTEXT KEY ft_minutes_compiled_search_text (search_text),
                   CONSTRAINT fk_minutes_compiled_version FOREIGN KEY (version_id) REFERENCES meeting_compile_versions(id) ON DELETE CASCADE,
                   CONSTRAINT fk_minutes_compiled_utterance FOREIGN KEY (utterance_id) REFERENCES meeting_utterances(id) ON DELETE CASCADE,
@@ -861,7 +884,11 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_column(cur, "meeting_utterance_search_index", "body_search_text", "body_search_text LONGTEXT NULL AFTER text_preview")
+            ensure_fulltext_index(cur, "meeting_utterance_search_index", "ft_minutes_search_body_text", "(body_search_text)")
             ensure_column(cur, "meeting_compiled_utterances", "display_text", "display_text LONGTEXT NULL AFTER text_preview")
+            ensure_column(cur, "meeting_compiled_utterances", "body_search_text", "body_search_text LONGTEXT NULL AFTER display_text")
+            ensure_fulltext_index(cur, "meeting_compiled_utterances", "ft_minutes_compiled_body_text", "(body_search_text)")
             seed_law_synonyms(cur)
         conn.commit()
 
@@ -4294,12 +4321,12 @@ def rebuild_meeting_search_index_for_day(cur, day_id: int) -> int:
         INSERT INTO meeting_utterance_search_index
           (utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
            utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
-           page_start, page_end, position_top_start, position_top_end, text_preview, search_text)
+           page_start, page_end, position_top_start, position_top_end, text_preview, body_search_text, search_text)
         SELECT
           u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
           u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
           u.page_start, u.page_end, u.position_top_start, u.position_top_end,
-          SUBSTRING(u.text, 1, %s), u.search_text
+          SUBSTRING(u.text, 1, %s), u.text, u.search_text
         FROM meeting_utterances u
         JOIN meeting_days d ON d.id=u.day_id
         JOIN meeting_sessions s ON s.id=d.session_id
@@ -4318,12 +4345,12 @@ def rebuild_meeting_search_index(cur) -> int:
         INSERT INTO meeting_utterance_search_index
           (utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
            utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
-           page_start, page_end, position_top_start, position_top_end, text_preview, search_text)
+           page_start, page_end, position_top_start, position_top_end, text_preview, body_search_text, search_text)
         SELECT
           u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
           u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
           u.page_start, u.page_end, u.position_top_start, u.position_top_end,
-          SUBSTRING(u.text, 1, %s), u.search_text
+          SUBSTRING(u.text, 1, %s), u.text, u.search_text
         FROM meeting_utterances u
         JOIN meeting_days d ON d.id=u.day_id
         JOIN meeting_sessions s ON s.id=d.session_id
@@ -5176,13 +5203,14 @@ def execute_minutes_compile(trigger: str = "manual") -> dict[str, Any]:
                 INSERT INTO meeting_compiled_utterances
                   (version_id, utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
                    utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
-                   page_start, page_end, position_top_start, position_top_end, text_preview, display_text, search_text)
+                   page_start, page_end, position_top_start, position_top_end, text_preview, display_text, body_search_text, search_text)
                 SELECT
                   %s, u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
                   u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
                   u.page_start, u.page_end, u.position_top_start, u.position_top_end,
                   SUBSTRING(u.text, 1, %s),
                   CONCAT_WS(' ', NULLIF(u.speaker_title, ''), NULLIF(u.speaker_name, ''), u.text),
+                  u.text,
                   u.search_text
                 FROM meeting_utterances u
                 JOIN meeting_days d ON d.id=u.day_id
@@ -5351,6 +5379,20 @@ def minutes_hit_preview_select(text_column: str, terms: list[str], query: str) -
     return sql, params
 
 
+def minutes_hit_scope_select(body_column: str, terms: list[str], query: str, include_speaker_meta: bool) -> tuple[str, list[Any]]:
+    if not include_speaker_meta:
+        return "'body' AS hit_scope", []
+    preview_terms = minutes_preview_terms(terms, query, limit=16)
+    if not preview_terms:
+        return "'body' AS hit_scope", []
+    body_conditions: list[str] = []
+    params: list[Any] = []
+    for term in preview_terms:
+        body_conditions.append(f"LOCATE(%s, {body_column}) > 0")
+        params.append(term)
+    return "CASE WHEN " + " OR ".join(body_conditions) + " THEN 'body' ELSE 'speaker' END AS hit_scope", params
+
+
 MINUTES_SEARCH_PREVIEW_CHARS = 260
 MINUTES_SEARCH_PREVIEW_BACKTRACK = 55
 MINUTES_SEARCH_SNIPPET_CHARS = 180
@@ -5410,6 +5452,7 @@ def append_minutes_query_filter(
     match_mode: str,
     op: str,
     use_fulltext: bool,
+    search_column: str = "u.search_text",
 ) -> None:
     normalized_query = normalize_text(query)
     if not normalized_query:
@@ -5419,7 +5462,7 @@ def append_minutes_query_filter(
         if not boolean_query:
             return
         conditions.append(
-            "MATCH(u.search_text) AGAINST (%s IN BOOLEAN MODE)"
+            f"MATCH({search_column}) AGAINST (%s IN BOOLEAN MODE)"
         )
         params.append(boolean_query)
         # MySQL FULLTEXT/ngram can return broad Japanese candidates for
@@ -5429,7 +5472,7 @@ def append_minutes_query_filter(
         if presence_terms:
             presence_conditions: list[str] = []
             for term in presence_terms:
-                presence_conditions.append("u.search_text LIKE %s")
+                presence_conditions.append(f"{search_column} LIKE %s")
                 params.append(f"%{term}%")
             presence_joiner = " AND " if match_mode == "exact" and op != "OR" else " OR "
             conditions.append("(" + presence_joiner.join(presence_conditions) + ")")
@@ -5441,7 +5484,7 @@ def append_minutes_query_filter(
             return
         term_conditions: list[str] = []
         for term in exact_terms:
-            term_conditions.append("u.search_text LIKE %s")
+            term_conditions.append(f"{search_column} LIKE %s")
             params.append(f"%{term}%")
         joiner = " OR " if op == "OR" else " AND "
         conditions.append("(" + joiner.join(term_conditions) + ")")
@@ -5452,7 +5495,7 @@ def append_minutes_query_filter(
     term_conditions: list[str] = []
     for term in terms:
         like = f"%{term}%"
-        term_conditions.append("u.search_text LIKE %s")
+        term_conditions.append(f"{search_column} LIKE %s")
         params.append(like)
     joiner = " OR " if op == "OR" or match_mode == "related" else " AND "
     conditions.append("(" + joiner.join(term_conditions) + ")")
@@ -5474,10 +5517,11 @@ def build_minutes_where(
     use_fulltext: bool,
     speaker_exact_only: bool = True,
     use_search_index: bool = False,
+    search_column: str = "u.search_text",
 ) -> tuple[str, list[Any]]:
     conditions = ["1=1"]
     params: list[Any] = []
-    append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext)
+    append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext, search_column)
     if speaker:
         if speaker_exact_only:
             conditions.append("u.speaker_name=%s")
@@ -5577,6 +5621,7 @@ def search_minutes_items(
     op: str = "AND",
     limit: int | None = 20,
     context: str = "none",
+    include_speaker_meta: bool = False,
 ) -> list[dict[str, Any]]:
     base_terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
@@ -5599,6 +5644,7 @@ def search_minutes_items(
                 op,
                 str(limit),
                 context,
+                "speaker-meta" if include_speaker_meta else "body-only",
                 str(generation),
             ]
         )
@@ -5612,7 +5658,7 @@ def search_minutes_items(
         use_search_index = context != "wide" and (use_compiled_index or is_meeting_search_index_ready(cur))
         search_index_table = "meeting_compiled_utterances" if use_compiled_index else "meeting_utterance_search_index"
         short_index_term = ""
-        if len(base_terms) == 1:
+        if len(base_terms) == 1 and include_speaker_meta:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
             expanded_terms = {normalize_text(term) for term in terms if normalize_text(term)}
             can_satisfy_with_short_index = match_mode == "exact" or expanded_terms <= {candidate_short_term}
@@ -5633,11 +5679,19 @@ def search_minutes_items(
         attempts = [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
         seen_attempts: set[tuple[bool, bool]] = set()
         compact_results = context != "wide"
+        if use_search_index:
+            body_search_column = "COALESCE(NULLIF(u.body_search_text, ''), u.text_preview)"
+            query_search_column = "u.search_text" if include_speaker_meta else "u.body_search_text"
+            hit_scope_body_column = body_search_column
+        else:
+            body_search_column = "u.text"
+            query_search_column = "u.search_text" if include_speaker_meta else "u.text"
+            hit_scope_body_column = "u.text"
         preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
         index_body_join_sql = ""
         if use_compiled_index and compact_results and preview_anchor:
             text_select, text_select_params = minutes_hit_preview_select(
-                "COALESCE(NULLIF(u.display_text, ''), u.text_preview)",
+                "COALESCE(NULLIF(u.body_search_text, ''), u.text_preview)",
                 terms if match_mode == "related" else base_terms,
                 query,
             )
@@ -5663,6 +5717,12 @@ def search_minutes_items(
         else:
             text_select = "u.text"
             text_select_params = []
+        hit_scope_select, hit_scope_params = minutes_hit_scope_select(
+            hit_scope_body_column,
+            terms if match_mode == "related" else base_terms,
+            query,
+            include_speaker_meta,
+        )
         for use_fulltext, speaker_exact_only in attempts:
             if (use_fulltext, speaker_exact_only) in seen_attempts:
                 continue
@@ -5683,6 +5743,7 @@ def search_minutes_items(
                 use_fulltext,
                 speaker_exact_only=speaker_exact_only,
                 use_search_index=use_search_index,
+                search_column=query_search_column,
             )
             try:
                 limit_clause = "LIMIT %s" if limit is not None else ""
@@ -5692,7 +5753,7 @@ def search_minutes_items(
                     short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.id AND st.term=%s"
                     short_join_params.append(short_index_term)
                 compiled_params = [active_compile_version_id] if use_compiled_index else []
-                query_params = text_select_params + short_join_params + params + compiled_params + ([limit] if limit is not None else [])
+                query_params = text_select_params + hit_scope_params + short_join_params + params + compiled_params + ([limit] if limit is not None else [])
                 if use_search_index:
                     if short_index_term:
                         short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.utterance_id AND st.term=%s"
@@ -5701,7 +5762,7 @@ def search_minutes_items(
                         f"""
                         SELECT
                           u.utterance_id AS id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title,
-                          u.speaker_role, u.speech_type, {text_select}, u.page_start, u.page_end,
+                          u.speaker_role, u.speech_type, {text_select}, {hit_scope_select}, u.page_start, u.page_end,
                           u.position_top_start, u.position_top_end, u.meeting_date, u.day_title, u.pdf_url,
                           u.page_url, u.section, u.meeting_name, u.meeting_name AS session_title
                         FROM {search_index_table} u
@@ -5718,7 +5779,7 @@ def search_minutes_items(
                         f"""
                         SELECT
                           u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
-                          u.speech_type, {text_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+                          u.speech_type, {text_select}, {hit_scope_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
                           d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
                           s.section, s.meeting_name, s.title AS session_title
                         FROM meeting_utterances u
@@ -5785,6 +5846,7 @@ def search_minutes_items(
                     "exchange": exchange,
                     "highlightTerms": base_terms,
                     "relatedHighlightTerms": related_terms,
+                    "hitScope": row.get("hit_scope") or "body",
                 }
             )
         put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, results)
@@ -6894,6 +6956,7 @@ def api_minutes_search():
     context = (request.args.get("context") or "none").strip().lower()
     if context not in {"none", "wide"}:
         context = "none"
+    include_speaker_meta = (request.args.get("includeSpeakerMeta") or "").strip().lower() in {"1", "true", "yes", "on"}
     raw_limit = (request.args.get("limit") or "20").strip().lower()
     if raw_limit in {"all", "unlimited", "0"}:
         limit = None
@@ -6904,7 +6967,7 @@ def api_minutes_search():
             limit = 20
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
-    items = search_minutes_items(query, speaker, role, section, from_date, to_date, years, meeting_id, day_id, match_mode, op, limit, context)
+    items = search_minutes_items(query, speaker, role, section, from_date, to_date, years, meeting_id, day_id, match_mode, op, limit, context, include_speaker_meta)
     query_label = query or " / ".join(
         part
         for part in [
@@ -6934,6 +6997,7 @@ def api_minutes_search():
             "op": op,
             "limit": raw_limit,
             "context": context,
+            "includeSpeakerMeta": include_speaker_meta,
         },
     )
     return jsonify({"items": items, "total": len(items)})
