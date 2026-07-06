@@ -7,7 +7,7 @@ from typing import Iterable
 from .pdf_extractor import ExtractedLine, is_separator_line, normalize_extracted_text_layout
 
 
-ENGINE_VERSION = "speaker-rules-v14"
+ENGINE_VERSION = "speaker-rules-v15"
 SPEAKER_RE = re.compile(r"^○\s*(?P<title>[^（(]{1,40})[（(](?P<name>[^）)]{1,40})(?:君|さん|氏)?[）)]\s*(?P<body>.*)$")
 SPEAKER_NUMBER_TITLE_RE = re.compile(r"([0-9０-９]+|[一二三四五六七八九十]+)(番)?")
 PRINTED_PAGE_NUMBER_RE = re.compile(r"^[－ー―−\-–—]\s*[0-9０-９]{1,4}\s*[－ー―−\-–—]$")
@@ -72,6 +72,17 @@ QUESTION_CLOSING_RE = re.compile(
     r"|"
     r"(この点|その点|この辺|その辺|この件|その件)[^。！？\n]{0,30}(よろしくお願い|お願いし)"
 )
+QUESTION_BODY_RE = re.compile(
+    r"(お尋ね|お伺い|伺い|お聞き|聞かせて|質問させて|質問いた|確認させて|確認したい|"
+    r"教えていただ|御教示|ご教示|いただけないだろうか|いただけないでしょうか|"
+    r"いただければ|事実であるか|どうか|でしょうか|ですか|なのか|なのかな|"
+    r"どこ|どの辺|どのよう|どういう|なぜ|なにゆえ)"
+)
+PROCEDURAL_QUESTION_RE = re.compile(
+    r"(異議.*ありませんか|質疑.*ありませんか|討論.*ありませんか|ほかに.*ありませんか|"
+    r"報告.*お願いいたします|説明.*お願いいたします|分科会長、お願いいたします|部会長、お願いいたします|"
+    r"採決|起立|挙手|休憩|再開|散会|閉会)"
+)
 REPORT_REQUEST_RE = re.compile(
     r"(報告を求め|報告.*お願いいたします|報告.*お願いをいたします|報告.*お願い申し上げます|進捗.*お願いいたします|説明を求め|説明.*お願いいたします|説明.*お願いをいたします|分科会長、お願いいたします|部会長、お願いいたします)"
 )
@@ -132,8 +143,32 @@ def speech_type_from_role(role: str) -> str:
     return "statement"
 
 
+def looks_substantive_question_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text or "")
+    if len(normalized) < 18:
+        return False
+    if ANSWER_OPENING_RE.search(normalized):
+        return False
+    if PROCEDURAL_QUESTION_RE.search(normalized):
+        return False
+    return bool(QUESTION_CLOSING_RE.search(normalized) or QUESTION_BODY_RE.search(normalized))
+
+
+def can_reclassify_to_questioner(current: TaggedUtterance) -> bool:
+    if current.speaker_role in {"answerer", "secretariat"}:
+        return False
+    title = current.speaker_title or ""
+    if current.speaker_role in {"unknown", "questioner", "report"}:
+        return True
+    if current.speaker_role == "chair" and ("議長" in title or "委員長" in title or "座長" in title):
+        return True
+    return False
+
+
 def looks_report_context(previous: TaggedUtterance | None, current: TaggedUtterance, next_item: TaggedUtterance | None) -> bool:
     if current.speaker_role in {"chair", "secretariat"}:
+        return False
+    if current.speaker_role == "questioner" or looks_substantive_question_text(current.text):
         return False
     title = current.speaker_title
     previous_text = previous.text if previous else ""
@@ -175,9 +210,9 @@ def looks_answer_after_chair_prompt(utterances: list[TaggedUtterance], index: in
 
 
 def looks_question_context(current: TaggedUtterance) -> bool:
-    if current.speaker_role != "unknown":
+    if not can_reclassify_to_questioner(current):
         return False
-    return bool(QUESTION_CLOSING_RE.search(current.text))
+    return looks_substantive_question_text(current.text)
 
 
 def looks_followup_question_context(utterances: list[TaggedUtterance], index: int) -> bool:
@@ -204,7 +239,11 @@ def apply_dialogue_state_machine(utterances: list[TaggedUtterance]) -> list[Tagg
             awaiting_report = bool(REPORT_REQUEST_RE.search(utterance.text))
             continue
         if awaiting_report and utterance.speaker_role not in {"chair", "secretariat"}:
-            if utterance.speaker_role in {"unknown", "answerer"} and (REPORT_BODY_RE.search(utterance.text) or REPORT_CLOSING_RE.search(utterance.text)):
+            if (
+                utterance.speaker_role in {"unknown", "answerer"}
+                and not looks_substantive_question_text(utterance.text)
+                and (REPORT_BODY_RE.search(utterance.text) or REPORT_CLOSING_RE.search(utterance.text))
+            ):
                 utterance.speaker_role = "report"
                 utterance.speaker_group = "報告"
                 utterance.speech_type = "report"
@@ -257,11 +296,12 @@ def reclassify_contextual_utterances(utterances: list[TaggedUtterance]) -> list[
             utterance.confidence = max(utterance.confidence, 0.84)
             utterance.reason = "chair prompt follows question and body indicates answer"
         if looks_question_context(utterance):
+            previous_role = utterance.speaker_role
             utterance.speaker_role = "questioner"
             utterance.speaker_group = "議員・委員"
             utterance.speech_type = "question"
-            utterance.confidence = max(utterance.confidence, 0.82)
-            utterance.reason = "closing phrase asks for answer"
+            utterance.confidence = max(utterance.confidence, 0.87 if previous_role in {"chair", "report"} else 0.82)
+            utterance.reason = "body asks a substantive question"
         if looks_followup_question_context(utterances, index):
             utterance.speaker_role = "questioner"
             utterance.speaker_group = "議員・委員"

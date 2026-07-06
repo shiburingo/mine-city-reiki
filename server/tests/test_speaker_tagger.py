@@ -161,6 +161,32 @@ class SpeakerTaggerTest(unittest.TestCase):
         self.assertEqual(utterances[1].speaker_role, "report")
         self.assertEqual(utterances[1].speech_type, "report")
 
+    def test_substantive_question_by_deputy_chair_is_questioner(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○副委員長（杉山武志君） その辺を含めた作業にしていただけないだろうかっていうお尋ねと、予定されておったアルバイトの方が直前に取り消されて慌てられたというお話を伺っております。"),
+            line(2, "他の職員が応援に入ったというお話も聞いておりますが、事実であるかどうかちょっとお伺いできればと思います。"),
+            line(3, "○観光総務課長（荒川逸男君） 者数58万4,000人、大正洞1万人、景清洞1万9,000人の入洞客数を見込んだものでございます。"),
+        ])
+        self.assertEqual(utterances[0].speaker_role, "questioner")
+        self.assertEqual(utterances[0].speaker_group, "議員・委員")
+        self.assertEqual(utterances[0].speech_type, "question")
+        self.assertEqual(utterances[1].speaker_role, "answerer")
+
+    def test_substantive_question_is_not_overridden_by_report_flow(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○委員長（山田太郎君） 説明をお願いいたします。"),
+            line(2, "○副委員長（杉山武志君） どの辺の経費に含まれているのかなと思いまして質問させていただきました。"),
+        ])
+        self.assertEqual(utterances[1].speaker_role, "questioner")
+        self.assertEqual(utterances[1].speech_type, "question")
+
+    def test_procedural_chair_question_remains_proceeding(self) -> None:
+        utterances = tag_utterances([
+            line(1, "○委員長（山田太郎君） ほかに質疑はありませんか。"),
+        ])
+        self.assertEqual(utterances[0].speaker_role, "chair")
+        self.assertEqual(utterances[0].speech_type, "proceeding")
+
 
 if __name__ == "__main__":
     unittest.main()
