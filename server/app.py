@@ -845,6 +845,7 @@ def ensure_schema() -> None:
                   position_top_start FLOAT NOT NULL DEFAULT 0,
                   position_top_end FLOAT NOT NULL DEFAULT 0,
                   text_preview TEXT NOT NULL,
+                  display_text LONGTEXT NULL,
                   search_text LONGTEXT NOT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   PRIMARY KEY (version_id, utterance_id),
@@ -860,6 +861,7 @@ def ensure_schema() -> None:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
             )
+            ensure_column(cur, "meeting_compiled_utterances", "display_text", "display_text LONGTEXT NULL AFTER text_preview")
             seed_law_synonyms(cur)
         conn.commit()
 
@@ -5174,12 +5176,14 @@ def execute_minutes_compile(trigger: str = "manual") -> dict[str, Any]:
                 INSERT INTO meeting_compiled_utterances
                   (version_id, utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title, pdf_url, page_url,
                    utterance_order, speaker_name, speaker_title, speaker_role, speaker_group, speech_type,
-                   page_start, page_end, position_top_start, position_top_end, text_preview, search_text)
+                   page_start, page_end, position_top_start, position_top_end, text_preview, display_text, search_text)
                 SELECT
                   %s, u.id, u.day_id, d.session_id, d.meeting_date, s.section, s.meeting_name, d.title, d.pdf_url, d.page_url,
                   u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role, u.speaker_group, u.speech_type,
                   u.page_start, u.page_end, u.position_top_start, u.position_top_end,
-                  SUBSTRING(u.text, 1, %s), u.search_text
+                  SUBSTRING(u.text, 1, %s),
+                  CONCAT_WS(' ', NULLIF(u.speaker_title, ''), NULLIF(u.speaker_name, ''), u.text),
+                  u.search_text
                 FROM meeting_utterances u
                 JOIN meeting_days d ON d.id=u.day_id
                 JOIN meeting_sessions s ON s.id=d.session_id
@@ -5626,7 +5630,7 @@ def search_minutes_items(
         index_body_join_sql = ""
         if use_compiled_index and compact_results and preview_anchor:
             text_select, text_select_params = minutes_hit_preview_select(
-                "u.search_text",
+                "COALESCE(NULLIF(u.display_text, ''), u.text_preview)",
                 terms if match_mode == "related" else base_terms,
                 query,
             )
