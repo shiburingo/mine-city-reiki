@@ -707,11 +707,11 @@ function renderHighlightedText(text: string, terms: string[], relatedTerms: stri
   const relatedLowerTerms = new Set(filteredRelatedTerms.map((term) => term.toLocaleLowerCase()));
   return text.split(pattern).map((part, index) => (
     exactLowerTerms.has(part.toLocaleLowerCase()) ? (
-      <mark key={`${index}-${part}`} className="rounded bg-yellow-200/90 px-0.5 text-inherit">
+      <mark key={`${index}-${part}`} className="inline min-w-0 break-words rounded bg-yellow-200/90 px-0.5 text-inherit [overflow-wrap:anywhere] [word-break:break-word]">
         {part}
       </mark>
     ) : relatedLowerTerms.has(part.toLocaleLowerCase()) ? (
-      <mark key={`${index}-${part}`} className="rounded bg-emerald-200/90 px-0.5 text-inherit ring-1 ring-emerald-300/70">
+      <mark key={`${index}-${part}`} className="inline min-w-0 break-words rounded bg-emerald-200/90 px-0.5 text-inherit ring-1 ring-emerald-300/70 [overflow-wrap:anywhere] [word-break:break-word]">
         {part}
       </mark>
     ) : part
@@ -2766,12 +2766,12 @@ function AppShell() {
   }
 
   const renderMinutesTableCard = (table: MinutesTable, compact = false): JSX.Element => (
-    <div key={`table-${table.id}`} className={`rounded-2xl border bg-[#fbfdfb] ${compact ? 'p-3' : 'p-4'}`}>
-      <p className={`mb-2 font-semibold ${compact ? 'text-xs' : 'text-sm'}`}>
+    <div key={`table-${table.id}`} className={`min-w-0 max-w-full rounded-2xl border bg-[#fbfdfb] ${compact ? 'p-3' : 'p-4'}`}>
+      <p className={`mb-2 min-w-0 break-words font-semibold [overflow-wrap:anywhere] ${compact ? 'text-xs' : 'text-sm'}`}>
         {formatMinutesTableCaption(table)}
       </p>
       <div
-        className={`overflow-auto ${compact ? 'text-xs' : 'text-sm'} [&_table]:w-full [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1`}
+        className={`max-w-full overflow-auto ${compact ? 'text-xs' : 'text-sm'} [&_table]:w-full [&_td]:break-words [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_td]:[overflow-wrap:anywhere] [&_th]:break-words [&_th]:border [&_th]:bg-[#e6efe9] [&_th]:px-2 [&_th]:py-1 [&_th]:[overflow-wrap:anywhere]`}
         dangerouslySetInnerHTML={{ __html: table.html }}
       />
     </div>
@@ -2784,9 +2784,9 @@ function AppShell() {
   const renderMinutesText = (text: string, className = 'mt-3 text-base leading-8', highlightTerms: string[] = [], relatedHighlightTerms: string[] = []): JSX.Element => {
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     return (
-      <div className={`${className} min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere]`}>
+      <div className={`${className} min-w-0 max-w-full whitespace-normal break-words [overflow-wrap:anywhere] [word-break:break-word]`}>
         {lines.map((line, index) => (
-          <p key={`${index}-${line.slice(0, 16)}`} className="m-0 min-w-0 max-w-full break-words [overflow-wrap:anywhere]" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
+          <p key={`${index}-${line.slice(0, 16)}`} className="m-0 min-w-0 max-w-full break-words [overflow-wrap:anywhere] [word-break:break-word]" style={{ textIndent: isMinutesStructuralLine(line) ? '0' : '1em' }}>
             {renderHighlightedText(line, highlightTerms, relatedHighlightTerms)}
           </p>
         ))}
@@ -3432,7 +3432,7 @@ function AppShell() {
   );
 
   const renderMinutesResultsPage = (): JSX.Element => (
-    <div className="space-y-5 p-6">
+    <div className="min-w-0 space-y-5 p-4 sm:p-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
           <button
@@ -3616,8 +3616,8 @@ function AppShell() {
             </div>
           </div>
 
-          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-            <div className="min-w-0 overflow-hidden rounded-3xl border bg-white">
+          <div className="grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1fr)_18rem] 2xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="min-w-0 max-w-full overflow-hidden rounded-3xl border bg-white">
               <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
@@ -3644,13 +3644,13 @@ function AppShell() {
                   </div>
                 </div>
               </div>
-              <div ref={minutesReaderScrollRef} className="max-h-[72vh] min-w-0 overflow-auto p-4 [overflow-anchor:none] sm:p-5">
+              <div ref={minutesReaderScrollRef} className="max-h-[72vh] min-w-0 max-w-full overflow-auto overflow-x-hidden p-4 [overflow-anchor:none] sm:p-5">
                 {minutesReaderMode === 'unit' ? (
                   selectedMinutesUnitItems.map((item) => (
                     <article
                       id={`minutes-utterance-${item.id}`}
                       key={item.id}
-                      className={`mb-4 min-w-0 rounded-2xl border p-4 last:mb-0 sm:p-5 ${
+                      className={`mb-4 min-w-0 max-w-full rounded-2xl border p-4 last:mb-0 sm:p-5 ${
                         item.id === selectedMinutesResult.id ? 'border-[#2f765e] bg-[#edf7ef]' : 'bg-[#fbfdfb]'
                       }`}
                     >
@@ -3697,7 +3697,7 @@ function AppShell() {
                             });
                             setMinutesReaderMode('unit');
                           }}
-                          className={`block w-full rounded-xl border px-4 py-3 text-left text-sm hover:border-[#79b28d] ${
+                          className={`block min-w-0 w-full max-w-full rounded-xl border px-4 py-3 text-left text-sm hover:border-[#79b28d] ${
                             item.id === selectedMinutesResult.id
                               ? 'border-[#2f765e] bg-[#edf7ef] ring-2 ring-[#2f765e]/10'
                               : selectedDayMinutesHitIds.has(item.id)
@@ -3718,7 +3718,7 @@ function AppShell() {
                   ) : <p className="text-sm text-muted-foreground">発言一覧を読み込み中です。</p>
                 ) : null}
                 {minutesReaderMode === 'full' ? (
-                  <div className="space-y-6">
+                  <div className="min-w-0 max-w-full space-y-6">
                     {currentDayContentItems.map((contentItem) => {
                       if (contentItem.type === 'table') {
                         return renderMinutesTableCard(contentItem.table);
@@ -3729,7 +3729,7 @@ function AppShell() {
                         <article
                           id={`minutes-utterance-${item.id}`}
                           key={`utterance-${item.id}`}
-                          className={`rounded-2xl border p-4 ${
+                          className={`min-w-0 max-w-full rounded-2xl border p-4 ${
                             item.id === selectedMinutesResult.id
                               ? 'border-[#2f765e] bg-[#edf7ef] ring-2 ring-[#2f765e]/10'
                               : isHit
@@ -3779,7 +3779,7 @@ function AppShell() {
               </div>
             </div>
 
-            <aside className="rounded-3xl border bg-white p-4">
+            <aside className="min-w-0 rounded-3xl border bg-white p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-[#173f36]">検索ヒット箇所</p>
@@ -3832,7 +3832,7 @@ function AppShell() {
       ? selectedDay.contentItems
       : selectedDay?.utterances.map((utterance) => ({ type: 'utterance' as const, utterance })) || [];
     return (
-      <div className="space-y-5 p-6">
+      <div className="min-w-0 space-y-5 p-4 sm:p-6">
         <div className="rounded-3xl border bg-white p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
@@ -3865,8 +3865,8 @@ function AppShell() {
         ) : !detail ? (
           <div className="rounded-3xl border bg-white p-8 text-center text-muted-foreground">会議録を取得できませんでした。</div>
         ) : (
-          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
-            <div className="min-w-0 overflow-hidden rounded-3xl border bg-white">
+          <div className="grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1fr)_17rem] 2xl:grid-cols-[minmax(0,1fr)_20rem]">
+            <div className="min-w-0 max-w-full overflow-hidden rounded-3xl border bg-white">
               <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
@@ -3889,15 +3889,15 @@ function AppShell() {
                   </div>
                 </div>
               </div>
-              <div className="max-h-[76vh] min-w-0 overflow-auto p-4 sm:p-6">
+              <div className="max-h-[76vh] min-w-0 max-w-full overflow-auto overflow-x-hidden p-4 sm:p-6">
                 {!selectedDay ? (
                   <p className="text-sm text-muted-foreground">表示できる日程がありません。</p>
                 ) : (
-                  <section key={selectedDay.id} className="pb-2">
+                  <section key={selectedDay.id} className="min-w-0 max-w-full pb-2">
                     <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-sm font-semibold text-[#2f765e]">{selectedDay.meetingDate || '日付なし'}</p>
-                        <h4 className="mt-1 text-xl font-semibold">{selectedDay.title || detail.meetingName}</h4>
+                        <h4 className="mt-1 min-w-0 break-words text-xl font-semibold [overflow-wrap:anywhere]">{selectedDay.title || detail.meetingName}</h4>
                         <p className="mt-1 text-sm text-muted-foreground">{selectedDay.utterances.length.toLocaleString()}発言 / p.{selectedDay.pageCount || '-'}</p>
                       </div>
                       {selectedDay.pdfUrl ? (
@@ -3906,14 +3906,14 @@ function AppShell() {
                         </a>
                       ) : null}
                     </div>
-                    <div className="space-y-7">
+                    <div className="min-w-0 max-w-full space-y-7">
                       {selectedDayContentItems.map((contentItem) => {
                         if (contentItem.type === 'table') {
                           return renderMinutesTableCard(contentItem.table);
                         }
                         const item = contentItem.utterance;
                         return (
-                          <article key={`utterance-${item.id}`} className="min-w-0 border-b border-dashed pb-5 last:border-b-0 [content-visibility:auto] [contain-intrinsic-size:0_16rem]">
+                          <article key={`utterance-${item.id}`} className="min-w-0 max-w-full border-b border-dashed pb-5 last:border-b-0 [content-visibility:auto] [contain-intrinsic-size:0_16rem]">
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                               <h5 className="min-w-0 break-words text-base font-semibold [overflow-wrap:anywhere]">{item.speakerTitle} {item.speakerName}</h5>
                               <span className={`w-fit rounded-full border px-2 py-0.5 text-xs ${minutesRoleClass(item.speakerRole)}`}>{minutesRoleLabel(item.speakerRole)}</span>
@@ -3929,7 +3929,7 @@ function AppShell() {
               </div>
             </div>
 
-            <aside className="space-y-4">
+            <aside className="min-w-0 space-y-4">
               <div className="rounded-3xl border bg-white p-4">
                 <p className="text-sm font-semibold text-[#173f36]">会議内情報</p>
                 <dl className="mt-3 space-y-2 text-sm">
@@ -3965,10 +3965,10 @@ function AppShell() {
   };
 
   const renderMinutesWorkspace = (): JSX.Element => {
-    if (minutesPage === 'collectionResults') return <section className="minutes-print-page overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
-    if (minutesPage === 'results') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
-    if (minutesPage === 'detail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
-    if (minutesPage === 'meetingDetail') return <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
+    if (minutesPage === 'collectionResults') return <section className="minutes-print-page min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
+    if (minutesPage === 'results') return <section className="min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
+    if (minutesPage === 'detail') return <section className="min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
+    if (minutesPage === 'meetingDetail') return <section className="min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
 
     return (
       <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">
