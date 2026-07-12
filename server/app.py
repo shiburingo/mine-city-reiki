@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import html as html_lib
 import hashlib
 import io
@@ -90,6 +91,7 @@ class AppConfig:
     meili_url: str
     meili_key: str
     meili_index: str
+    meili_minutes_index: str
     meili_enabled: bool
 
 
@@ -127,6 +129,7 @@ def load_config() -> AppConfig:
         meili_url=_env("MEILI_URL", "http://127.0.0.1:7700").rstrip("/"),
         meili_key=_env("MEILI_MASTER_KEY", ""),
         meili_index=_env("MEILI_INDEX", "mine_city_reiki_articles"),
+        meili_minutes_index=_env("MEILI_MINUTES_INDEX", "mine_city_meeting_minutes"),
         meili_enabled=_env_bool("MEILI_ENABLED", False),
     )
 
@@ -161,6 +164,8 @@ LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
 LOCAL_SCORED_SYNONYM_CACHE: tuple[float, dict[str, list[tuple[str, int]]]] | None = None
 LOCAL_COMPILED_SYNONYM_CACHE: tuple[float, float, dict[str, list[tuple[str, int]]]] | None = None
 SYNC_THREAD_LOCK = threading.Lock()
+MINUTES_CURSOR_PAGE_SIZE = 60
+MINUTES_CURSOR_MAX_PAGE_SIZE = 200
 MINUTES_SHORT_TERM_INDEX_VERSION = "short-term-v1"
 BUILTIN_SYNONYM_GROUPS = [
     # ── 法令の種類・総称 ──────────────────────────────
@@ -1713,13 +1718,13 @@ def question_search_profile(query: str, cur=None) -> dict[str, list[str]]:
     }
 
 
-def expand_keywords_with_synonyms(
+def expand_keywords_with_scores(
     keywords: list[str],
     cur=None,
     max_keywords: int = 16,
     min_priority: int = 0,
-) -> list[str]:
-    expanded: list[str] = []
+) -> list[tuple[str, int]]:
+    expanded: list[tuple[str, int]] = []
     seen: set[str] = set()
     synonym_lookup = scored_synonyms_map(cur)
     for keyword in keywords:
@@ -1727,16 +1732,35 @@ def expand_keywords_with_synonyms(
         if not token or token in seen:
             continue
         seen.add(token)
-        expanded.append(token)
+        expanded.append((token, 1000))
         for synonym, priority in synonym_lookup.get(token, []):
             if priority < min_priority:
                 continue
             if synonym and synonym not in seen:
                 seen.add(synonym)
-                expanded.append(synonym)
+                # The source term must always outrank a related term. This keeps
+                # broad dictionary edges from displacing a direct text match.
+                expanded.append((synonym, min(900, max(1, int(priority)) * 10)))
         if len(expanded) >= max_keywords:
             break
     return expanded[:max_keywords]
+
+
+def expand_keywords_with_synonyms(
+    keywords: list[str],
+    cur=None,
+    max_keywords: int = 16,
+    min_priority: int = 0,
+) -> list[str]:
+    return [
+        term
+        for term, _score in expand_keywords_with_scores(
+            keywords,
+            cur=cur,
+            max_keywords=max_keywords,
+            min_priority=min_priority,
+        )
+    ]
 
 
 def related_keywords_for_highlight(keywords: list[str], expanded_keywords: list[str]) -> list[str]:
@@ -1980,6 +2004,78 @@ def configure_meili_index() -> None:
         "searchCutoffMs": 150,
     }
     task = meili_request("PATCH", f"/indexes/{urllib.parse.quote(CFG.meili_index)}/settings", settings, timeout=10)
+    wait_meili_task(meili_task_uid(task), timeout_seconds=60)
+
+
+def configure_meili_minutes_index() -> None:
+    """Create the separate, compiled meeting-minutes search index."""
+    if not meili_is_enabled():
+        return
+    index = urllib.parse.quote(CFG.meili_minutes_index)
+    try:
+        meili_request("GET", f"/indexes/{index}", timeout=5)
+    except Exception:
+        task = meili_request(
+            "POST",
+            "/indexes",
+            {"uid": CFG.meili_minutes_index, "primaryKey": "id"},
+            timeout=5,
+        )
+        wait_meili_task(meili_task_uid(task), timeout_seconds=30)
+    settings = {
+        "searchableAttributes": [
+            "bodyKeyText",
+            "speakerKeyText",
+            "bodyPlain",
+            "speakerSearchText",
+            "meetingSearchText",
+        ],
+        "displayedAttributes": [
+            "id",
+            "compileVersionId",
+            "utteranceId",
+            "dayId",
+            "sessionId",
+            "meetingDate",
+            "calendarYear",
+            "section",
+            "meetingName",
+            "dayTitle",
+            "pdfUrl",
+            "pageUrl",
+            "utteranceOrder",
+            "speakerName",
+            "speakerTitle",
+            "speakerRole",
+            "speechType",
+            "pageStart",
+            "pageEnd",
+            "positionTopStart",
+            "positionTopEnd",
+            "textPreview",
+            "bodyPlain",
+        ],
+        "filterableAttributes": [
+            "compileVersionId",
+            "calendarYear",
+            "meetingDate",
+            "section",
+            "sessionId",
+            "dayId",
+            "speakerName",
+            "speakerRole",
+            "speechType",
+        ],
+        "sortableAttributes": ["meetingDate", "utteranceOrder"],
+        "rankingRules": ["words", "attributeRank", "wordPosition", "exactness"],
+        "typoTolerance": {"enabled": False},
+        "proximityPrecision": "byAttribute",
+        "pagination": {"maxTotalHits": 200000},
+        "faceting": {"maxValuesPerFacet": 1000},
+        "prefixSearch": "disabled",
+        "searchCutoffMs": 180,
+    }
+    task = meili_request("PATCH", f"/indexes/{index}/settings", settings, timeout=10)
     wait_meili_task(meili_task_uid(task), timeout_seconds=60)
 
 
@@ -3187,6 +3283,98 @@ def reset_meili_index() -> None:
         # Deleting a missing index should not block a rebuild.
         pass
     configure_meili_index()
+
+
+def meili_minutes_record_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Project one compiled utterance into the minimal record used at search time."""
+    body = clean_link_marker_fragments(row.get("body_search_text") or row.get("display_text") or "")
+    speaker_name = row.get("speaker_name") or ""
+    speaker_title = row.get("speaker_title") or ""
+    meeting_name = row.get("meeting_name") or ""
+    day_title = row.get("day_title") or ""
+    meeting_date = str(row.get("meeting_date") or "")
+    return {
+        "id": f"v{int(row['version_id'])}u{int(row['utterance_id'])}",
+        "compileVersionId": int(row["version_id"]),
+        "utteranceId": int(row["utterance_id"]),
+        "dayId": int(row["day_id"]),
+        "sessionId": int(row["session_id"]),
+        "meetingDate": meeting_date,
+        "calendarYear": int(meeting_date[:4]) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", meeting_date) else 0,
+        "section": row.get("section") or "",
+        "meetingName": meeting_name,
+        "dayTitle": day_title,
+        "pdfUrl": row.get("pdf_url") or "",
+        "pageUrl": row.get("page_url") or "",
+        "utteranceOrder": int(row.get("utterance_order") or 0),
+        "speakerName": speaker_name,
+        "speakerTitle": speaker_title,
+        "speakerRole": row.get("speaker_role") or "unknown",
+        "speechType": row.get("speech_type") or "statement",
+        "pageStart": int(row.get("page_start") or 0),
+        "pageEnd": int(row.get("page_end") or 0),
+        "positionTopStart": float(row.get("position_top_start") or 0),
+        "positionTopEnd": float(row.get("position_top_end") or 0),
+        "textPreview": row.get("text_preview") or "",
+        "bodyKeyText": build_meili_ja_key_text([body], max_terms=120, max_ngram=14),
+        "speakerKeyText": build_meili_ja_key_text([speaker_name, speaker_title], max_terms=80, max_ngram=24),
+        "bodyPlain": body,
+        "speakerSearchText": " ".join(part for part in [speaker_title, speaker_name] if part),
+        "meetingSearchText": " ".join(part for part in [meeting_name, day_title, row.get("section") or ""] if part),
+    }
+
+
+def reset_meili_minutes_index() -> None:
+    if not meili_is_enabled():
+        return
+    index = urllib.parse.quote(CFG.meili_minutes_index)
+    try:
+        task = meili_request("DELETE", f"/indexes/{index}", timeout=10)
+        wait_meili_task(meili_task_uid(task), timeout_seconds=90)
+    except Exception:
+        # A missing index is a normal first-run condition.
+        pass
+    configure_meili_minutes_index()
+
+
+def index_meili_minutes_compile(version_id: int, batch_size: int = 800, reset: bool = True) -> int:
+    """Index a complete compiled generation without touching the currently active one."""
+    if not meili_is_enabled():
+        return 0
+    if reset:
+        reset_meili_minutes_index()
+    else:
+        configure_meili_minutes_index()
+    indexed = 0
+    last_utterance_id = 0
+    while True:
+        with db_cursor() as (_, cur):
+            cur.execute(
+                """
+                SELECT version_id, utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title,
+                       pdf_url, page_url, utterance_order, speaker_name, speaker_title, speaker_role, speech_type,
+                       page_start, page_end, position_top_start, position_top_end, text_preview, display_text, body_search_text
+                FROM meeting_compiled_utterances
+                WHERE version_id=%s AND utterance_id>%s
+                ORDER BY utterance_id ASC
+                LIMIT %s
+                """,
+                (version_id, last_utterance_id, batch_size),
+            )
+            rows = cur.fetchall() or []
+        if not rows:
+            break
+        records = [meili_minutes_record_from_row(row) for row in rows]
+        task = meili_request(
+            "POST",
+            f"/indexes/{urllib.parse.quote(CFG.meili_minutes_index)}/documents",
+            records,
+            timeout=60,
+        )
+        wait_meili_task(meili_task_uid(task), timeout_seconds=180)
+        indexed += len(records)
+        last_utterance_id = int(rows[-1]["utterance_id"])
+    return indexed
 
 
 def maybe_backfill_search_terms() -> None:
@@ -5028,7 +5216,7 @@ def serialize_minutes_content_items(utterances: list[dict[str, Any]], tables: li
     return items
 
 
-MINUTES_COMPILE_ENGINE_VERSION = f"minutes-compile:{APP_VERSION}:{SPEAKER_ENGINE_VERSION}:{TABLE_ENGINE_VERSION}"
+MINUTES_COMPILE_ENGINE_VERSION = f"minutes-compile:{APP_VERSION}:{SPEAKER_ENGINE_VERSION}:{TABLE_ENGINE_VERSION}:meili-v1"
 
 
 def active_minutes_compile_version_id(cur) -> int | None:
@@ -5290,6 +5478,20 @@ def execute_minutes_compile(trigger: str = "manual") -> dict[str, Any]:
                 update_sync_run_summary(cur, run_id, summary)
                 cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
 
+        if meili_is_enabled():
+            try:
+                with db_cursor(commit=True) as (_, cur):
+                    summary["progressLabel"] = "会議録検索インデックスを作成しています"
+                    update_sync_run_summary(cur, run_id, summary)
+                    cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
+                indexed = index_meili_minutes_compile(version_id)
+                summary["meiliMinutesIndexed"] = indexed
+            except Exception as exc:
+                # The compiled MySQL generation remains a complete fallback. Do not make
+                # a transient search-engine failure take the minutes reader offline.
+                summary["meiliMinutesError"] = str(exc)
+                app.logger.exception("Meeting minutes Meilisearch indexing failed; MySQL fallback remains active")
+
         with db_cursor(commit=True) as (_, cur):
             summary["progressCurrent"] = summary["progressTotal"]
             summary["progressLabel"] = "会議録コンパイルを有効化しています"
@@ -5393,9 +5595,82 @@ def minutes_hit_scope_select(body_column: str, terms: list[str], query: str, inc
     return "CASE WHEN " + " OR ".join(body_conditions) + " THEN 'body' ELSE 'speaker' END AS hit_scope", params
 
 
+def minutes_match_score_select(search_column: str, weighted_terms: list[tuple[str, int]]) -> tuple[str, list[Any]]:
+    """Score related terms after FULLTEXT narrows the candidate set."""
+    if not weighted_terms:
+        return "0 AS match_score", []
+    cases: list[str] = []
+    params: list[Any] = []
+    for term, score in weighted_terms[:16]:
+        normalized = normalize_text(term)
+        if not normalized:
+            continue
+        cases.append(f"CASE WHEN LOCATE(%s, {search_column}) > 0 THEN %s ELSE 0 END")
+        params.extend([normalized, int(score)])
+    if not cases:
+        return "0 AS match_score", []
+    return "(" + " + ".join(cases) + ") AS match_score", params
+
+
 MINUTES_SEARCH_PREVIEW_CHARS = 260
 MINUTES_SEARCH_PREVIEW_BACKTRACK = 55
 MINUTES_SEARCH_SNIPPET_CHARS = 180
+
+
+def encode_minutes_cursor(row: dict[str, Any]) -> str:
+    payload = {
+        "d": str(row.get("meeting_date") or row.get("meetingDate") or ""),
+        "day": int(row.get("day_id") or row.get("dayId") or 0),
+        "o": int(row.get("utterance_order") or row.get("order") or 0),
+        "u": int(row.get("utterance_id") or row.get("id") or 0),
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_minutes_cursor(value: str) -> dict[str, Any] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8")
+        payload = json.loads(decoded)
+        meeting_date = str(payload.get("d") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", meeting_date):
+            return None
+        return {
+            "meeting_date": meeting_date,
+            "day_id": max(0, int(payload.get("day") or 0)),
+            "utterance_order": max(0, int(payload.get("o") or 0)),
+            "utterance_id": max(0, int(payload.get("u") or 0)),
+        }
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def minutes_cursor_filter(
+    cursor: dict[str, Any] | None,
+    use_search_index: bool,
+) -> tuple[str, list[Any]]:
+    if not cursor:
+        return "", []
+    date_column = "u.meeting_date" if use_search_index else "d.meeting_date"
+    day_column = "u.day_id" if use_search_index else "u.day_id"
+    id_column = "u.utterance_id" if use_search_index else "u.id"
+    return (
+        f"""(
+          {date_column} < %s
+          OR ({date_column}=%s AND {day_column}>%s)
+          OR ({date_column}=%s AND {day_column}=%s AND u.utterance_order>%s)
+          OR ({date_column}=%s AND {day_column}=%s AND u.utterance_order=%s AND {id_column}>%s)
+        )""",
+        [
+            cursor["meeting_date"],
+            cursor["meeting_date"], cursor["day_id"],
+            cursor["meeting_date"], cursor["day_id"], cursor["utterance_order"],
+            cursor["meeting_date"], cursor["day_id"], cursor["utterance_order"], cursor["utterance_id"],
+        ],
+    )
 
 
 EXACT_EXECUTIVE_TITLE_FILTERS = {
@@ -5607,6 +5882,175 @@ def fetch_minutes_exchange_windows(cur, rows: list[dict[str, Any]]) -> dict[int,
     return grouped
 
 
+def meili_minutes_search_index(payload: dict[str, Any]) -> dict[str, Any]:
+    return meili_request(
+        "POST",
+        f"/indexes/{urllib.parse.quote(CFG.meili_minutes_index)}/search",
+        payload,
+        timeout=5,
+    )
+
+
+def meili_minutes_filters(
+    compile_version_id: int,
+    speaker: str,
+    role: str,
+    section: str,
+    from_date: str,
+    to_date: str,
+    years: list[int] | None,
+    meeting_id: int | None,
+    day_id: int | None,
+) -> list[str] | None:
+    if role.startswith("title:"):
+        # Partial role matching remains on MySQL because Meilisearch filters are
+        # exact by design. Returning None keeps behavior identical during rollout.
+        return None
+    filters = [f"compileVersionId = {int(compile_version_id)}"]
+    if speaker:
+        filters.append(f"speakerName = {json.dumps(speaker, ensure_ascii=False)}")
+    if role and role != "all":
+        filters.append(f"speakerRole = {json.dumps(role, ensure_ascii=False)}")
+    if section and section != "all":
+        filters.append(f"section = {json.dumps(section, ensure_ascii=False)}")
+    if meeting_id:
+        filters.append(f"sessionId = {int(meeting_id)}")
+    if day_id:
+        filters.append(f"dayId = {int(day_id)}")
+    if years:
+        filters.append("calendarYear IN [" + ",".join(str(int(year)) for year in years) + "]")
+    if from_date:
+        filters.append(f"meetingDate >= {json.dumps(from_date)}")
+    if to_date:
+        filters.append(f"meetingDate <= {json.dumps(to_date)}")
+    return filters
+
+
+def meili_minutes_hit_text(hit: dict[str, Any], include_speaker_meta: bool) -> str:
+    values = [str(hit.get("bodyPlain") or "")]
+    if include_speaker_meta:
+        values.extend([str(hit.get("speakerTitle") or ""), str(hit.get("speakerName") or "")])
+    return normalize_text(" ".join(values)).lower()
+
+
+def meili_minutes_hit_matches_exact(hit: dict[str, Any], terms: list[str], include_speaker_meta: bool) -> bool:
+    haystack = meili_minutes_hit_text(hit, include_speaker_meta)
+    return all(normalize_text(term).lower() in haystack for term in terms if normalize_text(term))
+
+
+def serialize_meili_minutes_hit(
+    hit: dict[str, Any],
+    base_terms: list[str],
+    related_terms: list[str],
+    include_speaker_meta: bool,
+) -> dict[str, Any]:
+    body = clean_link_marker_fragments(hit.get("bodyPlain") or hit.get("textPreview") or "")
+    body_lower = normalize_text(body).lower()
+    exact_terms = [term for term in base_terms if normalize_text(term).lower() in body_lower]
+    related = [term for term in related_terms if normalize_text(term).lower() in body_lower]
+    hit_scope = "body" if exact_terms or related or not include_speaker_meta else "speaker"
+    return {
+        "id": int(hit.get("utteranceId") or 0),
+        "dayId": int(hit.get("dayId") or 0),
+        "meetingDate": hit.get("meetingDate") or None,
+        "section": hit.get("section") or "",
+        "meetingName": hit.get("meetingName") or "",
+        "dayTitle": hit.get("dayTitle") or "",
+        "pdfUrl": hit.get("pdfUrl") or "",
+        "pageUrl": hit.get("pageUrl") or "",
+        "speakerName": hit.get("speakerName") or "",
+        "speakerTitle": hit.get("speakerTitle") or "",
+        "speakerRole": hit.get("speakerRole") or "unknown",
+        "speechType": hit.get("speechType") or "statement",
+        "order": int(hit.get("utteranceOrder") or 0),
+        "pageStart": int(hit.get("pageStart") or 0),
+        "pageEnd": int(hit.get("pageEnd") or 0),
+        "positionTopStart": float(hit.get("positionTopStart") or 0),
+        "positionTopEnd": float(hit.get("positionTopEnd") or 0),
+        "snippet": minutes_snippet(body, [*base_terms, *related_terms]),
+        "text": body,
+        "exchange": [],
+        "highlightTerms": base_terms,
+        "relatedHighlightTerms": related_terms,
+        "hitScope": hit_scope,
+    }
+
+
+def search_minutes_meili_items(
+    compile_version_id: int,
+    query: str,
+    base_terms: list[str],
+    weighted_terms: list[tuple[str, int]],
+    speaker: str,
+    role: str,
+    section: str,
+    from_date: str,
+    to_date: str,
+    years: list[int] | None,
+    meeting_id: int | None,
+    day_id: int | None,
+    match_mode: str,
+    include_speaker_meta: bool,
+    limit: int,
+) -> list[dict[str, Any]] | None:
+    if not meili_is_enabled() or not query:
+        return None
+    filters = meili_minutes_filters(
+        compile_version_id, speaker, role, section, from_date, to_date, years, meeting_id, day_id
+    )
+    if filters is None:
+        return None
+    search_terms = [term for term, _score in weighted_terms]
+    related_terms = related_keywords_for_highlight(base_terms, search_terms) if match_mode == "related" else []
+    attributes = ["bodyKeyText"]
+    if include_speaker_meta:
+        attributes.append("speakerKeyText")
+    candidate_limit = min(800, max(limit * 4, 120))
+    key_query = build_meili_query_key_text(search_terms)
+    if not key_query:
+        return None
+    payload: dict[str, Any] = {
+        "q": key_query,
+        "limit": candidate_limit,
+        "matchingStrategy": "all" if match_mode == "exact" else "last",
+        "attributesToSearchOn": attributes,
+        "filter": filters,
+        "attributesToRetrieve": [
+            "utteranceId", "dayId", "meetingDate", "section", "meetingName", "dayTitle", "pdfUrl", "pageUrl",
+            "utteranceOrder", "speakerName", "speakerTitle", "speakerRole", "speechType", "pageStart", "pageEnd",
+            "positionTopStart", "positionTopEnd", "textPreview", "bodyPlain",
+        ],
+    }
+    result = meili_minutes_search_index(payload)
+    hits = result.get("hits") or []
+    if not hits and match_mode == "exact":
+        # The key field is an accelerator. The plain-text fallback preserves
+        # exact recall for unusually long terms outside its compact n-gram set.
+        payload["q"] = " ".join(base_terms)
+        payload["attributesToSearchOn"] = ["bodyPlain", "speakerSearchText"] if include_speaker_meta else ["bodyPlain"]
+        result = meili_minutes_search_index(payload)
+        hits = result.get("hits") or []
+    if match_mode == "exact":
+        hits = [hit for hit in hits if meili_minutes_hit_matches_exact(hit, base_terms, include_speaker_meta)]
+    else:
+        weights = {normalize_text(term).lower(): score for term, score in weighted_terms}
+        scored_hits: list[tuple[int, dict[str, Any]]] = []
+        for hit in hits:
+            haystack = meili_minutes_hit_text(hit, include_speaker_meta)
+            score = sum(weight for term, weight in weights.items() if term and term in haystack)
+            if score:
+                scored_hits.append((score, hit))
+        # Stable passes retain chronological order inside the same relevance band.
+        scored_hits.sort(key=lambda item: int(item[1].get("utteranceOrder") or 0))
+        scored_hits.sort(key=lambda item: str(item[1].get("meetingDate") or ""), reverse=True)
+        scored_hits.sort(key=lambda item: -item[0])
+        hits = [hit for _score, hit in scored_hits]
+    return [
+        serialize_meili_minutes_hit(hit, base_terms, related_terms, include_speaker_meta)
+        for hit in hits[:limit]
+    ]
+
+
 def search_minutes_items(
     query: str = "",
     speaker: str = "",
@@ -5622,10 +6066,14 @@ def search_minutes_items(
     limit: int | None = 20,
     context: str = "none",
     include_speaker_meta: bool = False,
+    cursor: dict[str, Any] | None = None,
+    prefer_meili: bool = True,
+    stable_order: bool = False,
 ) -> list[dict[str, Any]]:
     base_terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
-        terms = expand_keywords_with_synonyms(base_terms, cur=cur, max_keywords=14, min_priority=5) if match_mode == "related" else base_terms
+        weighted_terms = expand_keywords_with_scores(base_terms, cur=cur, max_keywords=14, min_priority=5) if match_mode == "related" else [(term, 1000) for term in base_terms]
+        terms = [term for term, _score in weighted_terms]
         related_terms = related_keywords_for_highlight(base_terms, terms) if match_mode == "related" else []
         generation = get_cache_generation(cur)
         cache_key = make_cache_key(
@@ -5645,6 +6093,8 @@ def search_minutes_items(
                 str(limit),
                 context,
                 "speaker-meta" if include_speaker_meta else "body-only",
+                encode_minutes_cursor(cursor) if cursor else "",
+                "stable-order" if stable_order else "relevance-order",
                 str(generation),
             ]
         )
@@ -5657,6 +6107,30 @@ def search_minutes_items(
         use_compiled_index = active_compile_version_id is not None
         use_search_index = context != "wide" and (use_compiled_index or is_meeting_search_index_ready(cur))
         search_index_table = "meeting_compiled_utterances" if use_compiled_index else "meeting_utterance_search_index"
+        if prefer_meili and cursor is None and use_compiled_index and context != "wide" and limit is not None:
+            try:
+                meili_items = search_minutes_meili_items(
+                    active_compile_version_id,
+                    query,
+                    base_terms,
+                    weighted_terms,
+                    speaker,
+                    role,
+                    section,
+                    from_date,
+                    to_date,
+                    years,
+                    meeting_id,
+                    day_id,
+                    match_mode,
+                    include_speaker_meta,
+                    limit,
+                )
+                if meili_items:
+                    put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, meili_items)
+                    return meili_items
+            except Exception:
+                app.logger.warning("Meeting minutes Meilisearch fallback to MySQL", exc_info=True)
         short_index_term = ""
         if len(base_terms) == 1 and include_speaker_meta:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
@@ -5723,6 +6197,10 @@ def search_minutes_items(
             query,
             include_speaker_meta,
         )
+        match_score_select, match_score_params = minutes_match_score_select(
+            query_search_column,
+            weighted_terms if match_mode == "related" else [],
+        )
         for use_fulltext, speaker_exact_only in attempts:
             if (use_fulltext, speaker_exact_only) in seen_attempts:
                 continue
@@ -5745,6 +6223,10 @@ def search_minutes_items(
                 use_search_index=use_search_index,
                 search_column=query_search_column,
             )
+            cursor_where, cursor_params = minutes_cursor_filter(cursor, use_search_index)
+            if cursor_where:
+                where = f"{where} AND {cursor_where}"
+                params.extend(cursor_params)
             try:
                 limit_clause = "LIMIT %s" if limit is not None else ""
                 short_join_sql = ""
@@ -5753,7 +6235,10 @@ def search_minutes_items(
                     short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.id AND st.term=%s"
                     short_join_params.append(short_index_term)
                 compiled_params = [active_compile_version_id] if use_compiled_index else []
-                query_params = text_select_params + hit_scope_params + short_join_params + params + compiled_params + ([limit] if limit is not None else [])
+                query_params = match_score_params + text_select_params + hit_scope_params + short_join_params + params + compiled_params + ([limit] if limit is not None else [])
+                sort_sql = (
+                    "match_score DESC, " if match_mode == "related" and not stable_order else ""
+                ) + "u.meeting_date DESC, u.day_id ASC, u.utterance_order ASC, u.utterance_id ASC"
                 if use_search_index:
                     if short_index_term:
                         short_join_sql = "JOIN meeting_utterance_short_terms st ON st.utterance_id=u.utterance_id AND st.term=%s"
@@ -5762,14 +6247,14 @@ def search_minutes_items(
                         f"""
                         SELECT
                           u.utterance_id AS id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title,
-                          u.speaker_role, u.speech_type, {text_select}, {hit_scope_select}, u.page_start, u.page_end,
+                          u.speaker_role, u.speech_type, {match_score_select}, {text_select}, {hit_scope_select}, u.page_start, u.page_end,
                           u.position_top_start, u.position_top_end, u.meeting_date, u.day_title, u.pdf_url,
                           u.page_url, u.section, u.meeting_name, u.meeting_name AS session_title
                         FROM {search_index_table} u
                         {index_body_join_sql}
                         {short_join_sql}
                         WHERE {where}{compiled_where}
-                        ORDER BY u.meeting_date DESC, u.section ASC, u.utterance_order ASC
+                        ORDER BY {sort_sql}
                         {limit_clause}
                         """,
                         tuple(query_params),
@@ -5779,7 +6264,7 @@ def search_minutes_items(
                         f"""
                         SELECT
                           u.id, u.day_id, u.utterance_order, u.speaker_name, u.speaker_title, u.speaker_role,
-                          u.speech_type, {text_select}, {hit_scope_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
+                          u.speech_type, {match_score_select}, {text_select}, {hit_scope_select}, u.page_start, u.page_end, u.position_top_start, u.position_top_end,
                           d.meeting_date, d.title AS day_title, d.pdf_url, d.page_url,
                           s.section, s.meeting_name, s.title AS session_title
                         FROM meeting_utterances u
@@ -5787,7 +6272,7 @@ def search_minutes_items(
                         JOIN meeting_days d ON d.id=u.day_id
                         JOIN meeting_sessions s ON s.id=d.session_id
                         WHERE {where}
-                        ORDER BY d.meeting_date DESC, s.section ASC, u.utterance_order ASC
+                        ORDER BY {("match_score DESC, " if match_mode == "related" and not stable_order else "")}d.meeting_date DESC, u.day_id ASC, u.utterance_order ASC, u.id ASC
                         {limit_clause}
                         """,
                         tuple(query_params),
@@ -6958,8 +7443,17 @@ def api_minutes_search():
         context = "none"
     include_speaker_meta = (request.args.get("includeSpeakerMeta") or "").strip().lower() in {"1", "true", "yes", "on"}
     raw_limit = (request.args.get("limit") or "20").strip().lower()
-    if raw_limit in {"all", "unlimited", "0"}:
-        limit = None
+    is_unlimited = raw_limit in {"all", "unlimited", "0"}
+    cursor = decode_minutes_cursor(request.args.get("cursor") or "")
+    page_size_raw = request.args.get("pageSize") or str(MINUTES_CURSOR_PAGE_SIZE)
+    try:
+        page_size = max(1, min(MINUTES_CURSOR_MAX_PAGE_SIZE, int(page_size_raw)))
+    except ValueError:
+        page_size = MINUTES_CURSOR_PAGE_SIZE
+    if is_unlimited:
+        # Keep the semantics of an unrestricted result set without serializing
+        # every matching utterance before the first screen can render.
+        limit = page_size + 1
     else:
         try:
             limit = max(1, min(200, int(raw_limit)))
@@ -6967,7 +7461,29 @@ def api_minutes_search():
             limit = 20
     if not query and not speaker and not role and not section and not meeting_id and not day_id:
         return jsonify({"items": [], "total": 0})
-    items = search_minutes_items(query, speaker, role, section, from_date, to_date, years, meeting_id, day_id, match_mode, op, limit, context, include_speaker_meta)
+    items = search_minutes_items(
+        query=query,
+        speaker=speaker,
+        role=role,
+        section=section,
+        from_date=from_date,
+        to_date=to_date,
+        years=years,
+        meeting_id=meeting_id,
+        day_id=day_id,
+        match_mode=match_mode,
+        op=op,
+        limit=limit,
+        context=context,
+        include_speaker_meta=include_speaker_meta,
+        cursor=cursor,
+        prefer_meili=not is_unlimited,
+        stable_order=is_unlimited,
+    )
+    has_more = is_unlimited and len(items) > page_size
+    if has_more:
+        items = items[:page_size]
+    next_cursor = encode_minutes_cursor(items[-1]) if has_more and items else None
     query_label = query or " / ".join(
         part
         for part in [
@@ -7000,7 +7516,12 @@ def api_minutes_search():
             "includeSpeakerMeta": include_speaker_meta,
         },
     )
-    return jsonify({"items": items, "total": len(items)})
+    return jsonify({
+        "items": items,
+        "total": None if is_unlimited else len(items),
+        "hasMore": has_more,
+        "nextCursor": next_cursor,
+    })
 
 
 @app.get('/api/minutes/meetings')

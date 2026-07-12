@@ -26,9 +26,10 @@ MEILI_ENABLED=1
 MEILI_URL=http://127.0.0.1:7700
 MEILI_MASTER_KEY=...
 MEILI_INDEX=mine_city_reiki_articles
+MEILI_MINUTES_INDEX=mine_city_meeting_minutes
 ```
 
-After enabling Meilisearch, run a full reindex from the Settings screen or `POST /api/reindex/run` so the Meilisearch index is rebuilt from MySQL.
+After enabling Meilisearch, run a full reindex from the Settings screen or `POST /api/reindex/run` so the law index is rebuilt from MySQL. Run a meeting-minutes compile from Settings after deployment so the separate meeting-minutes index is rebuilt from the active compiled generation.
 
 ## Git 管理の前提
 

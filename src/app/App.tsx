@@ -1078,7 +1078,10 @@ function AppShell() {
   const [minutesExpandedResultIds, setMinutesExpandedResultIds] = useState<Set<number>>(new Set());
   const [minutesHistory, setMinutesHistory] = useState<MinutesSearchHistoryItem[]>(() => loadMinutesSearchHistory());
   const [minutesResults, setMinutesResults] = useState<MinutesSearchResult[]>([]);
-  const [minutesTotal, setMinutesTotal] = useState(0);
+  const [minutesTotal, setMinutesTotal] = useState<number | null>(0);
+  const [minutesNextCursor, setMinutesNextCursor] = useState<string | null>(null);
+  const [minutesHasMore, setMinutesHasMore] = useState(false);
+  const [minutesLoadingMore, setMinutesLoadingMore] = useState(false);
   const [minutesVisibleResultCount, setMinutesVisibleResultCount] = useState(0);
   const [minutesSearching, setMinutesSearching] = useState(false);
   const [minutesSyncing, setMinutesSyncing] = useState(false);
@@ -1784,11 +1787,14 @@ function AppShell() {
         limit,
         context,
         includeSpeakerMeta: query ? includeSpeakerMeta : false,
+        pageSize: limit === 'all' ? DEFAULT_MINUTES_SEARCH_LIMIT : undefined,
       });
       startTransition(() => {
         setMinutesResults(resp.items);
         setMinutesTotal(resp.total);
-        setMinutesVisibleResultCount(limit === 'all' ? Math.min(MINUTES_INITIAL_RENDER_LIMIT, resp.items.length) : resp.items.length);
+        setMinutesNextCursor(resp.nextCursor);
+        setMinutesHasMore(resp.hasMore);
+        setMinutesVisibleResultCount(resp.items.length);
         setSelectedMinutesResult(resp.items[0] || null);
         setMinutesExpandedResultIds(new Set());
         setMinutesResultMode(resultMode ?? ((speaker || role !== 'all') ? 'meeting' : 'utterance'));
@@ -1799,6 +1805,44 @@ function AppShell() {
       setGlobalError(err instanceof Error ? err.message : '会議録検索に失敗しました。');
     } finally {
       setMinutesSearching(false);
+    }
+  }
+
+  async function loadMoreMinutesResults() {
+    if (minutesLimit !== 'all' || !minutesNextCursor || minutesLoadingMore) return;
+    setMinutesLoadingMore(true);
+    try {
+      const resp = await searchMinutes({
+        q: minutesQuery.trim() || undefined,
+        speaker: minutesSpeaker.trim() || undefined,
+        role: minutesRole,
+        section: minutesSection,
+        meetingId: minutesMeetingId || undefined,
+        years: minutesSearchYears,
+        matchMode: minutesMatchMode,
+        op: minutesOp,
+        fromDate: minutesFromDate || undefined,
+        toDate: minutesToDate || undefined,
+        limit: 'all',
+        cursor: minutesNextCursor,
+        pageSize: MINUTES_RENDER_BATCH_SIZE,
+        includeSpeakerMeta: minutesQuery.trim() ? minutesIncludeSpeakerMeta : false,
+      });
+      startTransition(() => {
+        setMinutesResults((previous) => {
+          const merged = new Map(previous.map((item) => [item.id, item]));
+          for (const item of resp.items) merged.set(item.id, item);
+          return [...merged.values()];
+        });
+        setMinutesTotal(resp.total);
+        setMinutesNextCursor(resp.nextCursor);
+        setMinutesHasMore(resp.hasMore);
+        setMinutesVisibleResultCount((current) => current + resp.items.length);
+      });
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '会議録検索結果の追加取得に失敗しました。');
+    } finally {
+      setMinutesLoadingMore(false);
     }
   }
 
@@ -1858,6 +1902,9 @@ function AppShell() {
   function resetMinutesSearchResults(resultMode: 'utterance' | 'meeting' | 'table' = 'utterance') {
     setMinutesResults([]);
     setMinutesTotal(0);
+    setMinutesNextCursor(null);
+    setMinutesHasMore(false);
+    setMinutesLoadingMore(false);
     setMinutesVisibleResultCount(0);
     setMinutesExpandedResultIds(new Set());
     setSelectedMinutesResult(null);
@@ -3347,7 +3394,7 @@ function AppShell() {
             <p className="text-sm font-semibold text-[#2f765e]">発言集</p>
             <h3 className="mt-1 text-2xl font-semibold leading-tight">{minutesSpeaker || '発言者未指定'}の発言集</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              {minutesTotal.toLocaleString()}件ヒット / 表示発言 {minutesCollectionItemCount.toLocaleString()}件
+              {(minutesTotal ?? minutesResults.length).toLocaleString()}件ヒット / 表示発言 {minutesCollectionItemCount.toLocaleString()}件
               {minutesIncludeReplies ? ' / 関連する質問・答弁を含む' : ' / 指定発言者のみ'}
               {minutesIncludeChair ? ' / 議事進行を含む' : ''}
             </p>
@@ -3445,7 +3492,14 @@ function AppShell() {
           </button>
           <div>
             <p className="text-sm font-semibold text-[#2f765e]">検索結果</p>
-            <h3 className="text-2xl font-semibold">{minutesTotal.toLocaleString()}件</h3>
+            <h3 className="text-2xl font-semibold">
+              {minutesTotal === null ? `${minutesResults.length.toLocaleString()}件以上` : `${minutesTotal.toLocaleString()}件`}
+            </h3>
+            {minutesLimit === 'all' ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                全件検索中。初回結果を優先表示し、続きを段階的に読み込みます。
+              </p>
+            ) : null}
             {minutesResults.length > 0 && minutesVisibleResultCount < sortedMinutesResults.length ? (
               <p className="mt-1 text-xs text-muted-foreground">
                 表示中 {Math.min(minutesVisibleResultCount, sortedMinutesResults.length).toLocaleString()} / {sortedMinutesResults.length.toLocaleString()}件
@@ -3544,6 +3598,18 @@ function AppShell() {
                   className="rounded-2xl border bg-white px-6 py-3 text-sm font-semibold text-[#37564d] shadow-sm hover:border-[#79b28d] hover:bg-[#edf6f0]"
                 >
                   さらに{Math.min(MINUTES_RENDER_BATCH_SIZE, sortedMinutesResults.length - minutesVisibleResultCount).toLocaleString()}件表示
+                </button>
+              </div>
+            ) : null}
+            {minutesHasMore ? (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  disabled={minutesLoadingMore}
+                  onClick={() => void loadMoreMinutesResults()}
+                  className="rounded-2xl bg-[#173f36] px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-[#245649] disabled:cursor-wait disabled:opacity-60"
+                >
+                  {minutesLoadingMore ? '続きを読み込み中…' : '続きを表示'}
                 </button>
               </div>
             ) : null}

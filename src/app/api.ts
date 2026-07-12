@@ -211,9 +211,11 @@ export async function searchMinutes(params: {
   fromDate?: string;
   toDate?: string;
   limit?: number | 'all';
+  cursor?: string;
+  pageSize?: number;
   context?: 'none' | 'wide';
   includeSpeakerMeta?: boolean;
-}): Promise<{ items: MinutesSearchResult[]; total: number }> {
+}): Promise<{ items: MinutesSearchResult[]; total: number | null; hasMore: boolean; nextCursor: string | null }> {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
   if (params.speaker) qs.set('speaker', params.speaker);
@@ -227,10 +229,17 @@ export async function searchMinutes(params: {
   if (params.fromDate) qs.set('fromDate', params.fromDate);
   if (params.toDate) qs.set('toDate', params.toDate);
   if (params.limit) qs.set('limit', String(params.limit));
+  if (params.cursor) qs.set('cursor', params.cursor);
+  if (params.pageSize) qs.set('pageSize', String(params.pageSize));
   if (params.context) qs.set('context', params.context);
   if (params.includeSpeakerMeta) qs.set('includeSpeakerMeta', 'true');
-  const data = await apiFetch<{ items: MinutesSearchResult[]; total: number }>(`/minutes/search?${qs.toString()}`);
-  return { items: data.items || [], total: data.total ?? data.items?.length ?? 0 };
+  const data = await apiFetch<{ items: MinutesSearchResult[]; total: number | null; hasMore?: boolean; nextCursor?: string | null }>(`/minutes/search?${qs.toString()}`);
+  return {
+    items: data.items || [],
+    total: data.total ?? null,
+    hasMore: Boolean(data.hasMore),
+    nextCursor: data.nextCursor || null,
+  };
 }
 
 export async function fetchMinutesSpeakers(params: {
