@@ -6133,14 +6133,13 @@ def search_minutes_items(
             except Exception:
                 app.logger.warning("Meeting minutes Meilisearch fallback to MySQL", exc_info=True)
         short_index_term = ""
-        if len(base_terms) == 1 and include_speaker_meta:
+        if len(base_terms) == 1:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
             expanded_terms = {normalize_text(term) for term in terms if normalize_text(term)}
             can_satisfy_with_short_index = match_mode == "exact" or expanded_terms <= {candidate_short_term}
             if (
                 candidate_short_term
                 and can_satisfy_with_short_index
-                and is_minutes_short_term_index_ready(cur, candidate_short_term)
             ):
                 short_index_term = candidate_short_term
         use_fulltext_options = (
@@ -6224,6 +6223,11 @@ def search_minutes_items(
                 use_search_index=use_search_index,
                 search_column=query_search_column,
             )
+            if short_index_term and not include_speaker_meta:
+                # The short-term index includes metadata as well. Restrict its
+                # already-small candidate set to the body for the default mode.
+                where = f"{where} AND {body_search_column} LIKE %s"
+                params.append(f"%{short_index_term}%")
             cursor_where, cursor_params = minutes_cursor_filter(cursor, use_search_index)
             if cursor_where:
                 where = f"{where} AND {cursor_where}"
