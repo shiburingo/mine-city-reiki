@@ -6095,6 +6095,7 @@ def search_minutes_items(
                 "speaker-meta" if include_speaker_meta else "body-only",
                 encode_minutes_cursor(cursor) if cursor else "",
                 "stable-order" if stable_order else "relevance-order",
+                "meili" if prefer_meili else "mysql",
                 str(generation),
             ]
         )
