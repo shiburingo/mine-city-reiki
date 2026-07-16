@@ -3935,7 +3935,8 @@ def execute_internet_dictionary_update(
                 wikidata_term_limit=wikidata_term_limit,
                 progress=_progress,
             )
-            summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
+        summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
+        with db_cursor(commit=True) as (_, cur):
             update_sync_run_summary(cur, run_id, summary)
             summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
             bump_cache_generation(cur)
