@@ -104,6 +104,20 @@ python3 server/run_due_sync.py --force
 同スクリプトは DB の `sync_settings` を参照し、設定した「月次実行日時」を過ぎていればクロールを実行します。
 実行結果は `sync_runs` テーブルに記録されます。
 
+### 関連語辞書の日次成長
+
+`mine-city-reiki-dictionary.timer` は毎日04:00〜05:00に次を直列実行します。
+
+1. 新規会議録発言から関連語候補を増分作成
+2. 日本語Wikipediaリダイレクトを前回カーソルから巡回
+3. 日本語Wiktionaryリダイレクトを前回カーソルから巡回
+4. 現在の辞書から未調査語を選びWikidata日本語別名で補強
+5. 検索用辞書を再コンパイル
+
+取得結果は累積され、通信失敗や取得件数の変動で既存辞書は削除されません。管理画面には50万語・100万語目標の進捗、ソース別巡回件数、新規発見数、ライセンス、最終成功・エラーを表示します。
+
+既定の日次予算はWikipedia 5,000件、Wiktionary 2,000件、Wikidata 25語です。API負荷や実行時間に応じて `/etc/mine-city-reiki-api.env` で調整します。
+
 ---
 
 ## 手動同期
@@ -156,6 +170,12 @@ DB_PASSWORD=...
 SECRET_KEY=...
 AUTH_VERIFY_URL=http://localhost:8787/api/auth/verify
 CORS_ORIGINS=https://your-domain.example.com
+REIKI_DAILY_DICTIONARY_MEDIAWIKI=1
+REIKI_DAILY_DICTIONARY_WIKIPEDIA_LIMIT=5000
+REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT=2000
+REIKI_DAILY_DICTIONARY_WIKIDATA=1
+REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS=25
+REIKI_DICTIONARY_USER_AGENT=mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)
 ```
 
 ---
@@ -168,6 +188,10 @@ journalctl -u mine-city-reiki-api -n 100 -f
 
 # 同期ログ
 journalctl -u mine-city-reiki-sync -n 50
+
+# 関連語辞書の日次ログ・次回実行
+journalctl -u mine-city-reiki-dictionary -n 100
+systemctl list-timers mine-city-reiki-dictionary.timer --all
 ```
 
 ---

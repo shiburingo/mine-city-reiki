@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import itertools
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -14,6 +15,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -24,10 +26,17 @@ WORDNET_SQLITE_ASSET = "wnjpn.db.gz"
 WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/download/v{WORDNET_FALLBACK_VERSION}/{WORDNET_SQLITE_ASSET}"
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
-INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-03"
+INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-17"
 COMPILED_DICTIONARY_VERSION = "compiled-synonyms-2026-07-03"
 WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_REQUEST_INTERVAL_SECONDS = 0.8
+MEDIAWIKI_REQUEST_INTERVAL_SECONDS = 0.15
+THESAURUS_TARGET_TERM_COUNT = 500_000
+THESAURUS_ULTIMATE_TERM_COUNT = 1_000_000
+WIKIMEDIA_USER_AGENT = os.getenv(
+    "REIKI_DICTIONARY_USER_AGENT",
+    "mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)",
+)
 DEFAULT_COMPILED_DICTIONARY_PATH = Path(__file__).resolve().parent / "data" / "compiled_synonyms.json"
 
 MIN_TERM_LEN = 2
@@ -85,7 +94,40 @@ CURATED_SYNONYM_GROUPS: list[tuple[int, list[str]]] = [
     (8, ["養鱒場", "養ます場", "養魚場", "鱒養殖"]),
 ]
 
-_LAST_WIKIDATA_REQUEST_AT = 0.0
+_LAST_REQUEST_AT_BY_HOST: dict[str, float] = {}
+
+
+@dataclass(frozen=True)
+class DictionaryObservation:
+    canonical: str
+    synonym: str
+    source_item_id: str = ""
+    source_url: str = ""
+    metadata: dict[str, Any] | None = None
+
+
+MEDIAWIKI_REDIRECT_SOURCES: tuple[dict[str, Any], ...] = (
+    {
+        "sourceKey": "jawikipedia-redirects",
+        "displayName": "日本語Wikipediaリダイレクト",
+        "sourceType": "wikipedia",
+        "endpoint": "https://ja.wikipedia.org/w/api.php",
+        "pageBaseUrl": "https://ja.wikipedia.org/wiki/",
+        "licenseName": "CC BY-SA 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "priority": 9,
+    },
+    {
+        "sourceKey": "jawiktionary-redirects",
+        "displayName": "日本語Wiktionaryリダイレクト",
+        "sourceType": "wiktionary",
+        "endpoint": "https://ja.wiktionary.org/w/api.php",
+        "pageBaseUrl": "https://ja.wiktionary.org/wiki/",
+        "licenseName": "CC BY-SA 4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "priority": 12,
+    },
+)
 
 MINUTES_PROPER_NOUN_PATTERN = re.compile(
     r"[一-龯ぁ-んァ-ヴー]{2,30}"
@@ -138,33 +180,40 @@ def build_curated_synonym_pairs() -> tuple[dict[int, set[tuple[str, str]]], dict
     }
 
 
-def _fetch_json(url: str, params: dict[str, str] | None = None, timeout: int = 20) -> Any:
-    global _LAST_WIKIDATA_REQUEST_AT
+def _fetch_json(
+    url: str,
+    params: dict[str, str] | None = None,
+    timeout: int = 20,
+    *,
+    min_interval: float = WIKIDATA_REQUEST_INTERVAL_SECONDS,
+) -> Any:
     full_url = url
     if params:
         full_url = f"{url}?{urllib.parse.urlencode(params)}"
+    host = urllib.parse.urlparse(url).netloc
     request = urllib.request.Request(
         full_url,
         headers={
             "Accept": "application/json",
-            "User-Agent": "mine-city-reiki-dictionary-engine/0.1",
+            "User-Agent": WIKIMEDIA_USER_AGENT,
         },
     )
-    for attempt in range(2):
-        wait = WIKIDATA_REQUEST_INTERVAL_SECONDS - (time.monotonic() - _LAST_WIKIDATA_REQUEST_AT)
+    for attempt in range(3):
+        last_request_at = _LAST_REQUEST_AT_BY_HOST.get(host, 0.0)
+        wait = min_interval - (time.monotonic() - last_request_at)
         if wait > 0:
             time.sleep(wait)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                _LAST_WIKIDATA_REQUEST_AT = time.monotonic()
+                _LAST_REQUEST_AT_BY_HOST[host] = time.monotonic()
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            _LAST_WIKIDATA_REQUEST_AT = time.monotonic()
-            if exc.code != 429 or attempt >= 1:
+            _LAST_REQUEST_AT_BY_HOST[host] = time.monotonic()
+            if exc.code not in {429, 503} or attempt >= 2:
                 raise
             retry_after = exc.headers.get("Retry-After")
-            delay = float(retry_after) if retry_after and retry_after.isdigit() else 1.5 * (attempt + 1)
-            time.sleep(min(delay, 5.0))
+            delay = float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * (attempt + 1)
+            time.sleep(min(delay, 15.0))
 
 
 def cjk_chars(value: str) -> set[str]:
@@ -246,12 +295,12 @@ def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set
 def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 30) -> tuple[set[tuple[str, str]], dict[str, Any]]:
     peer_lookup = curated_peer_terms()
     default_seeds = [terms[0] for _, terms in CURATED_SYNONYM_GROUPS if terms]
+    candidate_terms = list(seed_terms) if seed_terms is not None else (
+        default_seeds + ["介護", "福祉", "年金", "住民票", "戸籍", "税金", "観光", "防災", "農業", "水道", "下水道"]
+    )
     seeds = list(dict.fromkeys(
         normalize_term(term)
-        for term in (
-            list(seed_terms or default_seeds)
-            + ["介護", "福祉", "年金", "住民票", "戸籍", "税金", "観光", "防災", "農業", "水道", "下水道"]
-        )
+        for term in candidate_terms
         if is_good_term(term)
     ))[:max_terms]
     pairs: set[tuple[str, str]] = set()
@@ -269,6 +318,109 @@ def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: 
         for left, right in itertools.combinations(sorted(aliases), 2):
             add_pair(pairs, left, right)
     return pairs, {"seedTerms": len(seeds), "fetchedTerms": fetched, "failedTerms": failed, "pairs": len(pairs)}
+
+
+def _chunks(values: list[int], size: int) -> Iterable[list[int]]:
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
+def fetch_mediawiki_redirect_observations(
+    source: dict[str, Any],
+    *,
+    cursor: str = "",
+    max_items: int = 1000,
+) -> tuple[list[DictionaryObservation], dict[str, Any]]:
+    endpoint = str(source["endpoint"])
+    page_base_url = str(source["pageBaseUrl"])
+    next_cursor = cursor
+    scanned = 0
+    requests = 0
+    observations: dict[tuple[str, str], DictionaryObservation] = {}
+    cycle_complete = False
+
+    while scanned < max_items:
+        limit = min(500, max_items - scanned)
+        params = {
+            "action": "query",
+            "format": "json",
+            "formatversion": "2",
+            "list": "allredirects",
+            "arnamespace": "0",
+            "arlimit": str(limit),
+            "arprop": "ids|title|fragment",
+            "maxlag": "5",
+        }
+        if next_cursor:
+            params["arcontinue"] = next_cursor
+        payload = _fetch_json(
+            endpoint,
+            params,
+            timeout=30,
+            min_interval=MEDIAWIKI_REQUEST_INTERVAL_SECONDS,
+        )
+        requests += 1
+        rows = (payload.get("query") or {}).get("allredirects") or []
+        if not rows:
+            cycle_complete = not bool((payload.get("continue") or {}).get("arcontinue"))
+            next_cursor = str((payload.get("continue") or {}).get("arcontinue") or "")
+            break
+
+        scanned += len(rows)
+        source_ids = [int(row.get("fromid") or 0) for row in rows if int(row.get("fromid") or 0) > 0]
+        source_titles: dict[int, str] = {}
+        for id_chunk in _chunks(source_ids, 50):
+            page_payload = _fetch_json(
+                endpoint,
+                {
+                    "action": "query",
+                    "format": "json",
+                    "formatversion": "2",
+                    "pageids": "|".join(str(value) for value in id_chunk),
+                    "prop": "info",
+                    "maxlag": "5",
+                },
+                timeout=30,
+                min_interval=MEDIAWIKI_REQUEST_INTERVAL_SECONDS,
+            )
+            requests += 1
+            for page in (page_payload.get("query") or {}).get("pages") or []:
+                page_id = int(page.get("pageid") or 0)
+                title = str(page.get("title") or "")
+                if page_id and title:
+                    source_titles[page_id] = title
+
+        for row in rows:
+            source_id = int(row.get("fromid") or 0)
+            alias = source_titles.get(source_id, "")
+            target = str(row.get("title") or "")
+            canonical = normalize_term(target)
+            synonym = normalize_term(alias)
+            if not is_good_term(canonical) or not is_good_term(synonym) or canonical == synonym:
+                continue
+            source_url = f"{page_base_url}{urllib.parse.quote(alias.replace(' ', '_'))}"
+            observations[(canonical, synonym)] = DictionaryObservation(
+                canonical=canonical,
+                synonym=synonym,
+                source_item_id=str(source_id),
+                source_url=source_url,
+                metadata={"target": target, "fragment": str(row.get("fragment") or "")},
+            )
+
+        continuation = str((payload.get("continue") or {}).get("arcontinue") or "")
+        if not continuation:
+            next_cursor = ""
+            cycle_complete = True
+            break
+        next_cursor = continuation
+
+    return list(observations.values()), {
+        "scanned": scanned,
+        "accepted": len(observations),
+        "requests": requests,
+        "cursor": next_cursor,
+        "cycleComplete": cycle_complete,
+    }
 
 
 def _pairs_from_json_payload(payload: Any) -> tuple[dict[int, set[tuple[str, str]]], int]:
@@ -490,13 +642,270 @@ def insert_pairs(cur, pairs: Iterable[tuple[str, str]], source_type: str, source
             ON DUPLICATE KEY UPDATE
               priority=GREATEST(priority, VALUES(priority)),
               is_active=1,
-              source_type=IF(source_type='manual', source_type, VALUES(source_type)),
-              source_version=IF(source_type='manual', source_version, VALUES(source_version))
+              source_version=IF(source_type='manual', source_version, VALUES(source_version)),
+              source_type=IF(source_type='manual', source_type, VALUES(source_type))
             """,
             (canonical, synonym, priority, source_type, source_version),
         )
         count += 1
     return count
+
+
+def ensure_dictionary_source_rows(cur) -> None:
+    sources = [
+        *MEDIAWIKI_REDIRECT_SOURCES,
+        {
+            "sourceKey": "wikidata-ja-aliases",
+            "displayName": "Wikidata日本語別名",
+            "sourceType": "wikidata",
+            "endpoint": WIKIDATA_API_URL,
+            "licenseName": "CC0 1.0",
+            "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "priority": 8,
+        },
+        {
+            "sourceKey": "curated-ja-seeds",
+            "displayName": "管理済み日本語シード",
+            "sourceType": "curated",
+            "endpoint": "internal://curated-ja-seeds",
+            "licenseName": "Project data",
+            "licenseUrl": "",
+            "priority": 10,
+        },
+    ]
+    for source in sources:
+        cur.execute(
+            """
+            INSERT INTO dictionary_sources
+              (source_key, display_name, source_type, endpoint, license_name, license_url, priority, is_enabled)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,1)
+            ON DUPLICATE KEY UPDATE
+              display_name=VALUES(display_name),
+              source_type=VALUES(source_type),
+              endpoint=VALUES(endpoint),
+              license_name=VALUES(license_name),
+              license_url=VALUES(license_url),
+              priority=VALUES(priority)
+            """,
+            (
+                source["sourceKey"],
+                source["displayName"],
+                source["sourceType"],
+                source["endpoint"],
+                source["licenseName"],
+                source["licenseUrl"],
+                source["priority"],
+            ),
+        )
+
+
+def dictionary_source_state(cur, source_key: str) -> dict[str, Any]:
+    cur.execute(
+        "SELECT source_key, cursor_json, cycle_count, processed_items, discovered_pairs, last_error"
+        " FROM dictionary_sources WHERE source_key=%s",
+        (source_key,),
+    )
+    row = cur.fetchone() or {}
+    try:
+        cursor = json.loads(row.get("cursor_json") or "{}")
+    except (TypeError, ValueError):
+        cursor = {}
+    return {**row, "cursor": cursor}
+
+
+def dictionary_source_statuses(cur) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT s.source_key, s.display_name, s.source_type, s.endpoint,
+               s.license_name, s.license_url, s.priority, s.is_enabled,
+               s.cycle_count, s.processed_items, s.discovered_pairs,
+               s.last_started_at, s.last_success_at, s.last_error,
+               COUNT(e.id) AS evidence_count,
+               COALESCE(SUM(e.observation_count),0) AS observation_count
+        FROM dictionary_sources s
+        LEFT JOIN dictionary_pair_evidence e ON e.source_key=s.source_key
+        GROUP BY s.source_key, s.display_name, s.source_type, s.endpoint,
+                 s.license_name, s.license_url, s.priority, s.is_enabled,
+                 s.cycle_count, s.processed_items, s.discovered_pairs,
+                 s.last_started_at, s.last_success_at, s.last_error
+        ORDER BY s.priority DESC, s.source_key
+        """
+    )
+    return cur.fetchall() or []
+
+
+def update_dictionary_source_state(
+    cur,
+    source_key: str,
+    *,
+    cursor: dict[str, Any] | None = None,
+    processed: int = 0,
+    discovered: int = 0,
+    cycle_complete: bool = False,
+    error: str | None = None,
+) -> None:
+    cur.execute(
+        """
+        UPDATE dictionary_sources
+        SET cursor_json=%s,
+            cycle_count=cycle_count+%s,
+            processed_items=processed_items+%s,
+            discovered_pairs=discovered_pairs+%s,
+            last_started_at=CURRENT_TIMESTAMP,
+            last_success_at=IF(%s IS NULL, CURRENT_TIMESTAMP, last_success_at),
+            last_error=%s
+        WHERE source_key=%s
+        """,
+        (
+            json.dumps(cursor or {}, ensure_ascii=False, separators=(",", ":")),
+            1 if cycle_complete else 0,
+            max(0, int(processed)),
+            max(0, int(discovered)),
+            error,
+            error,
+            source_key,
+        ),
+    )
+
+
+def upsert_dictionary_observations(
+    cur,
+    observations: Iterable[DictionaryObservation],
+    *,
+    source_key: str,
+    source_type: str,
+    source_version: str,
+    priority: int,
+    confidence: float,
+) -> dict[str, int]:
+    unique: dict[tuple[str, str], DictionaryObservation] = {}
+    for observation in observations:
+        canonical = normalize_term(observation.canonical)
+        synonym = normalize_term(observation.synonym)
+        if canonical == synonym or not is_good_term(canonical) or not is_good_term(synonym):
+            continue
+        unique[(canonical, synonym)] = DictionaryObservation(
+            canonical=canonical,
+            synonym=synonym,
+            source_item_id=observation.source_item_id,
+            source_url=observation.source_url,
+            metadata=observation.metadata,
+        )
+    rows = list(unique.values())
+    if not rows:
+        return {"observed": 0, "added": 0, "confirmed": 0}
+
+    evidence_values = [
+        (
+            row.canonical,
+            row.synonym,
+            source_key,
+            row.source_item_id[:191],
+            row.source_url[:512],
+            max(1, min(20, int(priority))),
+            max(0.0, min(1.0, float(confidence))),
+            json.dumps(row.metadata or {}, ensure_ascii=False, separators=(",", ":")),
+        )
+        for row in rows
+    ]
+    cur.executemany(
+        """
+        INSERT IGNORE INTO dictionary_pair_evidence
+          (canonical_term, synonym_term, source_key, source_item_id, source_url,
+           priority, confidence, observation_count, metadata_json)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,0,%s)
+        """,
+        evidence_values,
+    )
+    evidence_added = int(cur.rowcount or 0)
+    cur.executemany(
+        """
+        UPDATE dictionary_pair_evidence
+        SET source_item_id=%s, source_url=%s,
+            priority=GREATEST(priority,%s), confidence=GREATEST(confidence,%s),
+            observation_count=observation_count+1, last_seen_at=CURRENT_TIMESTAMP,
+            metadata_json=%s
+        WHERE canonical_term=%s AND synonym_term=%s AND source_key=%s
+        """,
+        [
+            (
+                row.source_item_id[:191],
+                row.source_url[:512],
+                max(1, min(20, int(priority))),
+                max(0.0, min(1.0, float(confidence))),
+                json.dumps(row.metadata or {}, ensure_ascii=False, separators=(",", ":")),
+                row.canonical,
+                row.synonym,
+                source_key,
+            )
+            for row in rows
+        ],
+    )
+
+    synonym_values = [
+        (row.canonical, row.synonym, max(1, min(20, int(priority))), source_type, source_version)
+        for row in rows
+    ]
+    cur.executemany(
+        """
+        INSERT IGNORE INTO law_synonyms
+          (canonical_term, synonym_term, priority, is_active, source_type, source_version)
+        VALUES (%s,%s,%s,1,%s,%s)
+        """,
+        synonym_values,
+    )
+    synonym_added = int(cur.rowcount or 0)
+    cur.executemany(
+        """
+        UPDATE law_synonyms
+        SET priority=GREATEST(priority,%s), is_active=1,
+            source_version=IF(source_type='manual', source_version, %s),
+            source_type=IF(source_type='manual', source_type, %s)
+        WHERE canonical_term=%s AND synonym_term=%s
+        """,
+        [
+            (
+                max(1, min(20, int(priority))),
+                source_version,
+                source_type,
+                row.canonical,
+                row.synonym,
+            )
+            for row in rows
+        ],
+    )
+    return {
+        "observed": len(rows),
+        "added": synonym_added,
+        "confirmed": max(0, len(rows) - evidence_added),
+    }
+
+
+def select_wikidata_seed_terms(cur, *, last_synonym_id: int = 0, limit: int = 25) -> tuple[list[str], int, bool]:
+    cur.execute(
+        """
+        SELECT id, canonical_term, synonym_term
+        FROM law_synonyms
+        WHERE is_active=1 AND id>%s
+        ORDER BY id ASC
+        LIMIT %s
+        """,
+        (max(0, int(last_synonym_id)), max(1, int(limit)) * 3),
+    )
+    rows = cur.fetchall() or []
+    terms: list[str] = []
+    seen: set[str] = set()
+    next_id = max(0, int(last_synonym_id))
+    for row in rows:
+        next_id = max(next_id, int(row.get("id") or 0))
+        for value in (row.get("canonical_term"), row.get("synonym_term")):
+            term = normalize_term(value)
+            if term and term not in seen and is_good_term(term):
+                seen.add(term)
+                terms.append(term)
+                if len(terms) >= limit:
+                    return terms, next_id, False
+    return terms, next_id, len(rows) == 0
 
 
 def compiled_dictionary_path(path: str | Path | None = None) -> Path:
@@ -825,20 +1234,33 @@ def build_internet_dictionary(
     *,
     include_wikidata: bool = True,
     include_curated: bool = True,
+    include_mediawiki: bool = True,
     source_url: str = "",
+    wikipedia_limit: int = 5000,
+    wiktionary_limit: int = 2000,
+    wikidata_term_limit: int = 25,
     progress: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
-    enabled_steps = int(include_curated) + int(include_wikidata) + int(bool(source_url))
+    mediawiki_sources = list(MEDIAWIKI_REDIRECT_SOURCES) if include_mediawiki else []
+    enabled_steps = int(include_curated) + int(include_wikidata) + len(mediawiki_sources) + int(bool(source_url))
     summary: dict[str, Any] = {
         "operation": "internet-dictionary-update",
         "engineVersion": INTERNET_DICTIONARY_ENGINE_VERSION,
         "includeCurated": include_curated,
         "includeWikidata": include_wikidata,
+        "includeMediawiki": include_mediawiki,
         "sourceUrl": source_url,
         "curatedPairs": 0,
         "wikidataPairs": 0,
+        "mediawikiPairs": 0,
         "urlPairs": 0,
+        "observed": 0,
         "inserted": 0,
+        "confirmed": 0,
+        "sourceStats": [],
+        "errors": [],
+        "targetTermCount": THESAURUS_TARGET_TERM_COUNT,
+        "ultimateTermCount": THESAURUS_ULTIMATE_TERM_COUNT,
         "progressCurrent": 0,
         "progressTotal": max(1, enabled_steps + 1),
         "progressLabel": "インターネット辞書取り込みを準備しています",
@@ -846,46 +1268,164 @@ def build_internet_dictionary(
     if enabled_steps == 0:
         raise ValueError("取り込み対象を1つ以上選択してください。")
 
-    cur.execute("DELETE FROM law_synonyms WHERE source_type IN ('wikidata','internet','curated')")
-    if progress:
-        progress("既存のインターネット由来辞書を削除しました", 0, summary["progressTotal"])
-
-    inserted = 0
+    ensure_dictionary_source_rows(cur)
     current = 0
+
+    def record_result(result: dict[str, int]) -> None:
+        summary["observed"] += int(result.get("observed") or 0)
+        summary["inserted"] += int(result.get("added") or 0)
+        summary["confirmed"] += int(result.get("confirmed") or 0)
+
     if include_curated:
         grouped, stats = build_curated_synonym_pairs()
         current += 1
         summary["curatedStats"] = stats
         summary["curatedPairs"] = stats["pairs"]
         if progress:
-            progress(f"同義語・言い換えシード {stats['pairs']:,}件を登録しています", current, summary["progressTotal"])
+            progress(f"管理済みシード {stats['pairs']:,}件を確認しています", current, summary["progressTotal"])
         for priority, pairs in grouped.items():
-            inserted += insert_pairs(cur, pairs, "curated", INTERNET_DICTIONARY_ENGINE_VERSION, priority)
+            result = upsert_dictionary_observations(
+                cur,
+                [DictionaryObservation(canonical=left, synonym=right) for left, right in pairs],
+                source_key="curated-ja-seeds",
+                source_type="curated",
+                source_version=INTERNET_DICTIONARY_ENGINE_VERSION,
+                priority=priority,
+                confidence=1.0,
+            )
+            record_result(result)
+        update_dictionary_source_state(
+            cur,
+            "curated-ja-seeds",
+            processed=stats["pairs"],
+            discovered=stats["pairs"],
+        )
+
+    mediawiki_limits = {
+        "jawikipedia-redirects": max(0, int(wikipedia_limit)),
+        "jawiktionary-redirects": max(0, int(wiktionary_limit)),
+    }
+    for source in mediawiki_sources:
+        current += 1
+        source_key = str(source["sourceKey"])
+        limit = mediawiki_limits[source_key]
+        state = dictionary_source_state(cur, source_key)
+        cursor = str((state.get("cursor") or {}).get("continue") or "")
+        if progress:
+            progress(f"{source['displayName']}を巡回しています", current - 1, summary["progressTotal"])
+        try:
+            observations, source_stats = fetch_mediawiki_redirect_observations(
+                source,
+                cursor=cursor,
+                max_items=limit,
+            )
+            result = upsert_dictionary_observations(
+                cur,
+                observations,
+                source_key=source_key,
+                source_type=str(source["sourceType"]),
+                source_version=INTERNET_DICTIONARY_ENGINE_VERSION,
+                priority=int(source["priority"]),
+                confidence=0.9 if source["sourceType"] == "wiktionary" else 0.78,
+            )
+            record_result(result)
+            summary["mediawikiPairs"] += len(observations)
+            source_stats.update(result)
+            source_stats["sourceKey"] = source_key
+            source_stats["displayName"] = source["displayName"]
+            summary["sourceStats"].append(source_stats)
+            update_dictionary_source_state(
+                cur,
+                source_key,
+                cursor={"continue": source_stats["cursor"]},
+                processed=int(source_stats["scanned"]),
+                discovered=int(result["added"]),
+                cycle_complete=bool(source_stats["cycleComplete"]),
+            )
+            if progress:
+                progress(
+                    f"{source['displayName']} {source_stats['scanned']:,}件確認 / 新規 {result['added']:,}件",
+                    current,
+                    summary["progressTotal"],
+                )
+        except Exception as exc:
+            error = f"{source_key}: {exc}"
+            summary["errors"].append(error)
+            update_dictionary_source_state(cur, source_key, cursor={"continue": cursor}, error=str(exc))
 
     if include_wikidata:
-        if progress:
-            progress("Wikidata から日本語別名を取得しています", current, summary["progressTotal"])
-        pairs, stats = build_wikidata_pairs()
         current += 1
-        summary["wikidataStats"] = stats
-        summary["wikidataPairs"] = len(pairs)
+        source_key = "wikidata-ja-aliases"
+        state = dictionary_source_state(cur, source_key)
+        last_synonym_id = int((state.get("cursor") or {}).get("lastSynonymId") or 0)
         if progress:
-            progress(f"Wikidata 別名 {len(pairs):,}件を登録しています", current, summary["progressTotal"])
-        inserted += insert_pairs(cur, pairs, "wikidata", INTERNET_DICTIONARY_ENGINE_VERSION, 8)
+            progress("未調査語をWikidataで補強しています", current - 1, summary["progressTotal"])
+        try:
+            seeds, next_synonym_id, cycle_complete = select_wikidata_seed_terms(
+                cur,
+                last_synonym_id=last_synonym_id,
+                limit=max(1, int(wikidata_term_limit)),
+            )
+            if cycle_complete:
+                next_synonym_id = 0
+            pairs, stats = build_wikidata_pairs(seeds, max_terms=max(1, int(wikidata_term_limit))) if seeds else (set(), {
+                "seedTerms": 0,
+                "fetchedTerms": 0,
+                "failedTerms": 0,
+                "pairs": 0,
+            })
+            result = upsert_dictionary_observations(
+                cur,
+                [DictionaryObservation(canonical=left, synonym=right) for left, right in pairs],
+                source_key=source_key,
+                source_type="wikidata",
+                source_version=INTERNET_DICTIONARY_ENGINE_VERSION,
+                priority=8,
+                confidence=0.82,
+            )
+            record_result(result)
+            summary["wikidataStats"] = {**stats, **result, "lastSynonymId": next_synonym_id}
+            summary["wikidataPairs"] = len(pairs)
+            update_dictionary_source_state(
+                cur,
+                source_key,
+                cursor={"lastSynonymId": next_synonym_id},
+                processed=len(seeds),
+                discovered=int(result["added"]),
+                cycle_complete=cycle_complete,
+            )
+            if progress:
+                progress(
+                    f"Wikidata {len(seeds):,}語調査 / 新規 {result['added']:,}件",
+                    current,
+                    summary["progressTotal"],
+                )
+        except Exception as exc:
+            error = f"{source_key}: {exc}"
+            summary["errors"].append(error)
+            update_dictionary_source_state(
+                cur,
+                source_key,
+                cursor={"lastSynonymId": last_synonym_id},
+                error=str(exc),
+            )
 
     if source_url:
-        if progress:
-            progress("指定URLから辞書を取得しています", current, summary["progressTotal"])
-        grouped, stats = build_url_dictionary_pairs(source_url)
         current += 1
+        if progress:
+            progress("指定URLから辞書を取得しています", current - 1, summary["progressTotal"])
+        grouped, stats = build_url_dictionary_pairs(source_url)
         summary["urlStats"] = stats
         summary["urlPairs"] = stats["pairs"]
         if progress:
             progress(f"指定URL辞書 {stats['pairs']:,}件を登録しています", current, summary["progressTotal"])
         for priority, pairs in grouped.items():
-            inserted += insert_pairs(cur, pairs, "internet", INTERNET_DICTIONARY_ENGINE_VERSION, max(1, min(20, priority)))
+            before = len(pairs)
+            insert_pairs(cur, pairs, "internet", INTERNET_DICTIONARY_ENGINE_VERSION, max(1, min(20, priority)))
+            summary["observed"] += before
 
-    summary["inserted"] = inserted
     summary["progressCurrent"] = summary["progressTotal"]
-    summary["progressLabel"] = "インターネット辞書取り込みが完了しました"
+    summary["progressLabel"] = (
+        f"累積辞書更新が完了しました（新規 {summary['inserted']:,}件 / 確認 {summary['confirmed']:,}件）"
+    )
     return summary

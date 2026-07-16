@@ -39,7 +39,11 @@ def main() -> int:
             execute_internet_dictionary_update(
                 include_wikidata=env_bool("REIKI_DAILY_DICTIONARY_WIKIDATA", True),
                 include_curated=env_bool("REIKI_DAILY_DICTIONARY_CURATED", True),
+                include_mediawiki=env_bool("REIKI_DAILY_DICTIONARY_MEDIAWIKI", True),
                 source_url=os.getenv("REIKI_DAILY_DICTIONARY_SOURCE_URL", "").strip(),
+                wikipedia_limit=env_int("REIKI_DAILY_DICTIONARY_WIKIPEDIA_LIMIT", 5000, 0, 20000),
+                wiktionary_limit=env_int("REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT", 2000, 0, 10000),
+                wikidata_term_limit=env_int("REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS", 25, 1, 100),
             )
         )
     else:

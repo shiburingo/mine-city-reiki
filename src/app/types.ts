@@ -178,6 +178,33 @@ export type SynonymCompiledStatus = {
   error?: string;
 };
 
+export type SynonymGrowthStatus = {
+  currentTermCount: number;
+  targetTermCount: number;
+  ultimateTermCount: number;
+  targetProgress: number;
+  ultimateProgress: number;
+};
+
+export type DictionarySourceStatus = {
+  sourceKey: string;
+  displayName: string;
+  sourceType: string;
+  endpoint: string;
+  licenseName: string;
+  licenseUrl: string;
+  priority: number;
+  isEnabled: boolean;
+  cycleCount: number;
+  processedItems: number;
+  discoveredPairs: number;
+  evidenceCount: number;
+  observationCount: number;
+  lastStartedAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+};
+
 export type DocHistoryItem = {
   id: number;
   contentHash: string;

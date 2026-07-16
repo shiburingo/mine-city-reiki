@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
   synonym_term VARCHAR(191) NOT NULL,
   priority TINYINT UNSIGNED NOT NULL DEFAULT 10,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
-  source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual',
+  source_type ENUM('builtin','manual','wordnet','domain','minutes-domain','curated','wikidata','internet','wikipedia','wiktionary') NOT NULL DEFAULT 'manual',
   source_version VARCHAR(64) NOT NULL DEFAULT '',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -120,13 +120,67 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 ALTER TABLE law_synonyms
-  ADD COLUMN IF NOT EXISTS source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual' AFTER is_active;
+  ADD COLUMN IF NOT EXISTS source_type ENUM('builtin','manual','wordnet','domain','minutes-domain','curated','wikidata','internet','wikipedia','wiktionary') NOT NULL DEFAULT 'manual' AFTER is_active;
+
+ALTER TABLE law_synonyms
+  MODIFY COLUMN source_type ENUM('builtin','manual','wordnet','domain','minutes-domain','curated','wikidata','internet','wikipedia','wiktionary') NOT NULL DEFAULT 'manual';
 
 ALTER TABLE law_synonyms
   ADD COLUMN IF NOT EXISTS source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type;
 
 ALTER TABLE law_synonyms
   ADD INDEX IF NOT EXISTS idx_law_synonyms_source (source_type, is_active);
+
+CREATE TABLE IF NOT EXISTS dictionary_sources (
+  source_key VARCHAR(64) NOT NULL PRIMARY KEY,
+  display_name VARCHAR(128) NOT NULL,
+  source_type VARCHAR(32) NOT NULL,
+  endpoint VARCHAR(512) NOT NULL,
+  license_name VARCHAR(128) NOT NULL DEFAULT '',
+  license_url VARCHAR(512) NOT NULL DEFAULT '',
+  priority TINYINT UNSIGNED NOT NULL DEFAULT 8,
+  is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  cursor_json LONGTEXT NULL,
+  cycle_count INT UNSIGNED NOT NULL DEFAULT 0,
+  processed_items BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  discovered_pairs BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  last_started_at DATETIME NULL,
+  last_success_at DATETIME NULL,
+  last_error LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_dictionary_sources_enabled (is_enabled, source_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS dictionary_pair_evidence (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  canonical_term VARCHAR(191) NOT NULL,
+  synonym_term VARCHAR(191) NOT NULL,
+  source_key VARCHAR(64) NOT NULL,
+  source_item_id VARCHAR(191) NOT NULL DEFAULT '',
+  source_url VARCHAR(512) NOT NULL DEFAULT '',
+  priority TINYINT UNSIGNED NOT NULL DEFAULT 8,
+  confidence DECIMAL(5,4) NOT NULL DEFAULT 0,
+  observation_count INT UNSIGNED NOT NULL DEFAULT 0,
+  metadata_json LONGTEXT NULL,
+  first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_dictionary_pair_evidence_pair_source (canonical_term, synonym_term, source_key),
+  KEY idx_dictionary_pair_evidence_canonical (canonical_term, synonym_term),
+  KEY idx_dictionary_pair_evidence_source_seen (source_key, last_seen_at),
+  CONSTRAINT fk_dictionary_pair_evidence_source FOREIGN KEY (source_key) REFERENCES dictionary_sources(source_key) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO dictionary_sources
+  (source_key, display_name, source_type, endpoint, license_name, license_url, priority, is_enabled)
+VALUES
+  ('jawikipedia-redirects', '日本語Wikipediaリダイレクト', 'wikipedia', 'https://ja.wikipedia.org/w/api.php', 'CC BY-SA 4.0', 'https://creativecommons.org/licenses/by-sa/4.0/', 9, 1),
+  ('jawiktionary-redirects', '日本語Wiktionaryリダイレクト', 'wiktionary', 'https://ja.wiktionary.org/w/api.php', 'CC BY-SA 4.0', 'https://creativecommons.org/licenses/by-sa/4.0/', 12, 1),
+  ('wikidata-ja-aliases', 'Wikidata日本語別名', 'wikidata', 'https://www.wikidata.org/w/api.php', 'CC0 1.0', 'https://creativecommons.org/publicdomain/zero/1.0/', 8, 1),
+  ('curated-ja-seeds', '管理済み日本語シード', 'curated', 'internal://curated-ja-seeds', 'Project data', '', 10, 1)
+ON DUPLICATE KEY UPDATE
+  display_name=VALUES(display_name), source_type=VALUES(source_type), endpoint=VALUES(endpoint),
+  license_name=VALUES(license_name), license_url=VALUES(license_url), priority=VALUES(priority);
 
 INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority, source_type, source_version) VALUES
   ('地方自治法', '自治法', 20, 'builtin', '0.1.0'),

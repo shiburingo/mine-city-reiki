@@ -10,6 +10,7 @@
 - **多フィールド AND / OR 検索** — 検索窓を最大 4 つ設け、フィールド間で AND / OR を切り替えられます。各窓内のスペース区切りは AND 検索です。
 - **転置インデックス検索** — Janome 形態素解析で生成した `law_search_terms` を使い高速検索します。
 - **同義語展開** — `law_synonyms` テーブルの辞書で検索語を自動拡張します（例: `例規 → 条例 / 規則 / 要綱`）。
+- **累積シソーラス** — Wikipedia・Wiktionary・Wikidata・WordNet・例規・会議録から出典付きで関連語を蓄積し、50万語を第1目標として日次更新します。
 - **詳細絞り込みフィルター** — 法令種別・公布日（開始〜終了）で検索結果を絞り込めます。
 - **マッチ根拠バッジ** — 各検索結果にどの項目でヒットしたか（タイトル / 条番号 / 条名 / 条文 / 本文）をバッジ表示します。
 - **オートコンプリート** — 過去の検索語をサジェストします。
@@ -185,6 +186,9 @@ python3 -m py_compile server/app.py
 - **美祢市例規集**: https://www2.city.mine.lg.jp/section/reiki/reiki_taikei/r_taikei_05.html
 - **地方自治法（e-Gov API）**: https://laws.e-gov.go.jp/law/322AC0000000067
 - **地方公務員法（e-Gov API）**: https://laws.e-gov.go.jp/law/325AC0000000261
+- **日本語Wikipedia / Wiktionary**: MediaWiki APIのリダイレクト（CC BY-SA 4.0）
+- **Wikidata**: 日本語ラベル・別名（CC0 1.0）
+- **日本語WordNet**: WN-JA公開データ
 
 ---
 
@@ -196,6 +200,8 @@ python3 -m py_compile server/app.py
 | `law_articles` | 条文単位（条番号・条名・本文） |
 | `law_search_terms` | 転置インデックス（term → document/article） |
 | `law_synonyms` | 同義語辞書 |
+| `dictionary_sources` | 辞書ソース、ライセンス、巡回カーソル、実行状態 |
+| `dictionary_pair_evidence` | 関連語ペアごとの出典、URL、信頼度、確認履歴 |
 | `law_document_history` | 文書の変更履歴スナップショット（全文含む） |
 | `sync_settings` | 月次更新設定・最終同期情報 |
 | `sync_runs` | 同期実行ログ |

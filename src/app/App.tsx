@@ -36,7 +36,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymCompiledStatus, SynonymItem, SynonymStatsItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DictionarySourceStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -1009,10 +1009,13 @@ function AppShell() {
   const [synonymItems, setSynonymItems] = useState<SynonymItem[]>([]);
   const [synonymStats, setSynonymStats] = useState<SynonymStatsItem[]>([]);
   const [synonymCompiled, setSynonymCompiled] = useState<SynonymCompiledStatus | null>(null);
+  const [synonymGrowth, setSynonymGrowth] = useState<SynonymGrowthStatus | null>(null);
+  const [dictionarySources, setDictionarySources] = useState<DictionarySourceStatus[]>([]);
   const [synonymLoading, setSynonymLoading] = useState(false);
   const [newSynonymCanonical, setNewSynonymCanonical] = useState('');
   const [newSynonymTerm, setNewSynonymTerm] = useState('');
   const [internetDictionaryUrl, setInternetDictionaryUrl] = useState('');
+  const [includeInternetMediawiki, setIncludeInternetMediawiki] = useState(true);
   const [includeInternetWikidata, setIncludeInternetWikidata] = useState(true);
   const [includeInternetCurated, setIncludeInternetCurated] = useState(true);
 
@@ -1426,10 +1429,12 @@ function AppShell() {
   async function loadSynonyms() {
     setSynonymLoading(true);
     try {
-      const { items, stats, compiled } = await fetchSynonyms();
+      const { items, stats, compiled, growth, sources } = await fetchSynonyms();
       setSynonymItems(items);
       setSynonymStats(stats);
       setSynonymCompiled(compiled ?? null);
+      setSynonymGrowth(growth ?? null);
+      setDictionarySources(sources);
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '同義語取得に失敗しました。');
     } finally {
@@ -1476,7 +1481,7 @@ function AppShell() {
       setGlobalError('ゲスト権限ではインターネット辞書を取り込めません。');
       return;
     }
-    if (!includeInternetWikidata && !includeInternetCurated && !internetDictionaryUrl.trim()) {
+    if (!includeInternetMediawiki && !includeInternetWikidata && !includeInternetCurated && !internetDictionaryUrl.trim()) {
       setGlobalError('取り込み対象を1つ以上選択してください。');
       return;
     }
@@ -1486,6 +1491,7 @@ function AppShell() {
       await runInternetDictionaryUpdate({
         includeWikidata: includeInternetWikidata,
         includeCurated: includeInternetCurated,
+        includeMediawiki: includeInternetMediawiki,
         sourceUrl: internetDictionaryUrl.trim(),
       });
       const runs = await fetchSyncRuns();
@@ -5527,7 +5533,7 @@ function AppShell() {
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">関連語辞書更新</h2>
                 </div>
-                <p className="mt-2 text-sm text-muted-foreground">日本語 WordNet の最新版取得、Wikidata の日本語別名、既存DB（例規・法令・会議録）からの関連語再作成を実行します。検索・質問・会議録の関連語検索で共通利用します。</p>
+                <p className="mt-2 text-sm text-muted-foreground">Wikipedia・Wiktionary・Wikidata・既存DBから出典付きで関連語を累積します。毎日カーソルを進め、50万語を第1目標、100万語を最終目標として検索全体で共通利用します。</p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
@@ -5566,7 +5572,15 @@ function AppShell() {
                   </button>
                 </div>
                 <div className="mt-4 rounded-2xl border bg-background p-4">
-                  <div className="grid gap-3 lg:grid-cols-[1fr_1fr_2fr]">
+                  <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_2fr]">
+                    <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={includeInternetMediawiki}
+                        onChange={(event) => setIncludeInternetMediawiki(event.target.checked)}
+                      />
+                      Wikipedia・Wiktionary
+                    </label>
                     <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <input
                         type="checkbox"
@@ -5591,9 +5605,26 @@ function AppShell() {
                     />
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    任意サイトの本文を解析するのではなく、公開ライセンスまたは管理者が用意したCSV/JSONの関連語ペアのみ取り込みます。
+                    公開ライセンスの構造化データだけを巡回します。一般サイト本文の無差別クロールは行いません。
                   </p>
                 </div>
+                {synonymGrowth ? (
+                  <div className="mt-4 rounded-2xl border border-primary/20 bg-primary/5 p-4">
+                    <div className="flex flex-wrap items-end justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Thesaurus growth</p>
+                        <p className="mt-1 text-2xl font-semibold">{synonymGrowth.currentTermCount.toLocaleString()}語</p>
+                      </div>
+                      <p className="text-sm text-muted-foreground">
+                        第1目標 {synonymGrowth.targetTermCount.toLocaleString()}語 / {Math.round(synonymGrowth.targetProgress * 1000) / 10}%
+                      </p>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-primary/10">
+                      <div className="h-full rounded-full bg-primary transition-[width] duration-700" style={{ width: `${Math.max(0.5, synonymGrowth.targetProgress * 100)}%` }} />
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">最終目標 {synonymGrowth.ultimateTermCount.toLocaleString()}語以上の超高速シソーラス</p>
+                  </div>
+                ) : null}
                 <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
                   {synonymCompiled ? (
                     <div className="flex justify-between gap-3 rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 sm:col-span-2">
@@ -5616,6 +5647,28 @@ function AppShell() {
                     </div>
                   ))}
                 </div>
+                {dictionarySources.length > 0 ? (
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    {dictionarySources.map((source) => (
+                      <div key={source.sourceKey} className="rounded-2xl border bg-background p-4 text-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-semibold">{source.displayName}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">巡回 {source.processedItems.toLocaleString()}件 / 新規 {source.discoveredPairs.toLocaleString()}件</p>
+                          </div>
+                          <span className={source.lastError ? 'text-red-600' : 'text-emerald-700'}>{source.lastError ? '要確認' : '正常'}</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                          <span>根拠 {source.evidenceCount.toLocaleString()}件</span>
+                          <span>完走 {source.cycleCount.toLocaleString()}回</span>
+                          <span>最終成功 {formatDateTime(source.lastSuccessAt)}</span>
+                          {source.licenseUrl ? <a className="text-primary hover:underline" href={source.licenseUrl} target="_blank" rel="noreferrer">{source.licenseName}</a> : <span>{source.licenseName}</span>}
+                        </div>
+                        {source.lastError ? <p className="mt-2 line-clamp-2 text-xs text-red-600">{source.lastError}</p> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <ProgressMeter title="関連語辞書更新の進捗" run={runningDictionaryRun} />
                 <ProgressMeter title="インターネット辞書取り込みの進捗" run={runningInternetDictionaryRun} />
                 <ProgressMeter title="会議録辞書作成の進捗" run={runningMinutesDictionaryRun} />
@@ -5642,6 +5695,8 @@ function AppShell() {
                             {run.summary.wordnetPairs != null ? <span>WordNet {Number(run.summary.wordnetPairs).toLocaleString()}件</span> : null}
                             {run.summary.domainPairs != null ? <span>既存DB {Number(run.summary.domainPairs).toLocaleString()}件</span> : null}
                             {run.summary.minutesPairs != null ? <span>会議録候補 {Number(run.summary.minutesPairs).toLocaleString()}件</span> : null}
+                            {run.summary.mediawikiPairs != null ? <span>Wikipedia系 {Number(run.summary.mediawikiPairs).toLocaleString()}件</span> : null}
+                            {run.summary.confirmed != null ? <span>再確認 {Number(run.summary.confirmed).toLocaleString()}件</span> : null}
                             {run.summary.processed != null ? <span>処理 {Number(run.summary.processed).toLocaleString()}件</span> : null}
                             {run.summary.skipped != null ? <span>スキップ {Number(run.summary.skipped).toLocaleString()}件</span> : null}
                             {run.summary.added != null ? <span className="text-emerald-700">追加 {run.summary.added}件</span> : null}

@@ -17,6 +17,8 @@
 | `law_articles` | 条文単位。`document_id` FK、条番号・条名・親パス・本文・検索用テキスト。`sort_key` で順序管理。 |
 | `law_search_terms` | 転置インデックス。`(target_type, target_id, term, weight)` の形で文書・条文それぞれに term を紐付ける。`weight` は重み（タイトル > 条番号 > 本文）。 |
 | `law_synonyms` | 同義語辞書。`(canonical_term, synonym_term, priority, is_active)`。 |
+| `dictionary_sources` | 辞書ソースのエンドポイント、ライセンス、巡回カーソル、累計処理件数、最終成功・エラーを保持。 |
+| `dictionary_pair_evidence` | 関連語ペアと出典を多対多で保持。信頼度、確認回数、初回・最終確認日時を記録。 |
 | `law_document_history` | 変更履歴スナップショット。同期時に内容が変わった場合のみ `full_text` を含めて記録。 |
 | `sync_settings` | 月次更新設定（日・時・分・タイムゾーン・対象ソース）、最終同期日時、エラー、`cache_generation`。 |
 | `sync_runs` | 同期実行ログ。`summary_json` に追加件数・更新件数・変更なし件数・条文合計を保存。 |
@@ -52,6 +54,16 @@
 9. 結果を `search_query_cache` に保存（`cache_generation` が一致する場合はキャッシュヒット）。
 
 > **フォールバック**: `law_search_terms` にインデックスがない場合は LIKE 検索に自動フォールバックする。
+
+## 累積シソーラス
+
+- 第1目標はコンパイル済み辞書50万語、最終目標は100万語以上。
+- `law_synonyms` は検索互換の集約表、`dictionary_pair_evidence` は品質評価用の出典正本として扱う。
+- 日本語WikipediaとWiktionaryのリダイレクトをMediaWiki APIでカーソル巡回し、全件到達後に次の巡回周期へ移る。
+- Wikidataは固定語を毎日再検索せず、現在の辞書から未調査語を順番に選んで日本語別名を補強する。
+- 取得失敗時も既存ペアを削除せず、再確認時は確認回数と最終確認日時を更新する。
+- 任意Web本文はクロールせず、公開ライセンスが確認できる構造化データ、または管理者指定CSV/JSONだけを対象にする。
+- 50万語段階では現行コンパイルJSONを利用する。100万語段階では索引付きバイナリまたはSQLite/LMDB形式への移行を別マイルストーンとする。
 
 ### `law_search_terms` の索引方針
 

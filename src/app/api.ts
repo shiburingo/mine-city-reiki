@@ -1,4 +1,4 @@
-import type { AnalyticsData, AskResponse, BrowseCategory, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymCompiledStatus, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
+import type { AnalyticsData, AskResponse, BrowseCategory, DictionarySourceStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 
@@ -60,12 +60,13 @@ export async function runDictionaryUpdate(includeWordnet = true, includeDomain =
   });
 }
 
-export async function runInternetDictionaryUpdate(params: { includeWikidata?: boolean; includeCurated?: boolean; sourceUrl?: string } = {}): Promise<{ ok: boolean; summary: Record<string, any> }> {
+export async function runInternetDictionaryUpdate(params: { includeWikidata?: boolean; includeCurated?: boolean; includeMediawiki?: boolean; sourceUrl?: string } = {}): Promise<{ ok: boolean; summary: Record<string, any> }> {
   return apiFetch<{ ok: boolean; summary: Record<string, any> }>('/dictionary/internet/update', {
     method: 'POST',
     body: JSON.stringify({
       includeWikidata: params.includeWikidata ?? true,
       includeCurated: params.includeCurated ?? true,
+      includeMediawiki: params.includeMediawiki ?? true,
       sourceUrl: params.sourceUrl ?? '',
     }),
   });
@@ -141,9 +142,9 @@ export async function fetchDocumentHistory(id: number): Promise<DocHistoryItem[]
   return data.items || [];
 }
 
-export async function fetchSynonyms(): Promise<{ items: SynonymItem[]; stats: SynonymStatsItem[]; compiled?: SynonymCompiledStatus }> {
-  const data = await apiFetch<{ items: SynonymItem[]; stats?: SynonymStatsItem[]; compiled?: SynonymCompiledStatus }>('/synonyms');
-  return { items: data.items || [], stats: data.stats || [], compiled: data.compiled };
+export async function fetchSynonyms(): Promise<{ items: SynonymItem[]; stats: SynonymStatsItem[]; compiled?: SynonymCompiledStatus; growth?: SynonymGrowthStatus; sources: DictionarySourceStatus[] }> {
+  const data = await apiFetch<{ items: SynonymItem[]; stats?: SynonymStatsItem[]; compiled?: SynonymCompiledStatus; growth?: SynonymGrowthStatus; sources?: DictionarySourceStatus[] }>('/synonyms');
+  return { items: data.items || [], stats: data.stats || [], compiled: data.compiled, growth: data.growth, sources: data.sources || [] };
 }
 
 export async function createSynonym(canonicalTerm: string, synonymTerm: string, priority?: number): Promise<SynonymItem> {

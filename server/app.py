@@ -35,6 +35,8 @@ from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSI
 from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract_coordinate_tables, refine_person_roster_tables
 from dictionary_engine import (
     MINUTES_DICTIONARY_ENGINE_VERSION,
+    THESAURUS_TARGET_TERM_COUNT,
+    THESAURUS_ULTIMATE_TERM_COUNT,
     build_hybrid_dictionary,
     build_internet_dictionary,
     build_minutes_pairs_from_rows,
@@ -42,6 +44,7 @@ from dictionary_engine import (
     compiled_synonym_dictionary_status,
     compiled_dictionary_path,
     count_unprocessed_minutes_dictionary_rows,
+    dictionary_source_statuses,
     fetch_unprocessed_minutes_dictionary_rows,
     insert_pairs,
     load_compiled_synonym_dictionary,
@@ -423,7 +426,7 @@ def ensure_schema() -> None:
             )
             ensure_column(cur, "law_synonyms", "source_type", "source_type ENUM('builtin','manual','wordnet','domain','minutes-domain') NOT NULL DEFAULT 'manual' AFTER is_active")
             ensure_column(cur, "law_synonyms", "source_version", "source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type")
-            ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain", "curated", "wikidata", "internet"])
+            ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain", "curated", "wikidata", "internet", "wikipedia", "wiktionary"])
             ensure_index(cur, "law_synonyms", "idx_law_synonyms_source", "(source_type, is_active)")
             ensure_table(
                 cur,
@@ -3888,7 +3891,11 @@ def launch_dictionary_update_in_background(include_wordnet: bool = True, include
 def execute_internet_dictionary_update(
     include_wikidata: bool = True,
     include_curated: bool = True,
+    include_mediawiki: bool = True,
     source_url: str = "",
+    wikipedia_limit: int = 5000,
+    wiktionary_limit: int = 2000,
+    wikidata_term_limit: int = 25,
 ) -> dict[str, Any]:
     with db_cursor(commit=True) as (_, cur):
         cur.execute(
@@ -3901,9 +3908,10 @@ def execute_internet_dictionary_update(
         'operation': 'internet-dictionary-update',
         'includeWikidata': include_wikidata,
         'includeCurated': include_curated,
+        'includeMediawiki': include_mediawiki,
         'sourceUrl': source_url,
         'progressCurrent': 0,
-        'progressTotal': int(include_wikidata) + int(include_curated) + int(bool(source_url)) + 1,
+        'progressTotal': int(include_wikidata) + int(include_curated) + (2 if include_mediawiki else 0) + int(bool(source_url)) + 1,
         'progressLabel': 'インターネット辞書取り込みを開始します',
     }
 
@@ -3920,7 +3928,11 @@ def execute_internet_dictionary_update(
                 cur,
                 include_wikidata=include_wikidata,
                 include_curated=include_curated,
+                include_mediawiki=include_mediawiki,
                 source_url=source_url,
+                wikipedia_limit=wikipedia_limit,
+                wiktionary_limit=wiktionary_limit,
+                wikidata_term_limit=wikidata_term_limit,
                 progress=_progress,
             )
             summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
@@ -3940,14 +3952,22 @@ def execute_internet_dictionary_update(
 def launch_internet_dictionary_update_in_background(
     include_wikidata: bool = True,
     include_curated: bool = True,
+    include_mediawiki: bool = True,
     source_url: str = "",
+    wikipedia_limit: int = 5000,
+    wiktionary_limit: int = 2000,
+    wikidata_term_limit: int = 25,
 ) -> None:
     def _runner() -> None:
         try:
             execute_internet_dictionary_update(
                 include_wikidata=include_wikidata,
                 include_curated=include_curated,
+                include_mediawiki=include_mediawiki,
                 source_url=source_url,
+                wikipedia_limit=wikipedia_limit,
+                wiktionary_limit=wiktionary_limit,
+                wikidata_term_limit=wikidata_term_limit,
             )
         except Exception:
             app.logger.exception('Background internet dictionary update failed')
@@ -7210,15 +7230,23 @@ def api_internet_dictionary_update_run():
     payload = request.get_json(silent=True) or {}
     include_wikidata = bool(payload.get('includeWikidata', True))
     include_curated = bool(payload.get('includeCurated', True))
+    include_mediawiki = bool(payload.get('includeMediawiki', True))
     source_url = normalize_text(payload.get('sourceUrl') or '')
+    wikipedia_limit = max(0, min(20000, int(payload.get('wikipediaLimit') or 5000)))
+    wiktionary_limit = max(0, min(10000, int(payload.get('wiktionaryLimit') or 2000)))
+    wikidata_term_limit = max(1, min(100, int(payload.get('wikidataTermLimit') or 25)))
     if source_url and not source_url.startswith(('https://', 'http://')):
         raise ValueError('辞書URLは http または https のみ対応しています。')
-    if not include_wikidata and not include_curated and not source_url:
+    if not include_wikidata and not include_curated and not include_mediawiki and not source_url:
         raise ValueError('取り込み対象を1つ以上選択してください。')
     launch_internet_dictionary_update_in_background(
         include_wikidata=include_wikidata,
         include_curated=include_curated,
+        include_mediawiki=include_mediawiki,
         source_url=source_url,
+        wikipedia_limit=wikipedia_limit,
+        wiktionary_limit=wiktionary_limit,
+        wikidata_term_limit=wikidata_term_limit,
     )
     return jsonify({
         'ok': True,
@@ -7227,7 +7255,11 @@ def api_internet_dictionary_update_run():
             'operation': 'internet-dictionary-update',
             'includeWikidata': include_wikidata,
             'includeCurated': include_curated,
+            'includeMediawiki': include_mediawiki,
             'sourceUrl': source_url,
+            'wikipediaLimit': wikipedia_limit,
+            'wiktionaryLimit': wiktionary_limit,
+            'wikidataTermLimit': wikidata_term_limit,
         },
     }), 202
 
@@ -8390,6 +8422,9 @@ def api_synonyms_list():
             " FROM law_synonyms WHERE is_active=1 GROUP BY source_type, source_version ORDER BY source_type, source_version"
         )
         stats = cur.fetchall() or []
+        source_states = dictionary_source_statuses(cur)
+    compiled = compiled_synonym_dictionary_status(get_compiled_dictionary_path())
+    current_term_count = int(compiled.get('termCount') or 0)
     return jsonify({
         'items': [
             {
@@ -8411,7 +8446,35 @@ def api_synonyms_list():
             }
             for r in stats
         ],
-        'compiled': compiled_synonym_dictionary_status(get_compiled_dictionary_path()),
+        'compiled': compiled,
+        'growth': {
+            'currentTermCount': current_term_count,
+            'targetTermCount': THESAURUS_TARGET_TERM_COUNT,
+            'ultimateTermCount': THESAURUS_ULTIMATE_TERM_COUNT,
+            'targetProgress': round(min(1.0, current_term_count / THESAURUS_TARGET_TERM_COUNT), 6),
+            'ultimateProgress': round(min(1.0, current_term_count / THESAURUS_ULTIMATE_TERM_COUNT), 6),
+        },
+        'sources': [
+            {
+                'sourceKey': row['source_key'],
+                'displayName': row['display_name'],
+                'sourceType': row['source_type'],
+                'endpoint': row['endpoint'],
+                'licenseName': row.get('license_name') or '',
+                'licenseUrl': row.get('license_url') or '',
+                'priority': int(row.get('priority') or 0),
+                'isEnabled': bool(row.get('is_enabled')),
+                'cycleCount': int(row.get('cycle_count') or 0),
+                'processedItems': int(row.get('processed_items') or 0),
+                'discoveredPairs': int(row.get('discovered_pairs') or 0),
+                'evidenceCount': int(row.get('evidence_count') or 0),
+                'observationCount': int(row.get('observation_count') or 0),
+                'lastStartedAt': row.get('last_started_at'),
+                'lastSuccessAt': row.get('last_success_at'),
+                'lastError': row.get('last_error'),
+            }
+            for row in source_states
+        ],
     })
 
 
