@@ -111,9 +111,12 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   source_type ENUM('builtin','manual','wordnet','domain','minutes-domain','curated','wikidata','internet','wikipedia','wiktionary') NOT NULL DEFAULT 'manual',
   source_version VARCHAR(64) NOT NULL DEFAULT '',
+  pair_term_low VARCHAR(191) AS (LEAST(canonical_term, synonym_term)) VIRTUAL,
+  pair_term_high VARCHAR(191) AS (GREATEST(canonical_term, synonym_term)) VIRTUAL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_law_synonyms_pair (canonical_term, synonym_term),
+  UNIQUE KEY uq_law_synonyms_undirected_pair (pair_term_low, pair_term_high),
   KEY idx_law_synonyms_canonical (canonical_term, is_active),
   KEY idx_law_synonyms_synonym (synonym_term, is_active),
   KEY idx_law_synonyms_source (source_type, is_active)

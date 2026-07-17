@@ -872,7 +872,8 @@ def upsert_dictionary_observations(
         SET priority=GREATEST(priority,%s), is_active=1,
             source_version=IF(source_type='manual', source_version, %s),
             source_type=IF(source_type='manual', source_type, %s)
-        WHERE canonical_term=%s AND synonym_term=%s
+        WHERE (canonical_term=%s AND synonym_term=%s)
+           OR (canonical_term=%s AND synonym_term=%s)
         """,
         [
             (
@@ -881,6 +882,8 @@ def upsert_dictionary_observations(
                 source_type,
                 row.canonical,
                 row.synonym,
+                row.synonym,
+                row.canonical,
             )
             for row in rows
         ],

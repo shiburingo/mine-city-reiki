@@ -332,6 +332,25 @@ def ensure_index(cur, table: str, index_name: str, definition: str) -> None:
             raise
 
 
+def ensure_unique_index(cur, table: str, index_name: str, definition: str) -> None:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND INDEX_NAME=%s
+        """,
+        (CFG.db_name, table, index_name),
+    )
+    exists = int((cur.fetchone() or {}).get("cnt") or 0) > 0
+    if not exists:
+        try:
+            cur.execute(f"ALTER TABLE `{table}` ADD UNIQUE INDEX `{index_name}` {definition}")
+        except pymysql.err.OperationalError as exc:
+            if exc.args and exc.args[0] == 1061:
+                return
+            raise
+
+
 def ensure_fulltext_index(cur, table: str, index_name: str, columns: str) -> None:
     cur.execute(
         """
@@ -429,6 +448,25 @@ def ensure_schema() -> None:
             ensure_column(cur, "law_synonyms", "source_version", "source_version VARCHAR(64) NOT NULL DEFAULT '' AFTER source_type")
             ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain", "curated", "wikidata", "internet", "wikipedia", "wiktionary"])
             ensure_index(cur, "law_synonyms", "idx_law_synonyms_source", "(source_type, is_active)")
+            deduplicate_law_synonyms(cur)
+            ensure_column(
+                cur,
+                "law_synonyms",
+                "pair_term_low",
+                "pair_term_low VARCHAR(191) AS (LEAST(canonical_term, synonym_term)) VIRTUAL",
+            )
+            ensure_column(
+                cur,
+                "law_synonyms",
+                "pair_term_high",
+                "pair_term_high VARCHAR(191) AS (GREATEST(canonical_term, synonym_term)) VIRTUAL",
+            )
+            ensure_unique_index(
+                cur,
+                "law_synonyms",
+                "uq_law_synonyms_undirected_pair",
+                "(pair_term_low, pair_term_high)",
+            )
             ensure_table(
                 cur,
                 "law_document_history",
@@ -1319,6 +1357,77 @@ def seed_law_synonyms(cur) -> None:
                 """,
                 (canonical, synonym, 10, APP_VERSION),
             )
+
+
+def deduplicate_law_synonyms(cur) -> int:
+    cur.execute(
+        """
+        SELECT
+          a.id AS a_id, a.canonical_term AS a_canonical, a.synonym_term AS a_synonym,
+          a.priority AS a_priority, a.is_active AS a_active,
+          a.source_type AS a_source_type, a.source_version AS a_source_version,
+          b.id AS b_id, b.canonical_term AS b_canonical, b.synonym_term AS b_synonym,
+          b.priority AS b_priority, b.is_active AS b_active,
+          b.source_type AS b_source_type, b.source_version AS b_source_version
+        FROM law_synonyms a
+        INNER JOIN law_synonyms b
+          ON a.canonical_term=b.synonym_term
+         AND a.synonym_term=b.canonical_term
+         AND a.id < b.id
+        """
+    )
+    rows = cur.fetchall() or []
+    for row in rows:
+        candidates = [
+            {
+                "id": int(row["a_id"]),
+                "canonical": row["a_canonical"],
+                "synonym": row["a_synonym"],
+                "priority": int(row["a_priority"]),
+                "active": int(row["a_active"]),
+                "source_type": row["a_source_type"],
+                "source_version": row["a_source_version"],
+            },
+            {
+                "id": int(row["b_id"]),
+                "canonical": row["b_canonical"],
+                "synonym": row["b_synonym"],
+                "priority": int(row["b_priority"]),
+                "active": int(row["b_active"]),
+                "source_type": row["b_source_type"],
+                "source_version": row["b_source_version"],
+            },
+        ]
+        keeper = max(
+            candidates,
+            key=lambda item: (
+                item["source_type"] == "manual",
+                item["priority"],
+                item["active"],
+                -item["id"],
+            ),
+        )
+        canonical, synonym = normalize_pair(keeper["canonical"], keeper["synonym"])
+        loser = candidates[1] if keeper is candidates[0] else candidates[0]
+        cur.execute("DELETE FROM law_synonyms WHERE id=%s", (loser["id"],))
+        cur.execute(
+            """
+            UPDATE law_synonyms
+            SET canonical_term=%s, synonym_term=%s, priority=%s, is_active=%s,
+                source_type=%s, source_version=%s
+            WHERE id=%s
+            """,
+            (
+                canonical,
+                synonym,
+                max(item["priority"] for item in candidates),
+                max(item["active"] for item in candidates),
+                keeper["source_type"],
+                keeper["source_version"],
+                keeper["id"],
+            ),
+        )
+    return len(rows)
 
 
 def prune_expired_caches(cur) -> None:

@@ -37,6 +37,27 @@ class FakeSynonymCursor:
         return self.current
 
 
+class FakeDeduplicationCursor:
+    def __init__(self, row: dict) -> None:
+        self.row = row
+        self.deleted_id = 0
+        self.updated_values: tuple | None = None
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        if "INNER JOIN law_synonyms b" in sql:
+            return
+        if sql.strip().startswith("DELETE FROM law_synonyms"):
+            self.deleted_id = int(params[0])
+            return
+        if sql.strip().startswith("UPDATE law_synonyms"):
+            self.updated_values = params
+            return
+        raise AssertionError(f"Unexpected SQL: {sql}")
+
+    def fetchall(self) -> list[dict]:
+        return [self.row]
+
+
 class MediaWikiRedirectTests(unittest.TestCase):
     @patch("dictionary_engine._fetch_json")
     def test_redirect_batch_resolves_source_titles_and_keeps_cursor(self, fetch_json) -> None:
@@ -208,6 +229,33 @@ class CompiledDictionaryTests(unittest.TestCase):
                 new_lookup.close()
                 old_lookup.close()
             app_module.LOCAL_COMPILED_SYNONYM_CACHE = None
+
+    def test_reverse_duplicates_preserve_manual_source_and_highest_priority(self) -> None:
+        import importlib
+
+        with patch.dict(os.environ, {"DB_AUTO_INIT": "0"}):
+            app_module = importlib.import_module("app")
+        cursor = FakeDeduplicationCursor({
+            "a_id": 10,
+            "a_canonical": "老人",
+            "a_synonym": "シニア",
+            "a_priority": 15,
+            "a_active": 1,
+            "a_source_type": "wikidata",
+            "a_source_version": "source-v1",
+            "b_id": 20,
+            "b_canonical": "シニア",
+            "b_synonym": "老人",
+            "b_priority": 8,
+            "b_active": 0,
+            "b_source_type": "manual",
+            "b_source_version": "manual-v1",
+        })
+
+        self.assertEqual(app_module.deduplicate_law_synonyms(cursor), 1)
+        self.assertEqual(cursor.deleted_id, 10)
+        self.assertEqual(cursor.updated_values[:6], ("シニア", "老人", 15, 1, "manual", "manual-v1"))
+        self.assertEqual(cursor.updated_values[6], 20)
 
 
 if __name__ == "__main__":
