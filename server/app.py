@@ -3980,8 +3980,6 @@ def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool
         summary['progressLabel'] = label
         summary['progressCurrent'] = current
         summary['progressTotal'] = total
-        with db_cursor(commit=True) as (_, progress_cur):
-            update_sync_run_summary(progress_cur, run_id, summary)
 
     try:
         with db_cursor(commit=True) as (_, cur):
