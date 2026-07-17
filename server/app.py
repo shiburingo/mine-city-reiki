@@ -1345,25 +1345,25 @@ def seed_law_synonyms(cur) -> None:
 def ensure_undirected_synonym_index(cur) -> None:
     cur.execute(
         """
-        SELECT COLUMN_NAME, COLLATION_NAME
+        SELECT COLUMN_NAME, DATA_TYPE
         FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA=%s AND TABLE_NAME='law_synonyms'
           AND COLUMN_NAME IN ('pair_term_low','pair_term_high')
         """,
         (CFG.db_name,),
     )
-    collations = {row["COLUMN_NAME"]: row.get("COLLATION_NAME") for row in (cur.fetchall() or [])}
+    column_types = {row["COLUMN_NAME"]: row.get("DATA_TYPE") for row in (cur.fetchall() or [])}
     definitions = {
         "pair_term_low": (
-            "pair_term_low VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin "
-            "AS (LEAST(canonical_term COLLATE utf8mb4_bin, synonym_term COLLATE utf8mb4_bin)) VIRTUAL"
+            "pair_term_low VARBINARY(764) "
+            "AS (LEAST(BINARY canonical_term, BINARY synonym_term)) VIRTUAL"
         ),
         "pair_term_high": (
-            "pair_term_high VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin "
-            "AS (GREATEST(canonical_term COLLATE utf8mb4_bin, synonym_term COLLATE utf8mb4_bin)) VIRTUAL"
+            "pair_term_high VARBINARY(764) "
+            "AS (GREATEST(BINARY canonical_term, BINARY synonym_term)) VIRTUAL"
         ),
     }
-    if collations and any(value != "utf8mb4_bin" for value in collations.values()):
+    if column_types and any(value != "varbinary" for value in column_types.values()):
         cur.execute(
             """
             SELECT COUNT(*) AS cnt
@@ -1381,7 +1381,7 @@ def ensure_undirected_synonym_index(cur) -> None:
         )
     else:
         for column, definition in definitions.items():
-            if column not in collations:
+            if column not in column_types:
                 ensure_column(cur, "law_synonyms", column, definition)
     ensure_unique_index(
         cur,
