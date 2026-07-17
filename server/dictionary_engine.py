@@ -11,10 +11,11 @@ import tempfile
 import csv
 import io
 import time
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -27,7 +28,7 @@ WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/downlo
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
 INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-17"
-COMPILED_DICTIONARY_VERSION = "compiled-synonyms-2026-07-03"
+COMPILED_DICTIONARY_VERSION = "compiled-synonyms-sqlite-2026-07-17"
 WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_REQUEST_INTERVAL_SECONDS = 0.8
 MEDIAWIKI_REQUEST_INTERVAL_SECONDS = 0.15
@@ -38,6 +39,9 @@ WIKIMEDIA_USER_AGENT = os.getenv(
     "mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)",
 )
 DEFAULT_COMPILED_DICTIONARY_PATH = Path(__file__).resolve().parent / "data" / "compiled_synonyms.json"
+COMPILED_DICTIONARY_BATCH_SIZE = 5_000
+COMPILED_DICTIONARY_CACHE_SIZE = 4_096
+COMPILED_JSON_COMPAT_MAX_TERMS = max(0, int(os.getenv("REIKI_SYNONYM_JSON_COMPAT_MAX_TERMS", "100000")))
 
 MIN_TERM_LEN = 2
 MAX_TERM_LEN = 40
@@ -143,6 +147,14 @@ def normalize_term(value: str | None) -> str:
     return re.sub(r"\s+", "", value.strip().lower())
 
 
+def normalize_pair(left: str | None, right: str | None) -> tuple[str, str]:
+    a = normalize_term(left)
+    b = normalize_term(right)
+    if not a or not b or a == b:
+        return "", ""
+    return (a, b) if a < b else (b, a)
+
+
 def is_good_term(value: str | None) -> bool:
     term = normalize_term(value)
     if len(term) < MIN_TERM_LEN or len(term) > MAX_TERM_LEN:
@@ -159,8 +171,7 @@ def is_good_term(value: str | None) -> bool:
 
 
 def add_pair(pairs: set[tuple[str, str]], left: str | None, right: str | None) -> None:
-    a = normalize_term(left)
-    b = normalize_term(right)
+    a, b = normalize_pair(left, right)
     if not a or not b or a == b:
         return
     if not is_good_term(a) or not is_good_term(b):
@@ -631,8 +642,9 @@ def build_domain_pairs(cur) -> tuple[set[tuple[str, str]], dict[str, Any]]:
 
 def insert_pairs(cur, pairs: Iterable[tuple[str, str]], source_type: str, source_version: str, priority: int) -> int:
     count = 0
-    for canonical, synonym in sorted(set(pairs)):
-        if canonical == synonym:
+    normalized_pairs = {normalize_pair(canonical, synonym) for canonical, synonym in pairs}
+    for canonical, synonym in sorted(normalized_pairs):
+        if not canonical or not synonym:
             continue
         cur.execute(
             """
@@ -780,8 +792,7 @@ def upsert_dictionary_observations(
 ) -> dict[str, int]:
     unique: dict[tuple[str, str], DictionaryObservation] = {}
     for observation in observations:
-        canonical = normalize_term(observation.canonical)
-        synonym = normalize_term(observation.synonym)
+        canonical, synonym = normalize_pair(observation.canonical, observation.synonym)
         if canonical == synonym or not is_good_term(canonical) or not is_good_term(synonym):
             continue
         unique[(canonical, synonym)] = DictionaryObservation(
@@ -912,6 +923,129 @@ def compiled_dictionary_path(path: str | Path | None = None) -> Path:
     return Path(path).expanduser().resolve() if path else DEFAULT_COMPILED_DICTIONARY_PATH
 
 
+def compiled_dictionary_index_path(path: str | Path | None = None) -> Path:
+    source_path = compiled_dictionary_path(path)
+    if source_path.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
+        return source_path
+    return source_path.with_suffix(".sqlite3")
+
+
+def compiled_dictionary_runtime_path(path: str | Path | None = None) -> Path:
+    index_path = compiled_dictionary_index_path(path)
+    if index_path.exists():
+        return index_path
+    return compiled_dictionary_path(path)
+
+
+class IndexedSynonymDictionary:
+    """Read-only SQLite lookup with a bounded per-process hot-term cache."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path).expanduser().resolve()
+        uri = f"{self.path.as_uri()}?mode=ro&immutable=1"
+        self._connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        self._lock = threading.RLock()
+        self._cache: OrderedDict[str, tuple[tuple[str, int], ...]] = OrderedDict()
+
+    def _lookup(self, term: str) -> tuple[tuple[str, int], ...]:
+        with self._lock:
+            cached = self._cache.pop(term, None)
+            if cached is not None:
+                self._cache[term] = cached
+                return cached
+            rows = self._connection.execute(
+                "SELECT related_term, priority FROM edges WHERE term=? ORDER BY rank",
+                (term,),
+            ).fetchall()
+            result = tuple((str(row[0]), int(row[1])) for row in rows)
+            self._cache[term] = result
+            if len(self._cache) > COMPILED_DICTIONARY_CACHE_SIZE:
+                self._cache.popitem(last=False)
+            return result
+
+    def get(self, term: str, default=None):
+        normalized = normalize_term(term)
+        if not normalized:
+            return default
+        result = self._lookup(normalized)
+        return list(result) if result else default
+
+    def existing_terms(self, candidates: Iterable[str]) -> set[str]:
+        normalized_terms = {normalize_term(term) for term in candidates}
+        normalized = sorted(term for term in normalized_terms if term)
+        found: set[str] = set()
+        with self._lock:
+            for offset in range(0, len(normalized), 500):
+                batch = normalized[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = self._connection.execute(
+                    f"SELECT DISTINCT term FROM edges WHERE term IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                found.update(str(row[0]) for row in rows)
+        return found
+
+    def close(self) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._connection.close()
+
+
+def _create_compiled_index_temp_path(target_path: Path) -> Path:
+    handle, raw_path = tempfile.mkstemp(prefix=f".{target_path.name}.", suffix=".tmp", dir=target_path.parent)
+    os.close(handle)
+    temp_path = Path(raw_path)
+    temp_path.unlink()
+    return temp_path
+
+
+def _write_json_compatibility_artifact(index_path: Path, target_path: Path, metadata: dict[str, Any]) -> None:
+    handle, raw_path = tempfile.mkstemp(prefix=f".{target_path.name}.", suffix=".tmp", dir=target_path.parent)
+    os.close(handle)
+    temp_path = Path(raw_path)
+    connection = sqlite3.connect(f"{index_path.as_uri()}?mode=ro&immutable=1", uri=True)
+    try:
+        with temp_path.open("w", encoding="utf-8") as output:
+            encoded_metadata = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+            output.write(encoded_metadata[:-1])
+            output.write(',"terms":{')
+            current_term = ""
+            current_edges: list[dict[str, Any]] = []
+            first_term = True
+
+            def flush_term() -> None:
+                nonlocal first_term
+                if not current_term:
+                    return
+                if not first_term:
+                    output.write(",")
+                first_term = False
+                output.write(json.dumps(current_term, ensure_ascii=False))
+                output.write(":")
+                output.write(json.dumps(current_edges, ensure_ascii=False, separators=(",", ":")))
+
+            rows = connection.execute(
+                "SELECT term, related_term, priority, source_type, source_version FROM edges ORDER BY term, rank"
+            )
+            for term, related_term, priority, source_type, source_version in rows:
+                if current_term and term != current_term:
+                    flush_term()
+                    current_edges = []
+                current_term = str(term)
+                current_edges.append({
+                    "term": str(related_term),
+                    "priority": int(priority),
+                    "sourceType": str(source_type),
+                    "sourceVersion": str(source_version),
+                })
+            flush_term()
+            output.write("}}")
+        temp_path.replace(target_path)
+    finally:
+        connection.close()
+        temp_path.unlink(missing_ok=True)
+
+
 def compile_synonym_dictionary(
     cur,
     *,
@@ -919,83 +1053,174 @@ def compile_synonym_dictionary(
     min_priority: int = 1,
     max_edges_per_term: int = 64,
 ) -> dict[str, Any]:
-    target_path = compiled_dictionary_path(output_path)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    cur.execute(
-        """
-        SELECT canonical_term, synonym_term, priority, source_type, source_version
-        FROM law_synonyms
-        WHERE is_active=1 AND priority >= %s
-        ORDER BY priority DESC, canonical_term, synonym_term
-        """,
-        (min_priority,),
-    )
-    graph: dict[str, dict[str, dict[str, Any]]] = {}
+    compatibility_path = compiled_dictionary_path(output_path)
+    index_path = compiled_dictionary_index_path(output_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _create_compiled_index_temp_path(index_path)
     source_counts: Counter[str] = Counter()
     db_rows = 0
-    for row in cur.fetchall() or []:
-        canonical = normalize_term(row.get("canonical_term") or "")
-        synonym = normalize_term(row.get("synonym_term") or "")
-        if not canonical or not synonym or canonical == synonym:
-            continue
-        priority = int(row.get("priority") or 0)
-        if priority < min_priority:
-            continue
-        source_type = row.get("source_type") or "manual"
-        source_version = row.get("source_version") or ""
-        db_rows += 1
-        source_counts[source_type] += 1
-        for left, right in ((canonical, synonym), (synonym, canonical)):
-            existing = graph.setdefault(left, {}).get(right)
-            if existing is None or priority > int(existing.get("priority") or 0):
-                graph[left][right] = {
-                    "term": right,
-                    "priority": priority,
-                    "sourceType": source_type,
-                    "sourceVersion": source_version,
-                }
+    connection = sqlite3.connect(temp_path)
+    try:
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.execute("PRAGMA cache_size=-65536")
+        connection.execute(
+            """
+            CREATE TABLE candidate_edges (
+              term TEXT NOT NULL,
+              related_term TEXT NOT NULL,
+              priority INTEGER NOT NULL,
+              source_type TEXT NOT NULL,
+              source_version TEXT NOT NULL,
+              PRIMARY KEY (term, related_term)
+            ) WITHOUT ROWID
+            """
+        )
+        upsert_sql = """
+            INSERT INTO candidate_edges (term, related_term, priority, source_type, source_version)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(term, related_term) DO UPDATE SET
+              priority=MAX(candidate_edges.priority, excluded.priority),
+              source_type=CASE
+                WHEN excluded.priority > candidate_edges.priority THEN excluded.source_type
+                ELSE candidate_edges.source_type
+              END,
+              source_version=CASE
+                WHEN excluded.priority > candidate_edges.priority THEN excluded.source_version
+                ELSE candidate_edges.source_version
+              END
+        """
+        last_id = 0
+        while True:
+            cur.execute(
+                """
+                SELECT id, canonical_term, synonym_term, priority, source_type, source_version
+                FROM law_synonyms
+                WHERE is_active=1 AND priority >= %s AND id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (min_priority, last_id, COMPILED_DICTIONARY_BATCH_SIZE),
+            )
+            rows = cur.fetchall() or []
+            if not rows:
+                break
+            edge_rows: list[tuple[str, str, int, str, str]] = []
+            for row in rows:
+                last_id = max(last_id, int(row.get("id") or 0))
+                canonical, synonym = normalize_pair(row.get("canonical_term"), row.get("synonym_term"))
+                priority = int(row.get("priority") or 0)
+                if not canonical or priority < min_priority:
+                    continue
+                source_type = str(row.get("source_type") or "manual")
+                source_version = str(row.get("source_version") or "")
+                db_rows += 1
+                source_counts[source_type] += 1
+                edge_rows.extend((
+                    (canonical, synonym, priority, source_type, source_version),
+                    (synonym, canonical, priority, source_type, source_version),
+                ))
+            connection.executemany(upsert_sql, edge_rows)
+            connection.commit()
+            if len(rows) < COMPILED_DICTIONARY_BATCH_SIZE:
+                break
 
-    terms: dict[str, list[dict[str, Any]]] = {}
-    edge_count = 0
-    for term, related in graph.items():
-        edges = sorted(
-            related.values(),
-            key=lambda item: (-int(item["priority"]), len(str(item["term"])), str(item["term"])),
-        )[:max_edges_per_term]
-        if edges:
-            terms[term] = edges
-            edge_count += len(edges)
+        connection.execute(
+            """
+            CREATE TABLE edges (
+              term TEXT NOT NULL,
+              rank INTEGER NOT NULL,
+              related_term TEXT NOT NULL,
+              priority INTEGER NOT NULL,
+              source_type TEXT NOT NULL,
+              source_version TEXT NOT NULL,
+              PRIMARY KEY (term, rank),
+              UNIQUE (term, related_term)
+            ) WITHOUT ROWID
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO edges (term, rank, related_term, priority, source_type, source_version)
+            SELECT term, edge_rank, related_term, priority, source_type, source_version
+            FROM (
+              SELECT
+                term,
+                related_term,
+                priority,
+                source_type,
+                source_version,
+                ROW_NUMBER() OVER (
+                  PARTITION BY term
+                  ORDER BY priority DESC, LENGTH(related_term), related_term
+                ) AS edge_rank
+              FROM candidate_edges
+            ) ranked
+            WHERE edge_rank <= ?
+            """,
+            (max(1, int(max_edges_per_term)),),
+        )
+        term_count = int(connection.execute("SELECT COUNT(DISTINCT term) FROM edges").fetchone()[0])
+        edge_count = int(connection.execute("SELECT COUNT(*) FROM edges").fetchone()[0])
+        compiled_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        metadata = {
+            "version": COMPILED_DICTIONARY_VERSION,
+            "compiledAt": compiled_at,
+            "minPriority": int(min_priority),
+            "maxEdgesPerTerm": int(max_edges_per_term),
+            "dbRows": db_rows,
+            "termCount": term_count,
+            "edgeCount": edge_count,
+            "sourceCounts": dict(sorted(source_counts.items())),
+        }
+        connection.execute(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID"
+        )
+        connection.executemany(
+            "INSERT INTO metadata (key, value) VALUES (?,?)",
+            [(key, json.dumps(value, ensure_ascii=False, separators=(",", ":"))) for key, value in metadata.items()],
+        )
+        connection.execute("DROP TABLE candidate_edges")
+        connection.execute("PRAGMA user_version=1")
+        connection.commit()
+        connection.execute("VACUUM")
+    except Exception:
+        connection.close()
+        temp_path.unlink(missing_ok=True)
+        raise
+    else:
+        connection.close()
+    temp_path.replace(index_path)
 
-    payload = {
-        "version": COMPILED_DICTIONARY_VERSION,
-        "compiledAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "minPriority": min_priority,
-        "maxEdgesPerTerm": max_edges_per_term,
-        "dbRows": db_rows,
-        "termCount": len(terms),
-        "edgeCount": edge_count,
-        "sourceCounts": dict(sorted(source_counts.items())),
-        "terms": terms,
-    }
-    tmp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    tmp_path.replace(target_path)
+    json_compat_written = False
+    if compatibility_path != index_path:
+        if term_count <= COMPILED_JSON_COMPAT_MAX_TERMS:
+            _write_json_compatibility_artifact(index_path, compatibility_path, metadata)
+            json_compat_written = True
+        else:
+            compatibility_path.unlink(missing_ok=True)
     return {
         "operation": "dictionary-compile",
         "engineVersion": COMPILED_DICTIONARY_VERSION,
-        "path": str(target_path),
-        "bytes": target_path.stat().st_size,
-        "compiledAt": payload["compiledAt"],
+        "format": "sqlite-index",
+        "path": str(index_path),
+        "bytes": index_path.stat().st_size,
+        "compiledAt": compiled_at,
         "dbRows": db_rows,
-        "termCount": len(terms),
+        "termCount": term_count,
         "edgeCount": edge_count,
         "minPriority": min_priority,
         "maxEdgesPerTerm": max_edges_per_term,
-        "sourceCounts": payload["sourceCounts"],
+        "sourceCounts": metadata["sourceCounts"],
+        "jsonCompatWritten": json_compat_written,
     }
 
 
-def load_compiled_synonym_dictionary(path: str | Path | None = None) -> dict[str, list[tuple[str, int]]]:
+def load_compiled_synonym_dictionary(path: str | Path | None = None) -> Any:
+    index_path = compiled_dictionary_index_path(path)
+    if index_path.exists():
+        return IndexedSynonymDictionary(index_path)
     source_path = compiled_dictionary_path(path)
     payload = json.loads(source_path.read_text(encoding="utf-8"))
     terms = payload.get("terms") or {}
@@ -1013,7 +1238,7 @@ def load_compiled_synonym_dictionary(path: str | Path | None = None) -> dict[str
 
 
 def compiled_synonym_dictionary_status(path: str | Path | None = None) -> dict[str, Any]:
-    source_path = compiled_dictionary_path(path)
+    source_path = compiled_dictionary_runtime_path(path)
     if not source_path.exists():
         return {"exists": False, "path": str(source_path)}
     stat = source_path.stat()
@@ -1024,7 +1249,19 @@ def compiled_synonym_dictionary_status(path: str | Path | None = None) -> dict[s
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(stat.st_mtime)),
     }
     try:
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        if source_path == compiled_dictionary_index_path(path):
+            connection = sqlite3.connect(f"{source_path.as_uri()}?mode=ro&immutable=1", uri=True)
+            try:
+                payload = {
+                    str(key): json.loads(str(value))
+                    for key, value in connection.execute("SELECT key, value FROM metadata")
+                }
+            finally:
+                connection.close()
+            status["format"] = "sqlite-index"
+        else:
+            payload = json.loads(source_path.read_text(encoding="utf-8"))
+            status["format"] = "json"
         status.update({
             "version": payload.get("version") or "",
             "compiledAt": payload.get("compiledAt") or "",

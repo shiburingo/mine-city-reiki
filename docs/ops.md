@@ -116,6 +116,14 @@ python3 server/run_due_sync.py --force
 
 取得結果は累積され、通信失敗や取得件数の変動で既存辞書は削除されません。管理画面には50万語・100万語目標の進捗、ソース別巡回件数、新規発見数、ライセンス、最終成功・エラーを表示します。
 
+コンパイル結果の正本は `server/data/compiled_synonyms.sqlite3` です。作成中は一時ファイルへ書き込み、完了時に原子的に差し替えるため、API検索を止めずに更新できます。10万語以下では `server/data/compiled_synonyms.json` も互換用に生成します。
+
+```bash
+ls -lh server/data/compiled_synonyms.sqlite3
+sqlite3 server/data/compiled_synonyms.sqlite3 \
+  "SELECT key, value FROM metadata WHERE key IN ('termCount','edgeCount','compiledAt');"
+```
+
 既定の日次予算はWikipedia 5,000件、Wiktionary 2,000件、Wikidata 25語です。API負荷や実行時間に応じて `/etc/mine-city-reiki-api.env` で調整します。
 
 ---
@@ -176,6 +184,7 @@ REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT=2000
 REIKI_DAILY_DICTIONARY_WIKIDATA=1
 REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS=25
 REIKI_DICTIONARY_USER_AGENT=mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)
+REIKI_SYNONYM_JSON_COMPAT_MAX_TERMS=100000
 ```
 
 ---

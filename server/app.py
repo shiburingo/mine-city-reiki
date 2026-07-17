@@ -41,6 +41,7 @@ from dictionary_engine import (
     build_internet_dictionary,
     build_minutes_pairs_from_rows,
     compile_synonym_dictionary,
+    compiled_dictionary_runtime_path,
     compiled_synonym_dictionary_status,
     compiled_dictionary_path,
     count_unprocessed_minutes_dictionary_rows,
@@ -49,6 +50,7 @@ from dictionary_engine import (
     insert_pairs,
     load_compiled_synonym_dictionary,
     mark_minutes_dictionary_rows_processed,
+    normalize_pair,
 )
 
 try:
@@ -163,9 +165,8 @@ LOCAL_CACHE_TTL_SECONDS = 600
 LOCAL_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 LOCAL_ASK_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOCAL_MINUTES_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-LOCAL_SYNONYM_CACHE: tuple[float, dict[str, list[str]]] | None = None
 LOCAL_SCORED_SYNONYM_CACHE: tuple[float, dict[str, list[tuple[str, int]]]] | None = None
-LOCAL_COMPILED_SYNONYM_CACHE: tuple[float, float, dict[str, list[tuple[str, int]]]] | None = None
+LOCAL_COMPILED_SYNONYM_CACHE: tuple[str, int, Any] | None = None
 SYNC_THREAD_LOCK = threading.Lock()
 MINUTES_CURSOR_PAGE_SIZE = 60
 MINUTES_CURSOR_MAX_PAGE_SIZE = 200
@@ -1310,12 +1311,13 @@ def ensure_table(cur, table: str, ddl: str) -> None:
 def seed_law_synonyms(cur) -> None:
     for canonical_term, synonyms in BUILTIN_SYNONYM_GROUPS:
         for synonym_term in synonyms:
+            canonical, synonym = normalize_pair(canonical_term, synonym_term)
             cur.execute(
                 """
                 INSERT IGNORE INTO law_synonyms (canonical_term, synonym_term, priority, is_active, source_type, source_version)
                 VALUES (%s,%s,%s,1,'builtin',%s)
                 """,
-                (canonical_term, synonym_term, 10, APP_VERSION),
+                (canonical, synonym, 10, APP_VERSION),
             )
 
 
@@ -1328,10 +1330,8 @@ def clear_local_caches() -> None:
     LOCAL_SEARCH_CACHE.clear()
     LOCAL_ASK_CACHE.clear()
     LOCAL_MINUTES_SEARCH_CACHE.clear()
-    global LOCAL_SYNONYM_CACHE
     global LOCAL_SCORED_SYNONYM_CACHE
     global LOCAL_COMPILED_SYNONYM_CACHE
-    LOCAL_SYNONYM_CACHE = None
     LOCAL_SCORED_SYNONYM_CACHE = None
     LOCAL_COMPILED_SYNONYM_CACHE = None
 
@@ -1353,61 +1353,29 @@ def bump_cache_generation(cur) -> int:
     return int(row.get("cache_generation") or 1)
 
 
-def synonyms_map(cur=None) -> dict[str, list[str]]:
-    global LOCAL_SYNONYM_CACHE
-    now = time.time()
-    if LOCAL_SYNONYM_CACHE and now - LOCAL_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS:
-        return LOCAL_SYNONYM_CACHE[1]
-    synonym_groups: list[tuple[str, str]] = []
-    if cur is not None:
-        cur.execute(
-            """
-            SELECT canonical_term, synonym_term
-            FROM law_synonyms
-            WHERE is_active=1
-            ORDER BY priority DESC, id ASC
-            """
-        )
-        synonym_groups = [
-            (normalize_text(row["canonical_term"]).lower(), normalize_text(row["synonym_term"]).lower())
-            for row in (cur.fetchall() or [])
-            if normalize_text(row.get("canonical_term") or "") and normalize_text(row.get("synonym_term") or "")
-        ]
-    else:
-        with db_cursor() as (_, inner_cur):
-            return synonyms_map(inner_cur)
-    graph: dict[str, set[str]] = {}
-    for canonical_term, synonym_term in synonym_groups:
-        graph.setdefault(canonical_term, set()).add(synonym_term)
-        graph.setdefault(synonym_term, set()).add(canonical_term)
-    result = {key: sorted(values) for key, values in graph.items()}
-    LOCAL_SYNONYM_CACHE = (now, result)
-    return result
-
-
-def scored_synonyms_map(cur=None) -> dict[str, list[tuple[str, int]]]:
+def scored_synonyms_map(cur=None) -> Any:
     global LOCAL_SCORED_SYNONYM_CACHE
     global LOCAL_COMPILED_SYNONYM_CACHE
-    now = time.time()
-    if LOCAL_SCORED_SYNONYM_CACHE and now - LOCAL_SCORED_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS:
-        return LOCAL_SCORED_SYNONYM_CACHE[1]
     compiled_path = get_compiled_dictionary_path()
-    if compiled_path.exists():
+    runtime_path = compiled_dictionary_runtime_path(compiled_path)
+    if runtime_path.exists():
         try:
-            compiled_mtime = compiled_path.stat().st_mtime
+            compiled_mtime_ns = runtime_path.stat().st_mtime_ns
             if (
                 LOCAL_COMPILED_SYNONYM_CACHE
-                and LOCAL_COMPILED_SYNONYM_CACHE[1] == compiled_mtime
-                and now - LOCAL_COMPILED_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS
+                and LOCAL_COMPILED_SYNONYM_CACHE[0] == str(runtime_path)
+                and LOCAL_COMPILED_SYNONYM_CACHE[1] == compiled_mtime_ns
             ):
                 result = LOCAL_COMPILED_SYNONYM_CACHE[2]
             else:
                 result = load_compiled_synonym_dictionary(compiled_path)
-                LOCAL_COMPILED_SYNONYM_CACHE = (now, compiled_mtime, result)
-            LOCAL_SCORED_SYNONYM_CACHE = (now, result)
+                LOCAL_COMPILED_SYNONYM_CACHE = (str(runtime_path), compiled_mtime_ns, result)
             return result
         except Exception:
             app.logger.exception("Compiled synonym dictionary load failed; falling back to database")
+    now = time.time()
+    if LOCAL_SCORED_SYNONYM_CACHE and now - LOCAL_SCORED_SYNONYM_CACHE[0] < LOCAL_CACHE_TTL_SECONDS:
+        return LOCAL_SCORED_SYNONYM_CACHE[1]
     if cur is None:
         with db_cursor() as (_, inner_cur):
             return scored_synonyms_map(inner_cur)
@@ -1595,16 +1563,22 @@ def _dedupe_terms(terms: Iterable[str], limit: int = 20) -> list[str]:
 
 
 def _known_question_terms(normalized_query: str, cur=None) -> list[str]:
-    known: list[str] = []
-    lookup = synonyms_map(cur)
-    for canonical, synonyms in lookup.items():
-        for term in [canonical, *synonyms]:
-            candidate = normalize_text(term).lower()
-            if len(candidate) >= 3 and contains_japanese(candidate) and candidate in normalized_query:
-                known.append(candidate)
-        canonical_norm = normalize_text(canonical).lower()
-        if len(canonical_norm) >= 3 and contains_japanese(canonical_norm) and canonical_norm in normalized_query:
-            known.append(canonical_norm)
+    candidates: set[str] = set()
+    for chunk in re.findall(r"[0-9a-z一-龯ぁ-んァ-ヶー々]+", normalized_query):
+        max_length = min(20, len(chunk))
+        for start in range(len(chunk)):
+            for length in range(3, max_length + 1):
+                candidate = chunk[start : start + length]
+                if len(candidate) < length:
+                    break
+                if contains_japanese(candidate):
+                    candidates.add(candidate)
+    lookup = scored_synonyms_map(cur)
+    existing_terms = getattr(lookup, "existing_terms", None)
+    if callable(existing_terms):
+        known = list(existing_terms(candidates))
+    else:
+        known = [candidate for candidate in candidates if lookup.get(candidate)]
     return sorted(
         _dedupe_terms(known, limit=24),
         key=lambda value: (normalized_query.find(value) if value in normalized_query else 10**6, -len(value), value),
@@ -8482,8 +8456,7 @@ def api_synonyms_list():
 @app.post('/api/synonyms')
 def api_synonyms_create():
     payload = request.get_json(silent=True) or {}
-    canonical = normalize_text(payload.get('canonicalTerm') or '').lower()
-    synonym = normalize_text(payload.get('synonymTerm') or '').lower()
+    canonical, synonym = normalize_pair(payload.get('canonicalTerm'), payload.get('synonymTerm'))
     priority = max(1, min(20, int(payload.get('priority') or 10)))
     if not canonical or not synonym:
         raise ValueError('canonicalTerm と synonymTerm は必須です。')
@@ -8659,7 +8632,8 @@ def api_openapi():
 
 
 ensure_schema()
-maybe_backfill_search_terms()
+if CFG.auto_init:
+    maybe_backfill_search_terms()
 
 
 if __name__ == '__main__':
