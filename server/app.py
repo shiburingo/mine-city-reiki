@@ -1389,6 +1389,17 @@ def ensure_undirected_synonym_index(cur) -> None:
         "uq_law_synonyms_undirected_pair",
         "(pair_term_low, pair_term_high)",
     )
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME='law_synonyms'
+          AND INDEX_NAME='uq_law_synonyms_pair'
+        """,
+        (CFG.db_name,),
+    )
+    if int((cur.fetchone() or {}).get("cnt") or 0) > 0:
+        cur.execute("ALTER TABLE law_synonyms DROP INDEX uq_law_synonyms_pair")
 
 
 def deduplicate_law_synonyms(cur) -> int:

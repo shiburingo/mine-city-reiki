@@ -115,7 +115,6 @@ CREATE TABLE IF NOT EXISTS law_synonyms (
   pair_term_high VARBINARY(764) AS (GREATEST(BINARY canonical_term, BINARY synonym_term)) VIRTUAL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uq_law_synonyms_pair (canonical_term, synonym_term),
   UNIQUE KEY uq_law_synonyms_undirected_pair (pair_term_low, pair_term_high),
   KEY idx_law_synonyms_canonical (canonical_term, is_active),
   KEY idx_law_synonyms_synonym (synonym_term, is_active),
