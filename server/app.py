@@ -449,24 +449,7 @@ def ensure_schema() -> None:
             ensure_enum_values(cur, "law_synonyms", "source_type", ["builtin", "manual", "wordnet", "domain", "minutes-domain", "curated", "wikidata", "internet", "wikipedia", "wiktionary"])
             ensure_index(cur, "law_synonyms", "idx_law_synonyms_source", "(source_type, is_active)")
             deduplicate_law_synonyms(cur)
-            ensure_column(
-                cur,
-                "law_synonyms",
-                "pair_term_low",
-                "pair_term_low VARCHAR(191) AS (LEAST(canonical_term, synonym_term)) VIRTUAL",
-            )
-            ensure_column(
-                cur,
-                "law_synonyms",
-                "pair_term_high",
-                "pair_term_high VARCHAR(191) AS (GREATEST(canonical_term, synonym_term)) VIRTUAL",
-            )
-            ensure_unique_index(
-                cur,
-                "law_synonyms",
-                "uq_law_synonyms_undirected_pair",
-                "(pair_term_low, pair_term_high)",
-            )
+            ensure_undirected_synonym_index(cur)
             ensure_table(
                 cur,
                 "law_document_history",
@@ -1359,6 +1342,55 @@ def seed_law_synonyms(cur) -> None:
             )
 
 
+def ensure_undirected_synonym_index(cur) -> None:
+    cur.execute(
+        """
+        SELECT COLUMN_NAME, COLLATION_NAME
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME='law_synonyms'
+          AND COLUMN_NAME IN ('pair_term_low','pair_term_high')
+        """,
+        (CFG.db_name,),
+    )
+    collations = {row["COLUMN_NAME"]: row.get("COLLATION_NAME") for row in (cur.fetchall() or [])}
+    definitions = {
+        "pair_term_low": (
+            "pair_term_low VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin "
+            "AS (LEAST(canonical_term COLLATE utf8mb4_bin, synonym_term COLLATE utf8mb4_bin)) VIRTUAL"
+        ),
+        "pair_term_high": (
+            "pair_term_high VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin "
+            "AS (GREATEST(canonical_term COLLATE utf8mb4_bin, synonym_term COLLATE utf8mb4_bin)) VIRTUAL"
+        ),
+    }
+    if collations and any(value != "utf8mb4_bin" for value in collations.values()):
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA=%s AND TABLE_NAME='law_synonyms'
+              AND INDEX_NAME='uq_law_synonyms_undirected_pair'
+            """,
+            (CFG.db_name,),
+        )
+        if int((cur.fetchone() or {}).get("cnt") or 0) > 0:
+            cur.execute("ALTER TABLE law_synonyms DROP INDEX uq_law_synonyms_undirected_pair")
+        cur.execute(
+            f"ALTER TABLE law_synonyms MODIFY COLUMN {definitions['pair_term_low']}, "
+            f"MODIFY COLUMN {definitions['pair_term_high']}"
+        )
+    else:
+        for column, definition in definitions.items():
+            if column not in collations:
+                ensure_column(cur, "law_synonyms", column, definition)
+    ensure_unique_index(
+        cur,
+        "law_synonyms",
+        "uq_law_synonyms_undirected_pair",
+        "(pair_term_low, pair_term_high)",
+    )
+
+
 def deduplicate_law_synonyms(cur) -> int:
     cur.execute(
         """
@@ -1371,8 +1403,8 @@ def deduplicate_law_synonyms(cur) -> int:
           b.source_type AS b_source_type, b.source_version AS b_source_version
         FROM law_synonyms a
         INNER JOIN law_synonyms b
-          ON a.canonical_term=b.synonym_term
-         AND a.synonym_term=b.canonical_term
+          ON a.canonical_term COLLATE utf8mb4_bin=b.synonym_term COLLATE utf8mb4_bin
+         AND a.synonym_term COLLATE utf8mb4_bin=b.canonical_term COLLATE utf8mb4_bin
          AND a.id < b.id
         """
     )
