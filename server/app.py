@@ -1403,13 +1403,19 @@ def deduplicate_law_synonyms(cur) -> int:
           b.source_type AS b_source_type, b.source_version AS b_source_version
         FROM law_synonyms a
         INNER JOIN law_synonyms b
-          ON a.canonical_term COLLATE utf8mb4_bin=b.synonym_term COLLATE utf8mb4_bin
-         AND a.synonym_term COLLATE utf8mb4_bin=b.canonical_term COLLATE utf8mb4_bin
+          ON a.canonical_term=b.synonym_term
+         AND a.synonym_term=b.canonical_term
          AND a.id < b.id
         """
     )
     rows = cur.fetchall() or []
+    merged = 0
     for row in rows:
+        if (
+            row["a_canonical"] != row["b_synonym"]
+            or row["a_synonym"] != row["b_canonical"]
+        ):
+            continue
         candidates = [
             {
                 "id": int(row["a_id"]),
@@ -1459,7 +1465,8 @@ def deduplicate_law_synonyms(cur) -> int:
                 keeper["id"],
             ),
         )
-    return len(rows)
+        merged += 1
+    return merged
 
 
 def prune_expired_caches(cur) -> None:

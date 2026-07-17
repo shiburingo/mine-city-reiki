@@ -257,6 +257,32 @@ class CompiledDictionaryTests(unittest.TestCase):
         self.assertEqual(cursor.updated_values[:6], ("シニア", "老人", 15, 1, "manual", "manual-v1"))
         self.assertEqual(cursor.updated_values[6], 20)
 
+    def test_collation_equivalent_terms_are_not_merged(self) -> None:
+        import importlib
+
+        with patch.dict(os.environ, {"DB_AUTO_INIT": "0"}):
+            app_module = importlib.import_module("app")
+        cursor = FakeDeduplicationCursor({
+            "a_id": 10,
+            "a_canonical": "がたがた",
+            "a_synonym": "ガタガタ",
+            "a_priority": 12,
+            "a_active": 1,
+            "a_source_type": "wiktionary",
+            "a_source_version": "source-v1",
+            "b_id": 20,
+            "b_canonical": "かたかた",
+            "b_synonym": "がたがた",
+            "b_priority": 5,
+            "b_active": 1,
+            "b_source_type": "wordnet",
+            "b_source_version": "wordnet-v1",
+        })
+
+        self.assertEqual(app_module.deduplicate_law_synonyms(cursor), 0)
+        self.assertEqual(cursor.deleted_id, 0)
+        self.assertIsNone(cursor.updated_values)
+
 
 if __name__ == "__main__":
     unittest.main()
