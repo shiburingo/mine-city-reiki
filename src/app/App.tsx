@@ -53,6 +53,17 @@ const SEARCH_HISTORY_KEY = 'reiki_search_history';
 const MINUTES_SEARCH_HISTORY_KEY = 'minutes_search_history_v1';
 const BOOKMARKS_KEY = 'reiki_bookmarks';
 type BrowseSource = 'mine-city' | 'egov' | 'local-public-service';
+
+type PendingDocumentAnchor = {
+  documentId: number;
+  anchor: string;
+};
+
+type LinkReturnPoint = {
+  documentId: number;
+  source: BrowseSource;
+  scrollTop: number;
+};
 type BrowseTreeNode = {
   key: string;
   label: string;
@@ -840,6 +851,18 @@ function buildArticleLinkMap(articles: DocumentDetail['articles'], anchorPrefix:
   return links;
 }
 
+function resolveDocumentArticleId(doc: DocumentDetail, anchorOrReference: string): number | null {
+  const sourceArticleId = doc.sourceAnchorMap?.[anchorOrReference];
+  if (sourceArticleId != null) return sourceArticleId;
+
+  const normalized = normalizeArticleRef(anchorOrReference);
+  for (const article of doc.articles) {
+    const aliases = articleRefAliases(article.articleNumber || '', article.articleTitle || '');
+    if (aliases.includes(normalized)) return article.id;
+  }
+  return null;
+}
+
 function buildSourceAnchorLinkMap(doc: DocumentDetail, anchorPrefix: string): SourceAnchorLinkMap {
   const links: SourceAnchorLinkMap = {};
   const articleIds = new Set(doc.articles.map((article) => article.id));
@@ -1073,6 +1096,10 @@ function AppShell() {
   const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollFrameRef = useRef<number | null>(null);
   const minutesReaderScrollRequestSeqRef = useRef(0);
+  const selectedReturnPointRef = useRef<LinkReturnPoint | null>(null);
+  const browseReturnPointRef = useRef<LinkReturnPoint | null>(null);
+  const pendingSelectedReturnPointRef = useRef<LinkReturnPoint | null>(null);
+  const pendingBrowseReturnPointRef = useRef<LinkReturnPoint | null>(null);
   const [selectedReturnScrollTop, setSelectedReturnScrollTop] = useState<number | null>(null);
   const [browseReturnScrollTop, setBrowseReturnScrollTop] = useState<number | null>(null);
   const [searchSuggest, setSearchSuggest] = useState<string[]>([]);
@@ -1085,8 +1112,8 @@ function AppShell() {
   const [browseDocId, setBrowseDocId] = useState<number | null>(null);
   const [browseDoc, setBrowseDoc] = useState<DocumentDetail | null>(null);
   const [browseDocLoading, setBrowseDocLoading] = useState(false);
-  const [pendingBrowseAnchor, setPendingBrowseAnchor] = useState<string | null>(null);
-  const [pendingSelectedAnchor, setPendingSelectedAnchor] = useState<string | null>(null);
+  const [pendingBrowseAnchor, setPendingBrowseAnchor] = useState<PendingDocumentAnchor | null>(null);
+  const [pendingSelectedAnchor, setPendingSelectedAnchor] = useState<PendingDocumentAnchor | null>(null);
 
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
@@ -1145,15 +1172,17 @@ function AppShell() {
     sourceScope: 'all',
   });
 
-  async function loadBrowseList(source: BrowseSource) {
+  async function loadBrowseList(source: BrowseSource, preserveSelection = false) {
     setBrowseLoading(true);
     setGlobalError(null);
     try {
       const data = await fetchDocumentList(source);
       setBrowseList(data.items);
       setBrowseCategories(data.browseCategories);
-      setBrowseDocId(null);
-      setBrowseDoc(null);
+      if (!preserveSelection) {
+        setBrowseDocId(null);
+        setBrowseDoc(null);
+      }
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '一覧取得に失敗しました。');
     } finally {
@@ -1304,7 +1333,6 @@ function AppShell() {
 
   useEffect(() => {
     if (selectedDocId == null) return;
-    setSelectedReturnScrollTop(null);
     let cancelled = false;
     void (async () => {
       try {
@@ -1324,13 +1352,18 @@ function AppShell() {
 
   useEffect(() => {
     if (browseDocId == null) return;
-    setBrowseReturnScrollTop(null);
     let cancelled = false;
     setBrowseDocLoading(true);
     void (async () => {
       try {
         const detail = await fetchDocumentDetail(browseDocId);
-        if (!cancelled) setBrowseDoc(detail);
+        if (!cancelled) {
+          setBrowseDoc(detail);
+          if ((detail.source === 'mine-city' || detail.source === 'egov' || detail.source === 'local-public-service') && detail.source !== browseSource) {
+            setBrowseSource(detail.source);
+            void loadBrowseList(detail.source, true);
+          }
+        }
       } catch (err) {
         if (!cancelled) setGlobalError(err instanceof Error ? err.message : '条文取得に失敗しました。');
       } finally {
@@ -1344,29 +1377,49 @@ function AppShell() {
 
   useEffect(() => {
     if (!browseDoc || !pendingBrowseAnchor) return;
-    const articleId = browseDoc.sourceAnchorMap?.[pendingBrowseAnchor];
+    if (browseDoc.id !== pendingBrowseAnchor.documentId) return;
+    const articleId = resolveDocumentArticleId(browseDoc, pendingBrowseAnchor.anchor);
     if (!articleId) {
       setPendingBrowseAnchor(null);
       return;
     }
     window.setTimeout(() => {
-      scrollElementIntoContainer(`barticle-${articleId}`, browseArticleScrollRef.current);
+      scrollElementIntoContainer(`barticle-${articleId}`, browseArticleScrollRef.current, 'start', 'auto');
       setPendingBrowseAnchor(null);
     }, 0);
   }, [browseDoc, pendingBrowseAnchor]);
 
   useEffect(() => {
     if (!selectedDoc || !pendingSelectedAnchor) return;
-    const articleId = selectedDoc.sourceAnchorMap?.[pendingSelectedAnchor];
+    if (selectedDoc.id !== pendingSelectedAnchor.documentId) return;
+    const articleId = resolveDocumentArticleId(selectedDoc, pendingSelectedAnchor.anchor);
     if (!articleId) {
       setPendingSelectedAnchor(null);
       return;
     }
     window.setTimeout(() => {
-      scrollElementIntoContainer(`article-${articleId}`, selectedArticleScrollRef.current);
+      scrollElementIntoContainer(`article-${articleId}`, selectedArticleScrollRef.current, 'start', 'auto');
       setPendingSelectedAnchor(null);
     }, 0);
   }, [selectedDoc, pendingSelectedAnchor]);
+
+  useEffect(() => {
+    const returnPoint = pendingBrowseReturnPointRef.current;
+    if (!browseDoc || !returnPoint || browseDoc.id !== returnPoint.documentId) return;
+    window.setTimeout(() => {
+      browseArticleScrollRef.current?.scrollTo({ top: returnPoint.scrollTop, behavior: 'auto' });
+      pendingBrowseReturnPointRef.current = null;
+    }, 0);
+  }, [browseDoc]);
+
+  useEffect(() => {
+    const returnPoint = pendingSelectedReturnPointRef.current;
+    if (!selectedDoc || !returnPoint || selectedDoc.id !== returnPoint.documentId) return;
+    window.setTimeout(() => {
+      selectedArticleScrollRef.current?.scrollTo({ top: returnPoint.scrollTop, behavior: 'auto' });
+      pendingSelectedReturnPointRef.current = null;
+    }, 0);
+  }, [selectedDoc]);
 
   useEffect(() => {
     if (!selectedDoc || !pendingSelectedArticleHit) return;
@@ -1408,14 +1461,15 @@ function AppShell() {
   }
 
   function openBrowseSourceDocument(documentId: number, sourceAnchorId?: string) {
-    setBrowseSource('mine-city');
-    if (sourceAnchorId) setPendingBrowseAnchor(sourceAnchorId);
+    rememberBrowseReturnPosition();
+    setPendingBrowseAnchor(sourceAnchorId ? { documentId, anchor: sourceAnchorId } : null);
     setBrowseDocId(documentId);
     setTab('browse');
   }
 
   function openSelectedSourceDocument(documentId: number, sourceAnchorId?: string) {
-    if (sourceAnchorId) setPendingSelectedAnchor(sourceAnchorId);
+    rememberSelectedReturnPosition();
+    setPendingSelectedAnchor(sourceAnchorId ? { documentId, anchor: sourceAnchorId } : null);
     setActiveSelectedArticleHit(null);
     setPendingSelectedArticleHit(null);
     setSelectedDocId(documentId);
@@ -1424,29 +1478,68 @@ function AppShell() {
 
   function rememberBrowseReturnPosition() {
     const container = browseArticleScrollRef.current;
-    if (!container) return;
+    if (!container || browseDocId == null) return;
+    browseReturnPointRef.current = { documentId: browseDocId, source: browseSource, scrollTop: container.scrollTop };
     setBrowseReturnScrollTop(container.scrollTop);
   }
 
   function rememberSelectedReturnPosition() {
     const container = selectedArticleScrollRef.current;
-    if (!container) return;
+    if (!container || selectedDocId == null) return;
+    selectedReturnPointRef.current = { documentId: selectedDocId, source: selectedDoc?.source === 'egov' || selectedDoc?.source === 'local-public-service' ? selectedDoc.source : 'mine-city', scrollTop: container.scrollTop };
     setSelectedReturnScrollTop(container.scrollTop);
   }
 
   function returnBrowseLinkPosition() {
-    if (browseReturnScrollTop == null) return;
-    browseArticleScrollRef.current?.scrollTo({ top: browseReturnScrollTop, behavior: 'smooth' });
+    const returnPoint = browseReturnPointRef.current;
+    if (browseReturnScrollTop == null || !returnPoint) return;
+    if (returnPoint.documentId !== browseDocId) {
+      pendingBrowseReturnPointRef.current = returnPoint;
+      setBrowseSource(returnPoint.source);
+      void loadBrowseList(returnPoint.source, true);
+      setBrowseDocId(returnPoint.documentId);
+    } else {
+      browseArticleScrollRef.current?.scrollTo({ top: returnPoint.scrollTop, behavior: 'smooth' });
+    }
+    browseReturnPointRef.current = null;
     setBrowseReturnScrollTop(null);
   }
 
   function returnSelectedLinkPosition() {
-    if (selectedReturnScrollTop == null) return;
-    selectedArticleScrollRef.current?.scrollTo({ top: selectedReturnScrollTop, behavior: 'smooth' });
+    const returnPoint = selectedReturnPointRef.current;
+    if (selectedReturnScrollTop == null || !returnPoint) return;
+    if (returnPoint.documentId !== selectedDocId) {
+      pendingSelectedReturnPointRef.current = returnPoint;
+      setSelectedDocId(returnPoint.documentId);
+    } else {
+      selectedArticleScrollRef.current?.scrollTo({ top: returnPoint.scrollTop, behavior: 'smooth' });
+    }
+    selectedReturnPointRef.current = null;
     setSelectedReturnScrollTop(null);
   }
 
+  function openBrowseDocument(documentId: number) {
+    browseReturnPointRef.current = null;
+    pendingBrowseReturnPointRef.current = null;
+    setBrowseReturnScrollTop(null);
+    setPendingBrowseAnchor(null);
+    setBrowseDocId(documentId);
+  }
+
+  function openSelectedDocument(documentId: number) {
+    selectedReturnPointRef.current = null;
+    pendingSelectedReturnPointRef.current = null;
+    setSelectedReturnScrollTop(null);
+    setPendingSelectedAnchor(null);
+    setSelectedDocId(documentId);
+    setTab('search');
+  }
+
   function openSearchResult(item: SearchResult) {
+    selectedReturnPointRef.current = null;
+    pendingSelectedReturnPointRef.current = null;
+    setSelectedReturnScrollTop(null);
+    setPendingSelectedAnchor(null);
     setSelectedDocId(item.documentId);
     if (item.articleId != null) {
       const hit = { documentId: item.documentId, articleId: item.articleId };
@@ -3001,7 +3094,7 @@ function AppShell() {
                   <button
                     key={doc.id}
                     type="button"
-                    onClick={() => setBrowseDocId(doc.id)}
+                    onClick={() => openBrowseDocument(doc.id)}
                     className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
                       browseDocId === doc.id ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
                     }`}
@@ -5866,14 +5959,14 @@ function AppShell() {
                         <button
                           type="button"
                           className="rounded-lg border px-2 py-1 text-xs hover:bg-accent"
-                          onClick={() => { setSelectedDocId(doc.id); setTab('search'); }}
+                          onClick={() => openSelectedDocument(doc.id)}
                         >
                           検索で開く
                         </button>
                         <button
                           type="button"
                           className="rounded-lg border px-2 py-1 text-xs hover:bg-accent"
-                          onClick={() => { setBrowseDocId(doc.id); setTab('browse'); }}
+                          onClick={() => { openBrowseDocument(doc.id); setTab('browse'); }}
                         >
                           閲覧で開く
                         </button>
