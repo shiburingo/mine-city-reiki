@@ -1,6 +1,6 @@
 # mine-city-reiki
 
-美祢市（山口県）の例規集・地方自治法・地方公務員法を条文単位でデータベース化し、全文検索・条文照会・簡易質問応答を提供する自治体向け法令情報システムです。
+美祢市（山口県）の例規集・地方自治法・地方公務員法と美祢市議会会議録をデータベース化し、全文検索・構造化閲覧・条文照会・発言集作成を提供する自治体向け情報検索システムです。
 
 ---
 
@@ -15,10 +15,12 @@
 - **マッチ根拠バッジ** — 各検索結果にどの項目でヒットしたか（タイトル / 条番号 / 条名 / 条文 / 本文）をバッジ表示します。
 - **オートコンプリート** — 過去の検索語をサジェストします。
 - **ページネーション** — 20 件単位でページ送りできます。
+- **Meilisearch 連携** — 例規・法令と会議録を別インデックスで検索し、未設定・障害・対象外クエリでは MariaDB の転置索引 / FULLTEXT へ自動フォールバックします。
 
 ### 閲覧
 - **体系別閲覧** — ソースを `美祢市例規集 / 地方自治法 / 地方公務員法` で切り替え、体系順・番号順で左ペインから閲覧できます。デフォルト表示は `美祢市例規集` です。
-- **全文表示** — 条文単位のナビゲーション付きで全文を閲覧できます。HTMLテーブルも正しくレンダリングされます。
+- **構造化全文表示** — 目次、編・章・節、条文、附則、別表を左ナビゲーションと本文の2ペインで閲覧できます。美祢市例規のHTML表とe-Gov XMLの別表を表として表示します。
+- **本文内リンク** — 条番号、別表、元XMLアンカー、同一文書内参照、地方自治法・地方公務員法への文書間参照を解決します。解決できない参照は誤誘導を避けるためリンク化しません。
 - **CSV ダウンロード** — 表示中のソース（美祢市例規集 / 地方自治法 / 地方公務員法）の例規一覧を CSV でエクスポートできます（UTF-8 BOM 付きで Excel 対応）。
 
 ### 質問応答
@@ -42,6 +44,8 @@
 - **キャッシュ管理** — 検索キャッシュ・質問キャッシュを個別またはまとめてクリアできます。
 - **同義語管理** — 正規語と同義語のペアを追加・削除できます。
 - **利用統計（アナリティクス）** — キャッシュヒット率・検索ランキング・質問ランキングをダッシュボードに表示します。
+- **会議録管理** — PDF差分同期、全件コンパイル、再タグ付け、会議録由来辞書更新を管理画面から実行できます。
+- **辞書更新** — WordNet・Wikipedia・Wiktionary・Wikidata・既存DBから関連語を累積し、検索用SQLite索引へ原子的にコンパイルします。
 
 ### 他アプリ連携 API
 - 同ホスト上の業務アプリから `/mine-city-reiki-api/api/reference/*` で条文検索・参照が可能です。
@@ -54,7 +58,8 @@
 |---|---|
 | フロントエンド | React 18 + TypeScript + Vite + Tailwind CSS 4 |
 | バックエンド | Python 3 / Flask 3 + Gunicorn（ポート 8795） |
-| データベース | MariaDB（9 テーブル） |
+| データベース | MariaDB（例規・辞書・キャッシュ・会議録・コンパイル世代を管理） |
+| 検索エンジン | Meilisearch + MariaDB 転置索引 / FULLTEXT フォールバック |
 | 形態素解析 | Janome 0.5.0 |
 | 認証 | 共通認証 `mine-trout-cash-api`（ポート 8787, `/api/auth/*`）に委譲 |
 | 共有 UI | mine-troutfarm-ui（ローカル npm パッケージ） |
@@ -74,6 +79,8 @@ mine-city-reiki/
 │   └── ArticleContent.tsx  # 条文レンダラー（HTML テーブル対応）
 ├── server/
 │   ├── app.py           # Flask アプリ（API 全エンドポイント）
+│   ├── dictionary_engine.py # 関連語の取得・品質評価・コンパイル
+│   ├── meeting_minutes/ # PDF抽出・話者タグ付け・表整形
 │   ├── schema.mariadb.sql  # DB スキーマ（冪等 CREATE / ALTER）
 │   ├── run_due_sync.py  # 月次同期 CLI（systemd timer から呼び出し）
 │   └── wsgi.py          # Gunicorn エントリポイント
@@ -118,6 +125,7 @@ npm run dev:api
 ```bash
 npm run build
 python3 -m py_compile server/app.py
+PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p 'test_*.py'
 ```
 
 ---
@@ -161,6 +169,20 @@ python3 -m py_compile server/app.py
 | GET | `/api/sync/runs` | 同期実行履歴 |
 | PUT | `/api/sync/settings` | 月次更新設定の保存 |
 | POST | `/api/sync/run` | 手動同期実行（`sourceScope`: `all` / `mine-city` / `egov` / `local-public-service`） |
+| POST | `/api/reindex/run` | 例規・法令の全件再索引 |
+
+### 会議録
+
+| メソッド | パス | 説明 |
+|---|---|---|
+| GET | `/api/minutes/status` | 会議録件数、同期・コンパイル状態 |
+| POST | `/api/minutes/sync` | 追加・変更PDFだけを差分同期 |
+| POST | `/api/minutes/compile` | 全件コンパイルと専用Meilisearch索引の世代切替 |
+| POST | `/api/minutes/retag` | 最新辞書・ルールによる全発言の再タグ付け |
+| GET | `/api/minutes/search` | 本文・発言者・会議・期間・ロール検索（カーソル対応） |
+| GET | `/api/minutes/meetings` | 会議一覧 |
+| GET | `/api/minutes/meetings/:id` | 会議詳細・日程一覧 |
+| GET | `/api/minutes/days/:id` | 日程単位の会議録、発言、表 |
 
 ### キャッシュ・同義語・アナリティクス
 
@@ -171,6 +193,10 @@ python3 -m py_compile server/app.py
 | POST | `/api/synonyms` | 同義語追加 |
 | DELETE | `/api/synonyms/:id` | 同義語削除 |
 | GET | `/api/analytics` | 利用統計 |
+| POST | `/api/dictionary/update` | WordNet・既存DBから辞書再作成 |
+| POST | `/api/dictionary/internet/update` | 公開辞書ソースの増分取得 |
+| POST | `/api/dictionary/minutes/update` | 未抽出会議録から辞書候補を追加 |
+| POST | `/api/dictionary/compile` | 検索用SQLite辞書を再コンパイル |
 
 ### 他アプリ参照用（クロスアプリ）
 
@@ -207,6 +233,11 @@ python3 -m py_compile server/app.py
 | `sync_runs` | 同期実行ログ |
 | `search_query_cache` | 検索結果キャッシュ |
 | `ask_query_cache` | 質問応答キャッシュ |
+| `meeting_sessions` / `meeting_days` | 会議と開催日、PDF差分状態 |
+| `meeting_speakers` / `meeting_utterances` | 年・会議日を考慮した話者辞書と発言本文・分類 |
+| `meeting_tables` | PDF表の行列JSON、HTML、検索テキスト |
+| `meeting_compile_versions` | 会議録コンパイル世代と有効世代 |
+| `meeting_compiled_utterances` / `meeting_compiled_days` | 検索・閲覧用の非正規化済み軽量データ |
 
 スキーマは `server/schema.mariadb.sql` に冪等な `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` で記述されており、再実行しても安全です。
 

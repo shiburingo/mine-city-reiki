@@ -2997,12 +2997,96 @@ def collect_egov_toc_lines(toc_node: ET.Element) -> list[str]:
     return lines
 
 
-def parse_egov_article(article_node: ET.Element, context: list[str]) -> dict[str, str]:
+KANJI_DIGITS = {
+    "〇": 0,
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+KANJI_SMALL_UNITS = {"十": 10, "百": 100, "千": 1000}
+KANJI_LARGE_UNITS = {"万": 10_000, "億": 100_000_000, "兆": 1_000_000_000_000}
+
+
+def japanese_number_to_int(value: str) -> int | None:
+    normalized = unicodedata.normalize("NFKC", normalize_text(value))
+    if not normalized:
+        return None
+    if normalized.isdigit():
+        return int(normalized)
+    if any(char not in KANJI_DIGITS and char not in KANJI_SMALL_UNITS and char not in KANJI_LARGE_UNITS for char in normalized):
+        return None
+    total = 0
+    section = 0
+    digit = 0
+    for char in normalized:
+        if char in KANJI_DIGITS:
+            digit = KANJI_DIGITS[char]
+        elif char in KANJI_SMALL_UNITS:
+            section += (digit or 1) * KANJI_SMALL_UNITS[char]
+            digit = 0
+        else:
+            section += digit
+            total += (section or 1) * KANJI_LARGE_UNITS[char]
+            section = 0
+            digit = 0
+    return total + section + digit
+
+
+def egov_article_aliases(raw_num: str, article_number: str) -> list[str]:
+    aliases: set[str] = set()
+    normalized_number = normalize_text(article_number).replace(" ", "")
+    normalized_num = unicodedata.normalize("NFKC", normalize_text(raw_num)).replace(" ", "")
+    if normalized_number:
+        aliases.add(normalized_number)
+    if normalized_num:
+        aliases.add(normalized_num)
+        number_parts = [part for part in re.split(r"[_-]", normalized_num) if part]
+        numeric_parts = [japanese_number_to_int(part) for part in number_parts]
+        if number_parts and all(part is not None for part in numeric_parts):
+            article_alias = f"第{numeric_parts[0]}条"
+            if len(numeric_parts) > 1:
+                article_alias += "".join(f"の{part}" for part in numeric_parts[1:])
+            aliases.add(article_alias)
+    match = re.fullmatch(r"第(.+?)条((?:の.+?)*)", normalized_number)
+    if match:
+        main = japanese_number_to_int(match.group(1))
+        suffix_values = [japanese_number_to_int(part) for part in re.findall(r"の([^の]+)", match.group(2))]
+        if main is not None and all(part is not None for part in suffix_values):
+            aliases.add(f"第{main}条" + "".join(f"の{part}" for part in suffix_values))
+    return sorted(aliases)
+
+
+def serialize_egov_table(table_node: ET.Element) -> str:
+    rows: list[str] = []
+    for row_node in table_node.iter():
+        if xml_local_name(row_node.tag) != "TableRow":
+            continue
+        cells = [
+            xml_node_text(cell)
+            for cell in list(row_node)
+            if xml_local_name(cell.tag) == "TableColumn"
+        ]
+        if cells:
+            rows.append("\t".join(cells))
+    if not rows:
+        return xml_node_text(table_node)
+    return "__TABLE_START__\n" + "\n".join(rows) + "\n__TABLE_END__"
+
+
+def parse_egov_article(article_node: ET.Element, context: list[str]) -> dict[str, Any]:
     article_number = xml_child_text(article_node, "ArticleTitle")
     article_title = xml_child_text(article_node, "ArticleCaption")
+    raw_num = normalize_text(str(article_node.attrib.get("Num", "") or ""))
     if not article_number:
-        num = normalize_text(str(article_node.attrib.get("Num", "") or ""))
-        article_number = f"第{num}条" if num else "条文"
+        parts = [part for part in re.split(r"[_-]", raw_num) if part]
+        article_number = f"第{parts[0]}条" + "".join(f"の{part}" for part in parts[1:]) if parts else "条文"
     paragraphs: list[str] = []
     for paragraph in list(article_node):
         if xml_local_name(paragraph.tag) != "Paragraph":
@@ -3018,10 +3102,11 @@ def parse_egov_article(article_node: ET.Element, context: list[str]) -> dict[str
         "article_title": article_title,
         "parent_path": parent_path,
         "text": article_text,
+        "source_anchor_ids": egov_article_aliases(raw_num, article_number),
     }
 
 
-def walk_egov_articles(node: ET.Element, context: list[str], out: list[dict[str, str]]) -> None:
+def walk_egov_articles(node: ET.Element, context: list[str], out: list[dict[str, Any]]) -> None:
     structure_tags: dict[str, tuple[str, str]] = {
         "Part": ("PartTitle", "編"),
         "Chapter": ("ChapterTitle", "章"),
@@ -3042,8 +3127,41 @@ def walk_egov_articles(node: ET.Element, context: list[str], out: list[dict[str,
         walk_egov_articles(child, context, out)
 
 
-def iter_egov_articles(root: ET.Element) -> list[dict[str, str]]:
-    articles: list[dict[str, str]] = []
+def parse_egov_appendix(node: ET.Element, title_tag: str, fallback_title: str) -> dict[str, Any] | None:
+    title = xml_child_text(node, title_tag) or fallback_title
+    if not title:
+        return None
+    related_article = xml_child_text(node, "RelatedArticleNum")
+    parts = [related_article] if related_article else []
+    for child in list(node):
+        name = xml_local_name(child.tag)
+        if name == "TableStruct":
+            table_text = serialize_egov_table(child)
+            if table_text:
+                parts.append(table_text)
+        elif name not in {title_tag, "RelatedArticleNum"}:
+            child_text = xml_node_text(child)
+            if child_text:
+                parts.append(child_text)
+    normalized_title = title.replace(" ", "")
+    aliases = {normalized_title}
+    table_match = re.fullmatch(r"別表第?(.+)", normalized_title)
+    if table_match:
+        table_number = japanese_number_to_int(table_match.group(1))
+        if table_number is not None:
+            aliases.update({f"別表第{table_number}", f"別表{table_number}"})
+    return {
+        "article_key": safe_article_key(f"別表:{normalized_title}"),
+        "article_number": normalized_title,
+        "article_title": related_article,
+        "parent_path": "別表",
+        "text": "\n".join(part for part in parts if part).strip(),
+        "source_anchor_ids": sorted(aliases),
+    }
+
+
+def iter_egov_articles(root: ET.Element) -> list[dict[str, Any]]:
+    articles: list[dict[str, Any]] = []
     law_body = root.find(".//LawBody")
     if law_body is not None:
         for child in list(law_body):
@@ -3059,6 +3177,7 @@ def iter_egov_articles(root: ET.Element) -> list[dict[str, str]]:
                             "article_title": "",
                             "parent_path": "目次",
                             "text": toc_text,
+                            "source_anchor_ids": ["TOC", "目次"],
                         }
                     )
                 continue
@@ -3074,10 +3193,23 @@ def iter_egov_articles(root: ET.Element) -> list[dict[str, str]]:
                     context.append(suppl_label)
                 walk_egov_articles(child, context, articles)
                 continue
+            appendix_tags = {
+                "AppdxTable": ("AppdxTableTitle", "別表"),
+                "AppdxStyle": ("AppdxStyleTitle", "様式"),
+                "AppdxFormat": ("AppdxFormatTitle", "書式"),
+                "AppdxFig": ("AppdxFigTitle", "別図"),
+                "AppdxNote": ("AppdxNoteTitle", "別記"),
+            }
+            if name in appendix_tags:
+                title_tag, fallback_title = appendix_tags[name]
+                appendix = parse_egov_appendix(child, title_tag, fallback_title)
+                if appendix:
+                    articles.append(appendix)
+                continue
     if articles:
         return articles
     # フォールバック: 構造パースに失敗した場合は全 Article を平坦化
-    fallback: list[dict[str, str]] = []
+    fallback: list[dict[str, Any]] = []
     for article in root.findall(".//Article"):
         fallback.append(parse_egov_article(article, []))
     return fallback
@@ -3093,6 +3225,12 @@ def fetch_egov_document(law_def: dict[str, str]) -> dict[str, Any]:
     law_num = normalize_text(root.findtext('.//Law/LawNum', default=''))
     full_text = normalize_text(' '.join(''.join(root.find('.//LawFullText').itertext()).split()))
     articles = iter_egov_articles(root)
+    source_anchor_map: dict[str, str] = {}
+    for article in articles:
+        article_key = str(article.get("article_key") or "")
+        for alias in article.get("source_anchor_ids", []) or []:
+            if alias and article_key:
+                source_anchor_map[str(alias)] = article_key
     promulgated_at = None
     if law_node is not None:
         try:
@@ -3113,7 +3251,7 @@ def fetch_egov_document(law_def: dict[str, str]) -> dict[str, Any]:
         'updated_at_source': now_iso(),
         'content_hash': make_document_content_hash(full_text, articles),
         'full_text': full_text,
-        'metadata_json': json.dumps({'lawId': law_id}, ensure_ascii=False),
+        'metadata_json': json.dumps({'lawId': law_id, 'sourceAnchorMap': source_anchor_map}, ensure_ascii=False),
         'articles': articles,
     }
 
@@ -3163,14 +3301,18 @@ def insert_search_terms(
 ) -> None:
     if not terms:
         return
-    for term, weight in terms.items():
-        cur.execute(
+    rows = [
+        (target_type, target_id, document_id, article_id, term, weight)
+        for term, weight in terms.items()
+    ]
+    for start in range(0, len(rows), 500):
+        cur.executemany(
             """
             INSERT INTO law_search_terms (target_type, target_id, document_id, article_id, term, weight)
             VALUES (%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE weight=VALUES(weight)
             """,
-            (target_type, target_id, document_id, article_id, term, weight),
+            rows[start:start + 500],
         )
 
 
@@ -3409,6 +3551,39 @@ def index_meili_documents(document_ids: list[int], batch_size: int = 500, ensure
     return indexed
 
 
+def delete_meili_documents(record_ids: list[str], batch_size: int = 1000) -> int:
+    if not meili_is_enabled() or not record_ids:
+        return 0
+    deleted = 0
+    unique_ids = list(dict.fromkeys(record_ids))
+    for start in range(0, len(unique_ids), batch_size):
+        batch = unique_ids[start:start + batch_size]
+        task = meili_request(
+            "POST",
+            f"/indexes/{urllib.parse.quote(CFG.meili_index)}/documents/delete-batch",
+            batch,
+            timeout=30,
+        )
+        wait_meili_task(meili_task_uid(task), timeout_seconds=120)
+        deleted += len(batch)
+    return deleted
+
+
+def analyze_law_search_tables() -> list[str]:
+    tables = ["law_documents", "law_articles", "law_search_terms"]
+    with db_cursor(commit=True) as (_, cur):
+        cur.execute("ANALYZE TABLE " + ", ".join(tables))
+        rows = cur.fetchall() or []
+    failed = [
+        str(row.get("Table") or row.get("table") or "")
+        for row in rows
+        if str(row.get("Msg_text") or row.get("msg_text") or "OK").lower() != "ok"
+    ]
+    if failed:
+        raise RuntimeError(f"ANALYZE TABLE failed: {', '.join(failed)}")
+    return tables
+
+
 def reset_meili_index() -> None:
     if not meili_is_enabled():
         return
@@ -3536,7 +3711,7 @@ def maybe_backfill_search_terms() -> None:
             cur.execute("DO RELEASE_LOCK('mine_city_reiki_backfill_search_terms')")
 
 
-def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
+def upsert_document(cur, document: dict[str, Any]) -> dict[str, Any]:
     document_terms = build_document_search_terms(document)
     document["search_tokens"] = " ".join(document_terms.keys())
     cur.execute(
@@ -3584,6 +3759,7 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
             ),
         )
         document_id = int(cur.lastrowid)
+    stale_meili_ids: list[str] = []
     if changed:
         cur.execute(
             """
@@ -3600,6 +3776,8 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
                 document.get('full_text', ''),
             ),
         )
+        cur.execute("SELECT id FROM law_articles WHERE document_id=%s", (document_id,))
+        stale_meili_ids = [f"a{int(row['id'])}" for row in (cur.fetchall() or [])]
         cur.execute("DELETE FROM law_articles WHERE document_id=%s", (document_id,))
         for idx, article in enumerate(document.get('articles', []), start=1):
             cur.execute(
@@ -3620,7 +3798,12 @@ def upsert_document(cur, document: dict[str, Any]) -> dict[str, int | bool]:
                 ),
             )
         rebuild_search_terms_for_document(cur, document_id)
-    return {'document_id': document_id, 'changed': changed, 'is_new': is_new}
+    return {
+        'document_id': document_id,
+        'changed': changed,
+        'is_new': is_new,
+        'stale_meili_ids': stale_meili_ids,
+    }
 
 
 def set_sync_run_status(cur, run_id: int, status: str, summary: dict[str, Any] | None = None, error_text: str | None = None):
@@ -3773,10 +3956,15 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
         'operation': 'sync',
         'sourceScope': source_scope,
         'documents': 0, 'added': 0, 'updated': 0, 'unchanged': 0, 'articles': 0,
+        'meiliEnabled': meili_is_enabled(),
+        'meiliIndexed': 0,
+        'meiliDeleted': 0,
         'progressCurrent': 0,
         'progressTotal': 0,
         'progressLabel': '準備中',
     }
+    changed_document_ids: list[int] = []
+    stale_meili_ids: list[str] = []
     try:
         mine_city_items: list[dict[str, Any]] = []
         nav_labels: list[dict[str, Any]] = []
@@ -3800,6 +3988,8 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                     result = upsert_document(cur, parsed)
                     summary['documents'] += 1
                     if result['changed']:
+                        changed_document_ids.append(int(result['document_id']))
+                        stale_meili_ids.extend(result.get('stale_meili_ids') or [])
                         if result.get('is_new'):
                             summary['added'] += 1
                         else:
@@ -3819,6 +4009,8 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                     result = upsert_document(cur, parsed)
                     summary['documents'] += 1
                     if result['changed']:
+                        changed_document_ids.append(int(result['document_id']))
+                        stale_meili_ids.extend(result.get('stale_meili_ids') or [])
                         if result.get('is_new'):
                             summary['added'] += 1
                         else:
@@ -3827,26 +4019,38 @@ def execute_sync(run_type: str = 'manual', source_scope: str = 'all') -> dict[st
                         summary['unchanged'] += 1
                     summary['articles'] += len(parsed.get('articles', []))
                     summary['progressCurrent'] += 1
-                summary['progressLabel'] = '完了処理中'
-                if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
-                    bump_cache_generation(cur)
-                    prune_expired_caches(cur)
-                set_sync_run_status(cur, run_id, 'success', summary, None)
-                cur.execute(
-                    "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
-                    (now_iso(), now_iso()),
-                )
-        else:
+        if changed_document_ids and meili_is_enabled():
+            summary['progressLabel'] = '変更文書をMeilisearchへ反映しています'
             with db_cursor(commit=True) as (_, cur):
-                summary['progressLabel'] = '完了処理中'
-                if int(summary.get("updated") or 0) > 0 or int(summary.get("added") or 0) > 0:
-                    bump_cache_generation(cur)
-                    prune_expired_caches(cur)
-                set_sync_run_status(cur, run_id, 'success', summary, None)
-                cur.execute(
-                    "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
-                    (now_iso(), now_iso()),
+                update_sync_run_summary(cur, run_id, summary)
+            try:
+                configure_meili_index()
+                summary['meiliIndexed'] = index_meili_documents(
+                    list(dict.fromkeys(changed_document_ids)),
+                    ensure_configured=False,
                 )
+                # 新レコードの投入成功後に旧条文だけを削除し、更新失敗時の検索欠落を防ぐ。
+                summary['meiliDeleted'] = delete_meili_documents(stale_meili_ids)
+            except Exception as exc:
+                summary['meiliError'] = str(exc)
+                app.logger.exception('Incremental Meilisearch update failed')
+        if changed_document_ids:
+            summary['progressLabel'] = 'データベース統計を更新しています'
+            try:
+                summary['analyzedTables'] = analyze_law_search_tables()
+            except Exception as exc:
+                summary['analyzeError'] = str(exc)
+                app.logger.exception('ANALYZE TABLE failed after sync')
+        with db_cursor(commit=True) as (_, cur):
+            summary['progressLabel'] = '完了'
+            if changed_document_ids:
+                bump_cache_generation(cur)
+                prune_expired_caches(cur)
+            set_sync_run_status(cur, run_id, 'success', summary, None)
+            cur.execute(
+                "UPDATE sync_settings SET last_finished_at=%s, last_success_at=%s, last_error=NULL WHERE id=1",
+                (now_iso(), now_iso()),
+            )
         return summary
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
@@ -3931,8 +4135,14 @@ def execute_reindex(batch_size: int = 10) -> dict[str, Any]:
                     meili_ready = False
                     with db_cursor(commit=True) as (_, cur):
                         update_sync_run_summary(cur, run_id, summary)
+        summary['progressLabel'] = 'データベース統計を更新しています'
+        try:
+            summary['analyzedTables'] = analyze_law_search_tables()
+        except Exception as exc:
+            summary['analyzeError'] = str(exc)
+            app.logger.exception('ANALYZE TABLE failed after reindex')
         with db_cursor(commit=True) as (_, cur):
-            summary['progressLabel'] = '完了処理中'
+            summary['progressLabel'] = '完了'
             bump_cache_generation(cur)
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
@@ -8079,14 +8289,18 @@ def api_document_detail(document_id: int):
             (document_id,),
         )
         articles = cur.fetchall() or []
-        source_document_map: dict[str, int] = {}
-        if doc["source"] == "mine-city":
-            cur.execute("SELECT id, external_id FROM law_documents WHERE source='mine-city'")
-            source_document_map = {
-                str(row["external_id"]): int(row["id"])
-                for row in (cur.fetchall() or [])
-                if row.get("external_id")
-            }
+        cur.execute("SELECT id, source, external_id, title FROM law_documents")
+        document_rows = cur.fetchall() or []
+        source_document_map = {
+            str(row["external_id"]): int(row["id"])
+            for row in document_rows
+            if row.get("external_id")
+        }
+        source_document_title_map = {
+            normalize_text(str(row["title"])): int(row["id"])
+            for row in document_rows
+            if row.get("title") and row.get("source") != "mine-city"
+        }
     key_to_article_id = {str(article["article_key"]): int(article["id"]) for article in articles}
     metadata: dict[str, Any] = {}
     try:
@@ -8114,6 +8328,7 @@ def api_document_detail(document_id: int):
             'fullText': doc['full_text'],
             'sourceAnchorMap': source_anchor_map,
             'sourceDocumentMap': source_document_map,
+            'sourceDocumentTitleMap': source_document_title_map,
             'articles': [
                 {
                     'id': int(article['id']),

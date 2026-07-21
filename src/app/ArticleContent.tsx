@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 
 const TABLE_START = '__TABLE_START__';
 const TABLE_END = '__TABLE_END__';
@@ -13,6 +13,7 @@ type Part =
 export type ArticleLinkMap = Record<string, string>;
 export type SourceAnchorLinkMap = Record<string, string>;
 export type SourceDocumentLinkMap = Record<string, number>;
+export type SourceDocumentTitleLinkMap = Record<string, number>;
 
 type SourceDocumentLinkHandler = (documentId: number, sourceAnchorId?: string) => void;
 type InternalAnchorLinkHandler = (href: string) => void;
@@ -47,8 +48,10 @@ function parseArticleParts(text: string): Part[] {
   return parts;
 }
 
-// 第X条 / 別表第X / 様式第X 形式の相互参照を検出してアンカーリンクにする
-const ARTICLE_REF_RE = /(第[〇一二三四五六七八九十百千万\d]+条(?:の[〇一二三四五六七八九十百千万\d]+)*|別表第[〇一二三四五六七八九十百千万\d]+|様式第[〇一二三四五六七八九十百千万\d]+号?)/g;
+// 条、別表、様式の表記揺れを含めて相互参照を検出する。
+const ARTICLE_REF_PATTERN = '(?:第[〇零一二三四五六七八九十百千万億兆0-9０-９]+条(?:の[〇零一二三四五六七八九十百千万億兆0-9０-９]+)*|別表第?[〇零一二三四五六七八九十百千万億兆0-9０-９]+|様式第?[〇零一二三四五六七八九十百千万億兆0-9０-９]+号?)';
+const ARTICLE_REF_RE = new RegExp(`(${ARTICLE_REF_PATTERN})`, 'g');
+const ARTICLE_REF_EXACT_RE = new RegExp(`^${ARTICLE_REF_PATTERN}$`);
 const LINK_MARKER_RE = /__REIKI_LINK_START__(.*?)__REIKI_LINK_TEXT__(.*?)__REIKI_LINK_END__/g;
 
 function normalizeArticleRef(value: string): string {
@@ -68,10 +71,15 @@ function resolveSourceDocumentLink(href: string, sourceDocumentLinks: SourceDocu
   if (!sourceUrl) return null;
   try {
     const url = new URL(href, sourceUrl);
-    const externalId = url.pathname.split('/').pop()?.replace(/\.html$/i, '') || '';
+    const pathParts = url.pathname.split('/').filter(Boolean);
+    const externalId = (pathParts.at(-1) || '').replace(/\.html$/i, '');
     const documentId = sourceDocumentLinks[externalId];
     if (!documentId) return null;
-    return { documentId, sourceAnchorId: url.searchParams.get('id') || undefined };
+    const sourceAnchorId = url.searchParams.get('id')
+      || url.searchParams.get('article')
+      || decodeURIComponent(url.hash.replace(/^#/, ''))
+      || undefined;
+    return { documentId, sourceAnchorId };
   } catch {
     return null;
   }
@@ -136,7 +144,9 @@ function renderPlainText(
   keywords: string[],
   relatedKeywords: string[],
   articleLinks: ArticleLinkMap,
+  sourceDocumentTitleLinks: SourceDocumentTitleLinkMap,
   keyPrefix: string,
+  onSourceDocumentLink?: SourceDocumentLinkHandler,
   onInternalAnchorLink?: InternalAnchorLinkHandler,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -145,59 +155,92 @@ function renderPlainText(
   const relatedTerms = normalizeHighlightTerms(relatedKeywords).filter((term) => !exactLowerTerms.has(term.toLocaleLowerCase()));
   const relatedLowerTerms = new Set(relatedTerms.map((term) => term.toLocaleLowerCase()));
   const highlightTerms = normalizeHighlightTerms([...exactTerms, ...relatedTerms]);
-  const refParts = part.split(ARTICLE_REF_RE);
-  refParts.forEach((part, pi) => {
-    if (ARTICLE_REF_RE.test(part)) {
-      ARTICLE_REF_RE.lastIndex = 0;
-      const href = articleLinks[normalizeArticleRef(part)];
-      if (href) {
-        nodes.push(
-          <a
-            key={`${keyPrefix}-ref-${pi}`}
-            className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
-            href={href}
-            onClick={(event) => scrollToInternalAnchor(event, href, onInternalAnchorLink)}
-            title={`${part}へ移動`}
-          >
-            {part}
-          </a>,
-        );
+  const renderLocalText = (value: string, localKeyPrefix: string): React.ReactNode[] => {
+    const localNodes: React.ReactNode[] = [];
+    const refParts = value.split(ARTICLE_REF_RE);
+    refParts.forEach((refPart, pi) => {
+      if (ARTICLE_REF_EXACT_RE.test(refPart)) {
+        const href = articleLinks[normalizeArticleRef(refPart)];
+        if (href) {
+          localNodes.push(
+            <a
+              key={`${localKeyPrefix}-ref-${pi}`}
+              className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+              href={href}
+              onClick={(event) => scrollToInternalAnchor(event, href, onInternalAnchorLink)}
+              title={`${refPart}へ移動`}
+            >
+              {refPart}
+            </a>,
+          );
+        } else {
+          localNodes.push(refPart);
+        }
         return;
       }
-      nodes.push(
-        <span key={`${keyPrefix}-ref-${pi}`} className="text-primary underline decoration-dotted" title={`${part}を参照`}>
-          {part}
-        </span>,
-      );
-      return;
-    }
-    ARTICLE_REF_RE.lastIndex = 0;
-    if (!highlightTerms.length) {
-      nodes.push(part);
-      return;
-    }
-    // キーワードハイライト
-    const escaped = highlightTerms.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-    const hlRe = new RegExp(`(${escaped})`, 'gi');
-    const hlParts = part.split(hlRe);
-    hlParts.forEach((hp, hi) => {
-      const key = hp.toLocaleLowerCase();
-      if (exactLowerTerms.has(key) || relatedLowerTerms.has(key)) {
-        hlRe.lastIndex = 0;
-        nodes.push(
-          <mark
-            key={`${keyPrefix}-hl-${pi}-${hi}`}
-            className={`rounded px-0.5 text-inherit ${exactLowerTerms.has(key) ? 'bg-yellow-200/90' : 'bg-emerald-200/90 ring-1 ring-emerald-300/70'}`}
-          >
-            {hp}
-          </mark>,
-        );
-      } else {
-        hlRe.lastIndex = 0;
-        nodes.push(hp);
+      if (!highlightTerms.length) {
+        localNodes.push(refPart);
+        return;
       }
+      const escaped = highlightTerms.map((keyword) => keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      const highlightRe = new RegExp(`(${escaped})`, 'gi');
+      refPart.split(highlightRe).forEach((highlightPart, hi) => {
+        const key = highlightPart.toLocaleLowerCase();
+        if (exactLowerTerms.has(key) || relatedLowerTerms.has(key)) {
+          localNodes.push(
+            <mark
+              key={`${localKeyPrefix}-hl-${pi}-${hi}`}
+              className={`search-highlight ${exactLowerTerms.has(key) ? 'search-highlight--exact' : 'search-highlight--related'}`}
+            >
+              {highlightPart}
+            </mark>,
+          );
+        } else {
+          localNodes.push(highlightPart);
+        }
+      });
     });
-  });
+    return localNodes;
+  };
+
+  const documentTitles = Object.keys(sourceDocumentTitleLinks).filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!documentTitles.length || !onSourceDocumentLink) {
+    return renderLocalText(part, keyPrefix);
+  }
+  const titlePattern = documentTitles.map((title) => title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const documentRefRe = new RegExp(`(${titlePattern})(?:（[^）]*）)?(${ARTICLE_REF_PATTERN})`, 'g');
+  let cursor = 0;
+  for (const match of part.matchAll(documentRefRe)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      nodes.push(...renderLocalText(part.slice(cursor, index), `${keyPrefix}-doc-before-${index}`));
+    }
+    const title = match[1];
+    const articleRef = match[2];
+    const documentId = sourceDocumentTitleLinks[title];
+    if (documentId) {
+      nodes.push(
+        <a
+          key={`${keyPrefix}-doc-${index}`}
+          className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+          href={`#doc-${documentId}`}
+          onClick={(event) => {
+            event.preventDefault();
+            onSourceDocumentLink(documentId, normalizeArticleRef(articleRef));
+          }}
+          title={`${match[0]}へ移動`}
+        >
+          {match[0]}
+        </a>,
+      );
+    } else {
+      nodes.push(...renderLocalText(match[0], `${keyPrefix}-doc-plain-${index}`));
+    }
+    cursor = index + match[0].length;
+  }
+  if (cursor < part.length) {
+    nodes.push(...renderLocalText(part.slice(cursor), `${keyPrefix}-doc-after-${cursor}`));
+  }
   return nodes;
 }
 
@@ -208,6 +251,7 @@ function renderTextLine(
   articleLinks: ArticleLinkMap,
   sourceAnchorLinks: SourceAnchorLinkMap,
   sourceDocumentLinks: SourceDocumentLinkMap,
+  sourceDocumentTitleLinks: SourceDocumentTitleLinkMap,
   sourceUrl?: string,
   onSourceDocumentLink?: SourceDocumentLinkHandler,
   onInternalAnchorLink?: InternalAnchorLinkHandler,
@@ -217,10 +261,16 @@ function renderTextLine(
   for (const match of line.matchAll(LINK_MARKER_RE)) {
     const index = match.index ?? 0;
     if (index > cursor) {
-      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, relatedKeywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
+      nodes.push(...renderPlainText(line.slice(cursor, index), keywords, relatedKeywords, articleLinks, sourceDocumentTitleLinks, `plain-${cursor}`, onSourceDocumentLink, onInternalAnchorLink));
     }
     const rawHref = decodeMarkerValue(match[1] || '');
     const label = decodeMarkerValue(match[2] || '');
+    const rawAnchorId = rawHref.startsWith('#') ? decodeURIComponent(rawHref.slice(1)) : '';
+    if (rawAnchorId && !sourceAnchorLinks[rawAnchorId]) {
+      nodes.push(...renderPlainText(label, keywords, relatedKeywords, articleLinks, sourceDocumentTitleLinks, `unresolved-link-${index}`, onSourceDocumentLink, onInternalAnchorLink));
+      cursor = index + match[0].length;
+      continue;
+    }
     const documentLink = resolveSourceDocumentLink(rawHref, sourceDocumentLinks, sourceUrl);
     const href = resolveSourceHref(rawHref, sourceAnchorLinks, sourceUrl);
     const isInternal = href.startsWith('#') || !!documentLink;
@@ -237,13 +287,13 @@ function renderTextLine(
         target={isInternal ? undefined : '_blank'}
         title={isInternal ? `${label}へ移動` : `${label}を原文で開く`}
       >
-        {renderPlainText(label, keywords, relatedKeywords, {}, `link-label-${index}`, onInternalAnchorLink)}
+        {renderPlainText(label, keywords, relatedKeywords, {}, {}, `link-label-${index}`, undefined, onInternalAnchorLink)}
       </a>,
     );
     cursor = index + match[0].length;
   }
   if (cursor < line.length) {
-    nodes.push(...renderPlainText(line.slice(cursor), keywords, relatedKeywords, articleLinks, `plain-${cursor}`, onInternalAnchorLink));
+    nodes.push(...renderPlainText(line.slice(cursor), keywords, relatedKeywords, articleLinks, sourceDocumentTitleLinks, `plain-${cursor}`, onSourceDocumentLink, onInternalAnchorLink));
   }
   return nodes;
 }
@@ -255,6 +305,7 @@ function ArticleTable({
   articleLinks,
   sourceAnchorLinks,
   sourceDocumentLinks,
+  sourceDocumentTitleLinks,
   sourceUrl,
   onSourceDocumentLink,
   onInternalAnchorLink,
@@ -265,6 +316,7 @@ function ArticleTable({
   articleLinks: ArticleLinkMap;
   sourceAnchorLinks: SourceAnchorLinkMap;
   sourceDocumentLinks: SourceDocumentLinkMap;
+  sourceDocumentTitleLinks: SourceDocumentTitleLinkMap;
   sourceUrl?: string;
   onSourceDocumentLink?: SourceDocumentLinkHandler;
   onInternalAnchorLink?: InternalAnchorLinkHandler;
@@ -280,7 +332,7 @@ function ArticleTable({
             <tr>
               {headerRow.map((cell, ci) => (
                 <th key={ci} className="px-3 py-2 text-left font-semibold border-b whitespace-nowrap">
-                  {renderTextLine(cell, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
+                  {renderTextLine(cell, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceDocumentTitleLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
                 </th>
               ))}
             </tr>
@@ -291,7 +343,7 @@ function ArticleTable({
             <tr key={ri} className="border-b last:border-b-0 hover:bg-muted/20">
               {row.map((cell, ci) => (
                 <td key={ci} className="px-3 py-2 align-top whitespace-pre-wrap">
-                  {renderTextLine(cell, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
+                  {renderTextLine(cell, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceDocumentTitleLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
                 </td>
               ))}
             </tr>
@@ -309,6 +361,7 @@ export function ArticleContent({
   articleLinks = {},
   sourceAnchorLinks = {},
   sourceDocumentLinks = {},
+  sourceDocumentTitleLinks = {},
   sourceUrl,
   onSourceDocumentLink,
   onInternalAnchorLink,
@@ -319,16 +372,17 @@ export function ArticleContent({
   articleLinks?: ArticleLinkMap;
   sourceAnchorLinks?: SourceAnchorLinkMap;
   sourceDocumentLinks?: SourceDocumentLinkMap;
+  sourceDocumentTitleLinks?: SourceDocumentTitleLinkMap;
   sourceUrl?: string;
   onSourceDocumentLink?: SourceDocumentLinkHandler;
   onInternalAnchorLink?: InternalAnchorLinkHandler;
 }) {
-  const parts = parseArticleParts(text || '');
+  const parts = useMemo(() => parseArticleParts(text || ''), [text]);
   return (
     <div className="space-y-1 text-sm leading-7">
       {parts.map((part, i) => {
         if (part.type === 'table') {
-          return <ArticleTable key={i} rows={part.rows} keywords={keywords} relatedKeywords={relatedKeywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceDocumentLinks={sourceDocumentLinks} sourceUrl={sourceUrl} onSourceDocumentLink={onSourceDocumentLink} onInternalAnchorLink={onInternalAnchorLink} />;
+          return <ArticleTable key={i} rows={part.rows} keywords={keywords} relatedKeywords={relatedKeywords} articleLinks={articleLinks} sourceAnchorLinks={sourceAnchorLinks} sourceDocumentLinks={sourceDocumentLinks} sourceDocumentTitleLinks={sourceDocumentTitleLinks} sourceUrl={sourceUrl} onSourceDocumentLink={onSourceDocumentLink} onInternalAnchorLink={onInternalAnchorLink} />;
         }
         const lines = part.text.split('\n');
         return (
@@ -336,7 +390,7 @@ export function ArticleContent({
             {lines.map((line, li) => (
               <React.Fragment key={li}>
                 {li > 0 ? '\n' : null}
-                {renderTextLine(line, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
+                {renderTextLine(line, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceDocumentTitleLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink)}
               </React.Fragment>
             ))}
           </p>

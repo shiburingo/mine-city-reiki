@@ -37,7 +37,7 @@ import {
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
 import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DictionarySourceStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem } from './types';
-import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap } from './ArticleContent';
+import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap, type SourceDocumentTitleLinkMap } from './ArticleContent';
 
 const TABS = [
   { id: 'dashboard', label: 'ダッシュボード', icon: Database },
@@ -370,13 +370,13 @@ function minutesRoleLabel(role: string): string {
 }
 
 function minutesRoleClass(role: string): string {
-  if (role.startsWith('title:')) return 'border-sky-200 bg-sky-50 text-sky-800';
-  if (role === 'questioner') return 'border-emerald-200 bg-emerald-50 text-emerald-800';
-  if (role === 'answerer') return 'border-sky-200 bg-sky-50 text-sky-800';
-  if (role === 'chair') return 'border-amber-200 bg-amber-50 text-amber-800';
-  if (role === 'secretariat') return 'border-slate-200 bg-slate-50 text-slate-700';
-  if (role === 'report') return 'border-lime-200 bg-lime-50 text-lime-800';
-  return 'border-border bg-muted text-muted-foreground';
+  if (role.startsWith('title:')) return 'minutes-role minutes-role--title';
+  if (role === 'questioner') return 'minutes-role minutes-role--questioner';
+  if (role === 'answerer') return 'minutes-role minutes-role--answerer';
+  if (role === 'chair') return 'minutes-role minutes-role--chair';
+  if (role === 'secretariat') return 'minutes-role minutes-role--secretariat';
+  if (role === 'report') return 'minutes-role minutes-role--report';
+  return 'minutes-role minutes-role--unknown';
 }
 
 const MINUTES_EXECUTIVE_TITLE_FALLBACKS = [
@@ -707,11 +707,11 @@ function renderHighlightedText(text: string, terms: string[], relatedTerms: stri
   const relatedLowerTerms = new Set(filteredRelatedTerms.map((term) => term.toLocaleLowerCase()));
   return text.split(pattern).map((part, index) => (
     exactLowerTerms.has(part.toLocaleLowerCase()) ? (
-      <mark key={`${index}-${part}`} className="inline min-w-0 break-words rounded bg-yellow-200/90 px-0.5 text-inherit [overflow-wrap:anywhere] [word-break:break-word]">
+      <mark key={`${index}-${part}`} className="search-highlight search-highlight--exact inline min-w-0 break-words [overflow-wrap:anywhere] [word-break:break-word]">
         {part}
       </mark>
     ) : relatedLowerTerms.has(part.toLocaleLowerCase()) ? (
-      <mark key={`${index}-${part}`} className="inline min-w-0 break-words rounded bg-emerald-200/90 px-0.5 text-inherit ring-1 ring-emerald-300/70 [overflow-wrap:anywhere] [word-break:break-word]">
+      <mark key={`${index}-${part}`} className="search-highlight search-highlight--related inline min-w-0 break-words [overflow-wrap:anywhere] [word-break:break-word]">
         {part}
       </mark>
     ) : part
@@ -775,6 +775,29 @@ function normalizeArticleRef(value: string): string {
   return value.replace(/\s+/g, '').trim();
 }
 
+const JAPANESE_DIGITS: Record<string, number> = {
+  '〇': 0, '零': 0, '一': 1, '二': 2, '三': 3, '四': 4,
+  '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+};
+const JAPANESE_SMALL_UNITS: Record<string, number> = { '十': 10, '百': 100, '千': 1000 };
+
+function japaneseNumberToInt(value: string): number | null {
+  const normalized = value.normalize('NFKC');
+  if (/^\d+$/.test(normalized)) return Number(normalized);
+  if (!normalized || [...normalized].some((char) => JAPANESE_DIGITS[char] == null && JAPANESE_SMALL_UNITS[char] == null)) return null;
+  let total = 0;
+  let digit = 0;
+  for (const char of normalized) {
+    if (JAPANESE_DIGITS[char] != null) {
+      digit = JAPANESE_DIGITS[char];
+    } else {
+      total += (digit || 1) * JAPANESE_SMALL_UNITS[char];
+      digit = 0;
+    }
+  }
+  return total + digit;
+}
+
 function articleRefAliases(articleNumber: string, articleTitle: string): string[] {
   const rawValues = [articleNumber, articleTitle].filter(Boolean);
   const aliases = new Set<string>();
@@ -784,8 +807,23 @@ function articleRefAliases(articleNumber: string, articleTitle: string): string[
     aliases.add(normalized);
     const withoutParen = normalized.replace(/[（(].*$/, '');
     if (withoutParen) aliases.add(withoutParen);
-    const tableMatch = normalized.match(/^(別表第[〇一二三四五六七八九十百千万\d]+)/);
-    if (tableMatch) aliases.add(tableMatch[1]);
+    const articleMatch = withoutParen.match(/^第([^条]+)条((?:の[^の]+)*)/);
+    if (articleMatch) {
+      const main = japaneseNumberToInt(articleMatch[1]);
+      const suffixes = [...articleMatch[2].matchAll(/の([^の]+)/g)].map((match) => japaneseNumberToInt(match[1]));
+      if (main != null && suffixes.every((part) => part != null)) {
+        aliases.add(`第${main}条${suffixes.map((part) => `の${part}`).join('')}`);
+      }
+    }
+    const tableMatch = normalized.match(/^(別表第?([〇零一二三四五六七八九十百千万\d]+))/);
+    if (tableMatch) {
+      aliases.add(tableMatch[1]);
+      const tableNumber = japaneseNumberToInt(tableMatch[2]);
+      if (tableNumber != null) {
+        aliases.add(`別表第${tableNumber}`);
+        aliases.add(`別表${tableNumber}`);
+      }
+    }
     const formMatch = normalized.match(/^(様式第[〇一二三四五六七八九十百千万\d]+号?)/);
     if (formMatch) aliases.add(formMatch[1]);
   }
@@ -815,6 +853,10 @@ function buildSourceAnchorLinkMap(doc: DocumentDetail, anchorPrefix: string): So
 
 function buildSourceDocumentLinkMap(doc: DocumentDetail): SourceDocumentLinkMap {
   return doc.sourceDocumentMap || {};
+}
+
+function buildSourceDocumentTitleLinkMap(doc: DocumentDetail): SourceDocumentTitleLinkMap {
+  return doc.sourceDocumentTitleMap || {};
 }
 
 function articleHeadingTone(depth: number): string {
@@ -2330,6 +2372,14 @@ function AppShell() {
   const browseTree = useMemo(() => buildBrowseTree(browseSource, browseList, browseCategories), [browseList, browseSource, browseCategories]);
   const browseDocArticleTree = useMemo(() => buildArticleGroupTree(browseDoc?.articles || []), [browseDoc]);
   const selectedDocArticleTree = useMemo(() => buildArticleGroupTree(selectedDoc?.articles || []), [selectedDoc]);
+  const browseArticleLinkMap = useMemo(() => buildArticleLinkMap(browseDoc?.articles || [], 'barticle'), [browseDoc]);
+  const browseSourceAnchorLinkMap = useMemo(() => browseDoc ? buildSourceAnchorLinkMap(browseDoc, 'barticle') : {}, [browseDoc]);
+  const browseSourceDocumentLinkMap = useMemo(() => browseDoc ? buildSourceDocumentLinkMap(browseDoc) : {}, [browseDoc]);
+  const browseSourceDocumentTitleLinkMap = useMemo(() => browseDoc ? buildSourceDocumentTitleLinkMap(browseDoc) : {}, [browseDoc]);
+  const selectedArticleLinkMap = useMemo(() => buildArticleLinkMap(selectedDoc?.articles || [], 'article'), [selectedDoc]);
+  const selectedSourceAnchorLinkMap = useMemo(() => selectedDoc ? buildSourceAnchorLinkMap(selectedDoc, 'article') : {}, [selectedDoc]);
+  const selectedSourceDocumentLinkMap = useMemo(() => selectedDoc ? buildSourceDocumentLinkMap(selectedDoc) : {}, [selectedDoc]);
+  const selectedSourceDocumentTitleLinkMap = useMemo(() => selectedDoc ? buildSourceDocumentTitleLinkMap(selectedDoc) : {}, [selectedDoc]);
   const groupedResults = useMemo(() => groupSearchResults(results), [results]);
   const selectedSearchResult = useMemo(() => {
     if (!selectedDocId) return null;
@@ -2882,6 +2932,7 @@ function AppShell() {
     articleLinks: ArticleLinkMap,
     sourceAnchorLinks: SourceAnchorLinkMap,
     sourceDocumentLinks: SourceDocumentLinkMap,
+    sourceDocumentTitleLinks: SourceDocumentTitleLinkMap,
     sourceUrl: string,
     onSourceDocumentLink: (documentId: number, sourceAnchorId?: string) => void,
     onInternalAnchorLink?: () => void,
@@ -2911,6 +2962,7 @@ function AppShell() {
                       articleLinks={articleLinks}
                       sourceAnchorLinks={sourceAnchorLinks}
                       sourceDocumentLinks={sourceDocumentLinks}
+                      sourceDocumentTitleLinks={sourceDocumentTitleLinks}
                       sourceUrl={sourceUrl}
                       onSourceDocumentLink={onSourceDocumentLink}
                       onInternalAnchorLink={onInternalAnchorLink}
@@ -2920,7 +2972,7 @@ function AppShell() {
               ))}
             </div>
           ) : null}
-          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink, activeArticleId, depth + 1) : null}
+          {node.children.length > 0 ? renderArticleBodyTree(node.children, anchorPrefix, keywords, relatedKeywords, articleLinks, sourceAnchorLinks, sourceDocumentLinks, sourceDocumentTitleLinks, sourceUrl, onSourceDocumentLink, onInternalAnchorLink, activeArticleId, depth + 1) : null}
         </section>
       ))}
     </div>
@@ -4037,13 +4089,13 @@ function AppShell() {
   };
 
   const renderMinutesWorkspace = (): JSX.Element => {
-    if (minutesPage === 'collectionResults') return <section className="minutes-print-page min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
-    if (minutesPage === 'results') return <section className="min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
-    if (minutesPage === 'detail') return <section className="min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
-    if (minutesPage === 'meetingDetail') return <section className="min-w-0 overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
+    if (minutesPage === 'collectionResults') return <section className="minutes-theme minutes-print-page min-w-0 overflow-hidden rounded-[2rem] border bg-background shadow-sm">{renderMinutesTopBar()}{renderMinutesCollectionResultsPage()}</section>;
+    if (minutesPage === 'results') return <section className="minutes-theme min-w-0 overflow-hidden rounded-[2rem] border bg-background shadow-sm">{renderMinutesTopBar()}{renderMinutesResultsPage()}</section>;
+    if (minutesPage === 'detail') return <section className="minutes-theme min-w-0 overflow-hidden rounded-[2rem] border bg-background shadow-sm">{renderMinutesTopBar()}{renderMinutesDetailPage()}</section>;
+    if (minutesPage === 'meetingDetail') return <section className="minutes-theme min-w-0 overflow-hidden rounded-[2rem] border bg-background shadow-sm">{renderMinutesTopBar()}{renderMinutesMeetingDetailPage()}</section>;
 
     return (
-      <section className="overflow-hidden rounded-[2rem] border bg-[#eef5f0] shadow-sm">
+      <section className="minutes-theme overflow-hidden rounded-[2rem] border bg-background shadow-sm">
         {renderMinutesTopBar()}
         <div className="p-6">
           {minutesPage === 'home' ? (
@@ -4754,7 +4806,7 @@ function AppShell() {
         ) : null}
 
         {tab === 'browse' ? (
-          <section className="grid gap-6 lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.52fr)]">
+          <section className="grid gap-6 lg:grid-cols-[minmax(18rem,0.68fr)_minmax(0,1.72fr)]">
             <div className="space-y-4 rounded-3xl border bg-card p-6 shadow-sm">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-xl font-semibold">体系別閲覧</h2>
@@ -4807,15 +4859,6 @@ function AppShell() {
                         : '地方公務員法を条文番号順で閲覧できます。'}
                   </div>
                   {renderBrowseTree(browseTree)}
-                  {browseSource !== 'mine-city' && browseDoc ? (
-                    <div className="rounded-2xl border bg-muted/20 p-3">
-                      <div className="mb-3 flex items-center justify-between gap-2">
-                        <p className="text-sm font-semibold">章・条文一覧</p>
-                        <span className="text-xs text-muted-foreground">{browseDoc.articles.length.toLocaleString()}条</span>
-                      </div>
-                      {renderArticleNavTree(browseDocArticleTree, 'barticle')}
-                    </div>
-                  ) : null}
                 </div>
               )}
             </div>
@@ -4880,14 +4923,15 @@ function AppShell() {
                       </button>
                     </div>
                   </div>
-                  <div className="mt-6">
-                    <div ref={browseArticleScrollRef} className="max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
-                      {browseSource === 'mine-city' ? (
-                        <div className="mb-5 rounded-2xl border bg-muted/20 p-3">
-                          <p className="mb-3 text-sm font-semibold">条文一覧</p>
-                          {renderArticleNavTree(browseDocArticleTree, 'barticle')}
-                        </div>
-                      ) : null}
+                  <div className="mt-6 grid min-w-0 gap-4 xl:grid-cols-[15rem_minmax(0,1fr)]">
+                    <aside className="max-h-[65vh] overflow-auto rounded-2xl border bg-muted/20 p-3 print:hidden">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold">章・条文一覧</p>
+                        <span className="text-xs text-muted-foreground">{browseDoc.articles.length.toLocaleString()}条</span>
+                      </div>
+                      {renderArticleNavTree(browseDocArticleTree, 'barticle')}
+                    </aside>
+                    <div ref={browseArticleScrollRef} className="min-w-0 max-h-[65vh] overflow-auto rounded-2xl border bg-background p-5 print:max-h-none">
                       <div className="space-y-7">
                         {browseDoc.articles.length > 0 ? (
                           renderArticleBodyTree(
@@ -4895,9 +4939,10 @@ function AppShell() {
                             'barticle',
                             [],
                             [],
-                            buildArticleLinkMap(browseDoc.articles, 'barticle'),
-                            buildSourceAnchorLinkMap(browseDoc, 'barticle'),
-                            buildSourceDocumentLinkMap(browseDoc),
+                            browseArticleLinkMap,
+                            browseSourceAnchorLinkMap,
+                            browseSourceDocumentLinkMap,
+                            browseSourceDocumentTitleLinkMap,
                             browseDoc.sourceUrl,
                             openBrowseSourceDocument,
                             rememberBrowseReturnPosition,
@@ -5188,9 +5233,10 @@ function AppShell() {
                             'article',
                             selectedSearchHighlightTerms,
                             selectedSearchRelatedHighlightTerms,
-                            buildArticleLinkMap(selectedDoc.articles, 'article'),
-                            buildSourceAnchorLinkMap(selectedDoc, 'article'),
-                            buildSourceDocumentLinkMap(selectedDoc),
+                            selectedArticleLinkMap,
+                            selectedSourceAnchorLinkMap,
+                            selectedSourceDocumentLinkMap,
+                            selectedSourceDocumentTitleLinkMap,
                             selectedDoc.sourceUrl,
                             openSelectedSourceDocument,
                             rememberSelectedReturnPosition,

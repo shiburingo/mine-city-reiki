@@ -28,6 +28,7 @@ cd /opt/mine-city-reiki
 3. `dist/` を `/var/www/mine-city-reiki/` にコピー
 4. `pip install -r server/requirements.txt` でバックエンド依存を更新
 5. `systemctl restart mine-city-reiki-api` で API を再起動
+6. ヘルスチェックを再試行し、API応答を確認
 
 本番反映は GitHub 経由に統一します。Mac側で commit / push した後、Raspberry Pi 側の Git checkout で `deploy/raspi/update.sh` を実行します。
 
@@ -96,6 +97,8 @@ source server/venv/bin/activate
 python3 server/run_due_sync.py --force
 ```
 
+地方自治法・地方公務員法の構造化パーサを更新した場合は、設定画面から両ソースを同期します。通常同期だけで変更文書のMariaDB転置索引とMeilisearch文書が増分更新され、別表・元XMLアンカーも反映されます。
+
 ---
 
 ## 定期同期
@@ -137,6 +140,15 @@ UI の「設定」タブ → 「手動同期」パネルから実行します:
 - **地方公務員法のみ** — e-Gov API のみを対象にクロール
 - **すべて同期** — 3ソースを順番にクロール
 
+通常同期は、変更文書の旧Meilisearch条文を一括削除して新条文だけを投入し、`law_documents`、`law_articles`、`law_search_terms` のテーブル統計を更新します。検索設定変更や索引破損の修復時だけ「全件再索引」を実行します。
+
+### 会議録同期とコンパイル
+
+- 「会議録のみ差分同期」は元WebページのPDF URL・内容ハッシュを比較し、追加・変更日程だけを再抽出します。
+- 同期成功後は全会議録を新しい世代へコンパイルし、軽量検索テーブル、日程閲覧JSON、Meilisearch専用索引を作り直します。
+- 新世代は全処理成功後だけ有効化します。有効世代と直前の成功世代を残し、失敗時は旧世代で検索・閲覧を継続します。
+- 再タグ付けはPDFを再取得せず、年度別話者辞書、会議日名簿、状態機械、最新ルールを全発言へ再適用します。
+
 ---
 
 ## キャッシュ管理
@@ -162,6 +174,19 @@ mysql -u root mine_city_reiki < server/schema.mariadb.sql
 ```
 
 既存データへの影響なしに新しいカラムが追加されます。
+
+会議録テーブルと互換カラム・索引はAPI起動時にも冪等に確認されます。本番でDDLを確認する場合は先にバックアップを取得し、状態変更を伴う手動SQLではなくアプリの初期化処理またはスキーマファイルを使用します。
+
+### 検索統計の確認
+
+通常同期と全件再索引は検索用テーブルへ `ANALYZE TABLE` を実行します。手動確認する場合は読み取り専用で次を使います。
+
+```sql
+SHOW INDEX FROM law_search_terms;
+EXPLAIN SELECT document_id, article_id
+FROM law_search_terms
+WHERE target_type = 'article' AND term = '観光';
+```
 
 ---
 
@@ -209,4 +234,4 @@ systemctl list-timers mine-city-reiki-dictionary.timer --all
 
 - 例規の解釈は必ず原文を確認すること。このシステムの回答は候補提示のみであり、法的判断を断定しない。
 - 個人情報を含む質問をシステムに入力しないこと。
-- キャッシュが残っている場合、同期直後でも古い検索結果が返ることがある（最大 30 分）。手動クリアで即時反映できる。
+- 同期・再索引・同義語変更時は `cache_generation` を更新して検索・質問キャッシュを即時失効する。古い結果が見える場合はAPIワーカーとMeilisearchの状態を確認し、管理画面のキャッシュクリアを診断用に使用する。

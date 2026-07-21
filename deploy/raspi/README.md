@@ -29,7 +29,9 @@ MEILI_INDEX=mine_city_reiki_articles
 MEILI_MINUTES_INDEX=mine_city_meeting_minutes
 ```
 
-After enabling Meilisearch, run a full reindex from the Settings screen or `POST /api/reindex/run` so the law index is rebuilt from MySQL. Run a meeting-minutes compile from Settings after deployment so the separate meeting-minutes index is rebuilt from the active compiled generation.
+After enabling Meilisearch for the first time, run a full reindex from the Settings screen or `POST /api/reindex/run` so the law index is rebuilt from MySQL. After that, normal law syncs update only changed documents and delete obsolete article records in batches. Run a meeting-minutes compile from Settings after meeting data or tagging rules change so the separate meeting-minutes index is rebuilt from the new active compiled generation.
+
+The meeting-minutes compiler activates a generation only after the lightweight rows, day payloads, and Meilisearch records are complete. Keep the active and immediately previous successful generations; failed builds must not replace the active generation.
 
 ## Git 管理の前提
 

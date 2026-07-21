@@ -97,6 +97,7 @@ export type DocumentDetail = {
   fullText: string;
   sourceAnchorMap?: Record<string, number>;
   sourceDocumentMap?: Record<string, number>;
+  sourceDocumentTitleMap?: Record<string, number>;
   articles: ArticleItem[];
 };
 
