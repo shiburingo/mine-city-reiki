@@ -84,6 +84,38 @@ class EgoveLawParserTest(unittest.TestCase):
         self.assertEqual([len(batch) for batch in cursor.batches], [500, 500, 201])
         self.assertEqual(sum(len(batch) for batch in cursor.batches), len(terms))
 
+    def test_meili_deletion_reports_actual_deleted_documents(self) -> None:
+        responses = [
+            {"taskUid": 42},
+            {
+                "status": "succeeded",
+                "details": {"providedIds": 2, "deletedDocuments": 1},
+            },
+        ]
+        with (
+            patch.object(app_module, "meili_is_enabled", return_value=True),
+            patch.object(app_module, "meili_request", side_effect=responses),
+        ):
+            deleted = app_module.delete_meili_documents(["a1", "a2"])
+
+        self.assertEqual(deleted, 1)
+
+    def test_reset_meili_index_does_not_hide_delete_failure(self) -> None:
+        responses = [
+            {"uid": "mine_city_reiki_articles"},
+            {"taskUid": 43},
+            {
+                "status": "failed",
+                "error": {"message": "disk full"},
+            },
+        ]
+        with (
+            patch.object(app_module, "meili_is_enabled", return_value=True),
+            patch.object(app_module, "meili_request", side_effect=responses),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                app_module.reset_meili_index()
+
 
 if __name__ == "__main__":
     unittest.main()

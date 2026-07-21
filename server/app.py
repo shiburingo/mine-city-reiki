@@ -2058,9 +2058,9 @@ def meili_health() -> bool:
         return False
 
 
-def wait_meili_task(task_uid: int | None, timeout_seconds: int = 30) -> None:
+def wait_meili_task(task_uid: int | None, timeout_seconds: int = 30) -> dict[str, Any]:
     if task_uid is None:
-        return
+        return {}
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         task = meili_request("GET", f"/tasks/{task_uid}", timeout=5)
@@ -2068,7 +2068,7 @@ def wait_meili_task(task_uid: int | None, timeout_seconds: int = 30) -> None:
         if status in {"succeeded", "failed", "canceled"}:
             if status != "succeeded":
                 raise RuntimeError(f"Meilisearch task {task_uid} {status}: {task.get('error')}")
-            return
+            return task
         time.sleep(0.2)
     raise RuntimeError(f"Meilisearch task {task_uid} timed out")
 
@@ -3564,8 +3564,16 @@ def delete_meili_documents(record_ids: list[str], batch_size: int = 1000) -> int
             batch,
             timeout=30,
         )
-        wait_meili_task(meili_task_uid(task), timeout_seconds=120)
-        deleted += len(batch)
+        completed = wait_meili_task(meili_task_uid(task), timeout_seconds=120)
+        details = completed.get("details") if isinstance(completed.get("details"), dict) else {}
+        deleted_in_batch = int(details.get("deletedDocuments") or 0)
+        deleted += deleted_in_batch
+        if deleted_in_batch != len(batch):
+            app.logger.warning(
+                "Meilisearch deleted %s of %s requested stale records",
+                deleted_in_batch,
+                len(batch),
+            )
     return deleted
 
 
@@ -3587,12 +3595,15 @@ def analyze_law_search_tables() -> list[str]:
 def reset_meili_index() -> None:
     if not meili_is_enabled():
         return
+    index_path = f"/indexes/{urllib.parse.quote(CFG.meili_index)}"
     try:
-        task = meili_request("DELETE", f"/indexes/{urllib.parse.quote(CFG.meili_index)}", timeout=10)
+        meili_request("GET", index_path, timeout=5)
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+    else:
+        task = meili_request("DELETE", index_path, timeout=10)
         wait_meili_task(meili_task_uid(task), timeout_seconds=60)
-    except Exception:
-        # Deleting a missing index should not block a rebuild.
-        pass
     configure_meili_index()
 
 
@@ -3639,12 +3650,15 @@ def reset_meili_minutes_index() -> None:
     if not meili_is_enabled():
         return
     index = urllib.parse.quote(CFG.meili_minutes_index)
+    index_path = f"/indexes/{index}"
     try:
-        task = meili_request("DELETE", f"/indexes/{index}", timeout=10)
+        meili_request("GET", index_path, timeout=5)
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+    else:
+        task = meili_request("DELETE", index_path, timeout=10)
         wait_meili_task(meili_task_uid(task), timeout_seconds=90)
-    except Exception:
-        # A missing index is a normal first-run condition.
-        pass
     configure_meili_minutes_index()
 
 
