@@ -7,13 +7,15 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url ori
 else
   echo '[mine-city-reiki] git pull skipped (no origin configured)'
 fi
-if [ -d node_modules ]; then
-  legacy_owner="$(find node_modules \( ! -uid "$(id -u)" -o ! -gid "$(id -g)" \) -print -quit)"
-  if [ -n "${legacy_owner}" ]; then
-    echo "[mine-city-reiki] repairing legacy node_modules ownership (${legacy_owner})"
-    sudo chown -R "$(id -u):$(id -g)" node_modules
+for generated_dir in node_modules dist; do
+  if [ -d "${generated_dir}" ]; then
+    legacy_owner="$(find "${generated_dir}" \( ! -uid "$(id -u)" -o ! -gid "$(id -g)" \) -print -quit)"
+    if [ -n "${legacy_owner}" ]; then
+      echo "[mine-city-reiki] repairing legacy ${generated_dir} ownership (${legacy_owner})"
+      sudo chown -R "$(id -u):$(id -g)" "${generated_dir}"
+    fi
   fi
-fi
+done
 npm ci
 npm run build
 if command -v rsync >/dev/null 2>&1 && [ -d /var/www/mine-city-reiki ]; then
