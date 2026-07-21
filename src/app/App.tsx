@@ -2665,7 +2665,7 @@ function AppShell() {
       return (a.meetingName || a.title).localeCompare(b.meetingName || b.title, 'ja-JP', { numeric: true });
     })[0] ?? null;
   }, [minutesMeetings]);
-  const synonymTotalCount = useMemo(() => synonymStats.reduce((sum, item) => sum + item.count, 0), [synonymStats]);
+  const synonymRegisteredTermCount = synonymGrowth?.currentTermCount ?? synonymCompiled?.termCount ?? 0;
   const deferredMinutesResults = useDeferredValue(minutesResults);
   const meetingGroupedMinutesResults = useMemo(() => {
     const groups = new Map<number, { dayId: number; title: string; section: string; meetingDate: string | null; count: number; speakers: Set<string>; first: MinutesSearchResult }>();
@@ -4298,9 +4298,11 @@ function AppShell() {
                       )}
                     </div>
                     <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
-                      <p className="text-xs font-semibold text-muted-foreground">辞書の登録数</p>
+                      <p className="text-xs font-semibold text-muted-foreground">辞書の登録語数</p>
                       <p className="mt-1 text-sm font-semibold text-[#173f36]">
-                        {synonymLoading && synonymTotalCount === 0 ? '読み込み中…' : `${synonymTotalCount.toLocaleString()}件`}
+                        {synonymLoading && synonymRegisteredTermCount === 0
+                          ? '読み込み中…'
+                          : `${synonymRegisteredTermCount.toLocaleString()}語`}
                       </p>
                     </div>
                   </div>
