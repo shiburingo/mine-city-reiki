@@ -15,6 +15,8 @@ cd /opt/mine-city-reiki
 ./deploy/raspi/update.sh
 ```
 
+更新スクリプトは配備ユーザーで実行し、`npm` を `sudo` で直接実行しません。過去の手動更新で `node_modules` に root 所有ファイルが残っている場合は、`npm ci` の前に所有権を配備ユーザーへ修復します。
+
 ## Meilisearch
 
 Meilisearch is optional. When `MEILI_ENABLED=1`, the API uses Meilisearch first and falls back to the existing MySQL search if Meilisearch is unavailable or a query is not supported by the Meilisearch path.
