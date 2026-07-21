@@ -2,9 +2,9 @@
 
 :root {
   --input-background: color-mix(in srgb, var(--card, #fff) 90%, #eef4ff 10%);
-  --primary-surface: var(--primary);
-  --primary-surface-hover: color-mix(in srgb, var(--primary) 86%, var(--foreground));
-  --primary-surface-foreground: var(--primary-foreground);
+  --primary-surface: color-mix(in srgb, var(--primary) 14%, var(--card));
+  --primary-surface-hover: color-mix(in srgb, var(--primary) 20%, var(--card));
+  --primary-surface-foreground: color-mix(in srgb, var(--accent-foreground) 55%, var(--foreground));
 }
 
 .dark {
@@ -14,20 +14,20 @@
   --primary-surface-foreground: color-mix(in srgb, var(--foreground) 94%, var(--primary));
 }
 
-.dark [class~="bg-primary"] {
+[class~="bg-primary"] {
   background-color: var(--primary-surface) !important;
 }
 
-.dark [class~="bg-primary"][class~="text-primary-foreground"],
-.dark [class~="bg-primary"] [class~="text-primary-foreground"] {
+[class~="bg-primary"][class~="text-primary-foreground"],
+[class~="bg-primary"] [class~="text-primary-foreground"] {
   color: var(--primary-surface-foreground) !important;
 }
 
-.dark [class~="bg-primary"] [class~="text-primary-foreground/85"] {
+[class~="bg-primary"] [class~="text-primary-foreground/85"] {
   color: color-mix(in srgb, var(--primary-surface-foreground) 82%, transparent) !important;
 }
 
-.dark [class~="hover:bg-primary/90"]:hover {
+[class~="hover:bg-primary/90"]:hover {
   background-color: var(--primary-surface-hover) !important;
 }
 
@@ -124,6 +124,16 @@
   color: var(--minutes-strong-foreground) !important;
 }
 
+.minutes-theme [class~="text-white/70"],
+.minutes-theme [class~="text-white/75"],
+.minutes-theme [class~="text-white/80"] {
+  color: color-mix(in srgb, var(--minutes-strong-foreground) 82%, transparent) !important;
+}
+
+.minutes-theme .group:hover [class~="group-hover:text-white"] {
+  color: var(--minutes-strong-foreground) !important;
+}
+
 .minutes-theme [class~="border-[#173f36]"],
 .minutes-theme [class~="border-[#2f765e]"],
 .minutes-theme [class~="border-[#79b28d]"],
@@ -144,6 +154,10 @@
 
 .minutes-theme [class~="hover:bg-[#173f36]"]:hover,
 .minutes-theme [class~="hover:bg-[#245649]"]:hover {
+  background-color: var(--minutes-strong-hover) !important;
+}
+
+.minutes-theme .group:hover [class~="group-hover:bg-[#173f36]"] {
   background-color: var(--minutes-strong-hover) !important;
 }
 
