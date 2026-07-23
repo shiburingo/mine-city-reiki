@@ -982,6 +982,25 @@ def now_tokyo() -> datetime:
     return datetime.now().astimezone()
 
 
+def local_db_datetime_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return f"{value.isoformat(timespec='seconds')}{TOKYO_OFFSET}"
+        return value.isoformat(timespec="seconds")
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        return f"{parsed.isoformat(timespec='seconds')}{TOKYO_OFFSET}"
+    return parsed.isoformat(timespec="seconds")
+
+
 def normalize_text(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "")
     value = re.sub(r"\s+", " ", value)
@@ -8830,8 +8849,8 @@ def api_synonyms_list():
                 'discoveredPairs': int(row.get('discovered_pairs') or 0),
                 'evidenceCount': int(row.get('evidence_count') or 0),
                 'observationCount': int(row.get('observation_count') or 0),
-                'lastStartedAt': row.get('last_started_at'),
-                'lastSuccessAt': row.get('last_success_at'),
+                'lastStartedAt': local_db_datetime_iso(row.get('last_started_at')),
+                'lastSuccessAt': local_db_datetime_iso(row.get('last_success_at')),
                 'lastError': row.get('last_error'),
             }
             for row in source_states

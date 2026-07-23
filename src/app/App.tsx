@@ -220,6 +220,13 @@ function syncRunLabel(run: SyncRun): string {
   return run.runType === 'scheduled' ? '定期同期' : '手動同期';
 }
 
+function dictionaryCycleLabel(source: DictionarySourceStatus): string {
+  if (source.sourceKey === 'curated-ja-seeds') return '完走 対象外';
+  if (!source.lastSuccessAt) return '巡回 未開始';
+  if (source.cycleCount === 0) return '初回巡回中';
+  return `完走 ${source.cycleCount.toLocaleString()}回`;
+}
+
 type TabId = (typeof TABS)[number]['id'];
 
 type SyncForm = {
@@ -5821,7 +5828,7 @@ function AppShell() {
                         </div>
                         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                           <span>根拠 {source.evidenceCount.toLocaleString()}件</span>
-                          <span>完走 {source.cycleCount.toLocaleString()}回</span>
+                          <span>{dictionaryCycleLabel(source)}</span>
                           <span>最終成功 {formatDateTime(source.lastSuccessAt)}</span>
                           {source.licenseUrl ? <a className="text-primary hover:underline" href={source.licenseUrl} target="_blank" rel="noreferrer">{source.licenseName}</a> : <span>{source.licenseName}</span>}
                         </div>
@@ -5829,6 +5836,11 @@ function AppShell() {
                       </div>
                     ))}
                   </div>
+                ) : null}
+                {dictionarySources.length > 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    完走は、巡回カーソルがデータ末尾まで到達した回数です。「初回巡回中」は正常に取得を継続している状態で、管理済みシードは巡回を行わないため対象外です。
+                  </p>
                 ) : null}
                 <ProgressMeter title="関連語辞書更新の進捗" run={runningDictionaryRun} />
                 <ProgressMeter title="インターネット辞書取り込みの進捗" run={runningInternetDictionaryRun} />
