@@ -119,6 +119,10 @@ python3 server/run_due_sync.py --force
 
 取得結果は累積され、通信失敗や取得件数の変動で既存辞書は削除されません。管理画面には50万語・100万語目標の進捗、ソース別巡回件数、新規発見数、ライセンス、最終成功・エラーを表示します。
 
+50万語未満では加速収集モードを自動選択し、1日予算をWikipedia 100,000件、Wiktionary 50,000件、Wikidata 100語に増やします。50万語到達後は通常収集（5,000件 / 2,000件 / 25語）へ自動復帰します。MediaWikiは500件のリダイレクト元と転送先を1リクエストで解決し、単一並列・毎秒4リクエスト以下・`maxlag`付きで巡回します。
+
+取得効率は文字種や重複率によって変動します。2026年7月時点の実績ではWikipedia巡回の約48%が新規ペア候補であり、加速モードでは第1目標まで概ね1〜3週間を見込みます。途中で429/503が返った場合は既存カーソルを維持し、次回実行で継続します。
+
 管理画面の「完走」は、巡回カーソルがソースの末尾まで到達した回数です。Wikipedia・Wikidataの「初回巡回中」は異常ではなく、次回も保存済みカーソルから取得を継続します。管理済み日本語シードは固定データを毎回確認する方式のため、完走回数の対象外です。
 
 コンパイル結果の正本は `server/data/compiled_synonyms.sqlite3` です。作成中は一時ファイルへ書き込み、完了時に原子的に差し替えるため、API検索を止めずに更新できます。10万語以下では `server/data/compiled_synonyms.json` も互換用に生成します。
@@ -129,7 +133,7 @@ sqlite3 server/data/compiled_synonyms.sqlite3 \
   "SELECT key, value FROM metadata WHERE key IN ('termCount','edgeCount','compiledAt');"
 ```
 
-既定の日次予算はWikipedia 5,000件、Wiktionary 2,000件、Wikidata 25語です。API負荷や実行時間に応じて `/etc/mine-city-reiki-api.env` で調整します。
+固定予算が必要な場合だけ `/etc/mine-city-reiki-api.env` の `REIKI_DAILY_DICTIONARY_*_LIMIT` / `REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS` を指定します。未指定なら登録語数に応じた加速・通常予算が使われます。
 
 ---
 
@@ -208,10 +212,13 @@ SECRET_KEY=...
 AUTH_VERIFY_URL=http://localhost:8787/api/auth/verify
 CORS_ORIGINS=https://your-domain.example.com
 REIKI_DAILY_DICTIONARY_MEDIAWIKI=1
-REIKI_DAILY_DICTIONARY_WIKIPEDIA_LIMIT=5000
-REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT=2000
 REIKI_DAILY_DICTIONARY_WIKIDATA=1
-REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS=25
+REIKI_DAILY_DICTIONARY_ACCELERATED=1
+REIKI_DAILY_DICTIONARY_ACCELERATED_UNTIL_TERMS=500000
+# 固定値で上書きする場合のみ指定
+# REIKI_DAILY_DICTIONARY_WIKIPEDIA_LIMIT=100000
+# REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT=50000
+# REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS=100
 REIKI_DICTIONARY_USER_AGENT=mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)
 REIKI_SYNONYM_JSON_COMPAT_MAX_TERMS=100000
 ```

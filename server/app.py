@@ -45,6 +45,7 @@ from dictionary_engine import (
     compiled_synonym_dictionary_status,
     compiled_dictionary_path,
     count_unprocessed_minutes_dictionary_rows,
+    dictionary_collection_budget,
     dictionary_source_statuses,
     fetch_unprocessed_minutes_dictionary_rows,
     insert_pairs,
@@ -7607,9 +7608,24 @@ def api_internet_dictionary_update_run():
     include_curated = bool(payload.get('includeCurated', True))
     include_mediawiki = bool(payload.get('includeMediawiki', True))
     source_url = normalize_text(payload.get('sourceUrl') or '')
-    wikipedia_limit = max(0, min(20000, int(payload.get('wikipediaLimit') or 5000)))
-    wiktionary_limit = max(0, min(10000, int(payload.get('wiktionaryLimit') or 2000)))
-    wikidata_term_limit = max(1, min(100, int(payload.get('wikidataTermLimit') or 25)))
+    compiled_status = compiled_synonym_dictionary_status(get_compiled_dictionary_path())
+    budget = dictionary_collection_budget(
+        int(compiled_status.get('termCount') or 0),
+        accelerated=True,
+        target_term_count=THESAURUS_TARGET_TERM_COUNT,
+    )
+    wikipedia_limit = max(
+        0,
+        min(200000, int(payload.get('wikipediaLimit') or budget['wikipediaLimit'])),
+    )
+    wiktionary_limit = max(
+        0,
+        min(100000, int(payload.get('wiktionaryLimit') or budget['wiktionaryLimit'])),
+    )
+    wikidata_term_limit = max(
+        1,
+        min(500, int(payload.get('wikidataTermLimit') or budget['wikidataTermLimit'])),
+    )
     if source_url and not source_url.startswith(('https://', 'http://')):
         raise ValueError('辞書URLは http または https のみ対応しています。')
     if not include_wikidata and not include_curated and not include_mediawiki and not source_url:
@@ -7635,6 +7651,7 @@ def api_internet_dictionary_update_run():
             'wikipediaLimit': wikipedia_limit,
             'wiktionaryLimit': wiktionary_limit,
             'wikidataTermLimit': wikidata_term_limit,
+            'collectionMode': budget['mode'],
         },
     }), 202
 

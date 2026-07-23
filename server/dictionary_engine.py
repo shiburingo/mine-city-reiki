@@ -27,13 +27,23 @@ WORDNET_SQLITE_ASSET = "wnjpn.db.gz"
 WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/download/v{WORDNET_FALLBACK_VERSION}/{WORDNET_SQLITE_ASSET}"
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
-INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-17"
+INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-23"
 COMPILED_DICTIONARY_VERSION = "compiled-synonyms-sqlite-2026-07-17"
 WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_REQUEST_INTERVAL_SECONDS = 0.8
-MEDIAWIKI_REQUEST_INTERVAL_SECONDS = 0.15
+MEDIAWIKI_REQUEST_INTERVAL_SECONDS = 0.25
 THESAURUS_TARGET_TERM_COUNT = 500_000
 THESAURUS_ULTIMATE_TERM_COUNT = 1_000_000
+STEADY_DICTIONARY_BUDGET = {
+    "wikipediaLimit": 5_000,
+    "wiktionaryLimit": 2_000,
+    "wikidataTermLimit": 25,
+}
+ACCELERATED_DICTIONARY_BUDGET = {
+    "wikipediaLimit": 100_000,
+    "wiktionaryLimit": 50_000,
+    "wikidataTermLimit": 100,
+}
 WIKIMEDIA_USER_AGENT = os.getenv(
     "REIKI_DICTIONARY_USER_AGENT",
     "mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)",
@@ -191,6 +201,22 @@ def build_curated_synonym_pairs() -> tuple[dict[int, set[tuple[str, str]]], dict
     }
 
 
+def dictionary_collection_budget(
+    current_term_count: int,
+    *,
+    accelerated: bool = True,
+    target_term_count: int = THESAURUS_TARGET_TERM_COUNT,
+) -> dict[str, Any]:
+    use_accelerated = accelerated and max(0, int(current_term_count)) < max(1, int(target_term_count))
+    selected = ACCELERATED_DICTIONARY_BUDGET if use_accelerated else STEADY_DICTIONARY_BUDGET
+    return {
+        **selected,
+        "mode": "accelerated" if use_accelerated else "steady",
+        "currentTermCount": max(0, int(current_term_count)),
+        "targetTermCount": max(1, int(target_term_count)),
+    }
+
+
 def _fetch_json(
     url: str,
     params: dict[str, str] | None = None,
@@ -257,8 +283,12 @@ def is_safe_wikidata_alias(seed: str, label: str, alias: str) -> bool:
     return False
 
 
-def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set[str] | None = None) -> set[str]:
-    aliases: set[str] = set()
+def wikidata_entity_ids_for_term(
+    term: str,
+    *,
+    limit: int = 5,
+    accepted_labels: set[str] | None = None,
+) -> list[str]:
     search_payload = _fetch_json(
         WIKIDATA_API_URL,
         {
@@ -280,19 +310,39 @@ def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set
             ids.append(str(item.get("id")))
         if len(ids) >= limit:
             break
-    if not ids:
-        return aliases
-    entity_payload = _fetch_json(
-        WIKIDATA_API_URL,
-        {
-            "action": "wbgetentities",
-            "format": "json",
-            "languages": "ja",
-            "props": "labels|aliases",
-            "ids": "|".join(ids),
-        },
-    )
-    for entity in (entity_payload.get("entities") or {}).values():
+    return ids
+
+
+def _chunked(values: list[Any], size: int) -> Iterable[list[Any]]:
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
+def fetch_wikidata_entities(ids: list[str]) -> dict[str, dict[str, Any]]:
+    entities: dict[str, dict[str, Any]] = {}
+    for id_chunk in _chunked(list(dict.fromkeys(ids)), 50):
+        entity_payload = _fetch_json(
+            WIKIDATA_API_URL,
+            {
+                "action": "wbgetentities",
+                "format": "json",
+                "languages": "ja",
+                "props": "labels|aliases",
+                "ids": "|".join(id_chunk),
+            },
+        )
+        entities.update(entity_payload.get("entities") or {})
+    return entities
+
+
+def wikidata_aliases_from_entities(
+    term: str,
+    ids: Iterable[str],
+    entities: dict[str, dict[str, Any]],
+) -> set[str]:
+    aliases: set[str] = set()
+    for entity_id in ids:
+        entity = entities.get(entity_id) or {}
         label = ((entity.get("labels") or {}).get("ja") or {}).get("value")
         if label:
             aliases.add(str(label))
@@ -301,6 +351,13 @@ def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set
             if value and is_safe_wikidata_alias(term, label or term, str(value)):
                 aliases.add(str(value))
     return {alias for alias in aliases if is_good_term(alias)}
+
+
+def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set[str] | None = None) -> set[str]:
+    ids = wikidata_entity_ids_for_term(term, limit=limit, accepted_labels=accepted_labels)
+    if not ids:
+        return set()
+    return wikidata_aliases_from_entities(term, ids, fetch_wikidata_entities(ids))
 
 
 def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 30) -> tuple[set[tuple[str, str]], dict[str, Any]]:
@@ -317,23 +374,34 @@ def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: 
     pairs: set[tuple[str, str]] = set()
     fetched = 0
     failed = 0
+    seed_entity_ids: dict[str, list[str]] = {}
     for seed in seeds:
         try:
-            aliases = wikidata_aliases_for_term(seed, accepted_labels=peer_lookup.get(seed, set()))
+            seed_entity_ids[seed] = wikidata_entity_ids_for_term(
+                seed,
+                accepted_labels=peer_lookup.get(seed, set()),
+            )
         except Exception:
             failed += 1
             continue
         fetched += 1
+    all_entity_ids = [
+        entity_id
+        for entity_ids in seed_entity_ids.values()
+        for entity_id in entity_ids
+    ]
+    try:
+        entities = fetch_wikidata_entities(all_entity_ids) if all_entity_ids else {}
+    except Exception:
+        entities = {}
+        failed += sum(1 for entity_ids in seed_entity_ids.values() if entity_ids)
+    for seed, entity_ids in seed_entity_ids.items():
+        aliases = wikidata_aliases_from_entities(seed, entity_ids, entities)
         for alias in aliases:
             add_pair(pairs, seed, alias)
         for left, right in itertools.combinations(sorted(aliases), 2):
             add_pair(pairs, left, right)
     return pairs, {"seedTerms": len(seeds), "fetchedTerms": fetched, "failedTerms": failed, "pairs": len(pairs)}
-
-
-def _chunks(values: list[int], size: int) -> Iterable[list[int]]:
-    for index in range(0, len(values), size):
-        yield values[index:index + size]
 
 
 def fetch_mediawiki_redirect_observations(
@@ -356,14 +424,16 @@ def fetch_mediawiki_redirect_observations(
             "action": "query",
             "format": "json",
             "formatversion": "2",
-            "list": "allredirects",
-            "arnamespace": "0",
-            "arlimit": str(limit),
-            "arprop": "ids|title|fragment",
+            "generator": "allredirects",
+            "garnamespace": "0",
+            "garlimit": str(limit),
+            "garprop": "ids|title|fragment",
+            "redirects": "1",
+            "prop": "info",
             "maxlag": "5",
         }
         if next_cursor:
-            params["arcontinue"] = next_cursor
+            params["garcontinue"] = next_cursor
         payload = _fetch_json(
             endpoint,
             params,
@@ -371,40 +441,17 @@ def fetch_mediawiki_redirect_observations(
             min_interval=MEDIAWIKI_REQUEST_INTERVAL_SECONDS,
         )
         requests += 1
-        rows = (payload.get("query") or {}).get("allredirects") or []
+        rows = (payload.get("query") or {}).get("redirects") or []
         if not rows:
-            cycle_complete = not bool((payload.get("continue") or {}).get("arcontinue"))
-            next_cursor = str((payload.get("continue") or {}).get("arcontinue") or "")
+            cycle_complete = not bool((payload.get("continue") or {}).get("garcontinue"))
+            next_cursor = str((payload.get("continue") or {}).get("garcontinue") or "")
             break
 
         scanned += len(rows)
-        source_ids = [int(row.get("fromid") or 0) for row in rows if int(row.get("fromid") or 0) > 0]
-        source_titles: dict[int, str] = {}
-        for id_chunk in _chunks(source_ids, 50):
-            page_payload = _fetch_json(
-                endpoint,
-                {
-                    "action": "query",
-                    "format": "json",
-                    "formatversion": "2",
-                    "pageids": "|".join(str(value) for value in id_chunk),
-                    "prop": "info",
-                    "maxlag": "5",
-                },
-                timeout=30,
-                min_interval=MEDIAWIKI_REQUEST_INTERVAL_SECONDS,
-            )
-            requests += 1
-            for page in (page_payload.get("query") or {}).get("pages") or []:
-                page_id = int(page.get("pageid") or 0)
-                title = str(page.get("title") or "")
-                if page_id and title:
-                    source_titles[page_id] = title
 
         for row in rows:
-            source_id = int(row.get("fromid") or 0)
-            alias = source_titles.get(source_id, "")
-            target = str(row.get("title") or "")
+            alias = str(row.get("from") or "")
+            target = str(row.get("to") or "")
             canonical = normalize_term(target)
             synonym = normalize_term(alias)
             if not is_good_term(canonical) or not is_good_term(synonym) or canonical == synonym:
@@ -413,12 +460,15 @@ def fetch_mediawiki_redirect_observations(
             observations[(canonical, synonym)] = DictionaryObservation(
                 canonical=canonical,
                 synonym=synonym,
-                source_item_id=str(source_id),
+                source_item_id=alias,
                 source_url=source_url,
-                metadata={"target": target, "fragment": str(row.get("fragment") or "")},
+                metadata={
+                    "target": target,
+                    "fragment": str(row.get("tofragment") or row.get("fragment") or ""),
+                },
             )
 
-        continuation = str((payload.get("continue") or {}).get("arcontinue") or "")
+        continuation = str((payload.get("continue") or {}).get("garcontinue") or "")
         if not continuation:
             next_cursor = ""
             cycle_complete = True
@@ -831,26 +881,20 @@ def upsert_dictionary_observations(
     evidence_added = int(cur.rowcount or 0)
     cur.executemany(
         """
-        UPDATE dictionary_pair_evidence
-        SET source_item_id=%s, source_url=%s,
-            priority=GREATEST(priority,%s), confidence=GREATEST(confidence,%s),
-            observation_count=observation_count+1, last_seen_at=CURRENT_TIMESTAMP,
-            metadata_json=%s
-        WHERE canonical_term=%s AND synonym_term=%s AND source_key=%s
+        INSERT INTO dictionary_pair_evidence
+          (canonical_term, synonym_term, source_key, source_item_id, source_url,
+           priority, confidence, observation_count, metadata_json)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,1,%s)
+        ON DUPLICATE KEY UPDATE
+          source_item_id=VALUES(source_item_id),
+          source_url=VALUES(source_url),
+          priority=GREATEST(priority,VALUES(priority)),
+          confidence=GREATEST(confidence,VALUES(confidence)),
+          observation_count=observation_count+1,
+          last_seen_at=CURRENT_TIMESTAMP,
+          metadata_json=VALUES(metadata_json)
         """,
-        [
-            (
-                row.source_item_id[:191],
-                row.source_url[:512],
-                max(1, min(20, int(priority))),
-                max(0.0, min(1.0, float(confidence))),
-                json.dumps(row.metadata or {}, ensure_ascii=False, separators=(",", ":")),
-                row.canonical,
-                row.synonym,
-                source_key,
-            )
-            for row in rows
-        ],
+        evidence_values,
     )
 
     synonym_values = [
@@ -868,25 +912,16 @@ def upsert_dictionary_observations(
     synonym_added = int(cur.rowcount or 0)
     cur.executemany(
         """
-        UPDATE law_synonyms
-        SET priority=GREATEST(priority,%s), is_active=1,
-            source_version=IF(source_type='manual', source_version, %s),
-            source_type=IF(source_type='manual', source_type, %s)
-        WHERE (canonical_term=%s AND synonym_term=%s)
-           OR (canonical_term=%s AND synonym_term=%s)
+        INSERT INTO law_synonyms
+          (canonical_term, synonym_term, priority, is_active, source_type, source_version)
+        VALUES (%s,%s,%s,1,%s,%s)
+        ON DUPLICATE KEY UPDATE
+          priority=GREATEST(priority,VALUES(priority)),
+          is_active=1,
+          source_version=IF(source_type='manual',source_version,VALUES(source_version)),
+          source_type=IF(source_type='manual',source_type,VALUES(source_type))
         """,
-        [
-            (
-                max(1, min(20, int(priority))),
-                source_version,
-                source_type,
-                row.canonical,
-                row.synonym,
-                row.synonym,
-                row.canonical,
-            )
-            for row in rows
-        ],
+        synonym_values,
     )
     return {
         "observed": len(rows),
@@ -1490,6 +1525,11 @@ def build_internet_dictionary(
         "includeWikidata": include_wikidata,
         "includeMediawiki": include_mediawiki,
         "sourceUrl": source_url,
+        "collectionBudget": {
+            "wikipediaLimit": max(0, int(wikipedia_limit)),
+            "wiktionaryLimit": max(0, int(wiktionary_limit)),
+            "wikidataTermLimit": max(0, int(wikidata_term_limit)),
+        },
         "curatedPairs": 0,
         "wikidataPairs": 0,
         "mediawikiPairs": 0,

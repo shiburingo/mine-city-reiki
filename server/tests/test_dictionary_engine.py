@@ -8,13 +8,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dictionary_engine import (
+    DictionaryObservation,
     MEDIAWIKI_REDIRECT_SOURCES,
     build_wikidata_pairs,
     compile_synonym_dictionary,
     compiled_synonym_dictionary_status,
+    dictionary_collection_budget,
     fetch_mediawiki_redirect_observations,
     load_compiled_synonym_dictionary,
     normalize_pair,
+    upsert_dictionary_observations,
 )
 
 
@@ -58,28 +61,32 @@ class FakeDeduplicationCursor:
         return [self.row]
 
 
+class FakeBulkUpsertCursor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[tuple]]] = []
+        self.rowcount = 0
+
+    def executemany(self, sql: str, values: list[tuple]) -> None:
+        normalized_sql = " ".join(sql.split())
+        self.calls.append((normalized_sql, values))
+        if normalized_sql.startswith("INSERT IGNORE"):
+            self.rowcount = len(values)
+        else:
+            self.rowcount = len(values) * 2
+
+
 class MediaWikiRedirectTests(unittest.TestCase):
     @patch("dictionary_engine._fetch_json")
     def test_redirect_batch_resolves_source_titles_and_keeps_cursor(self, fetch_json) -> None:
-        fetch_json.side_effect = [
-            {
-                "continue": {"arcontinue": "next-page"},
-                "query": {
-                    "allredirects": [
-                        {"fromid": 101, "title": "試験項目"},
-                        {"fromid": 102, "title": "別の項目"},
-                    ]
-                },
+        fetch_json.return_value = {
+            "continue": {"garcontinue": "next-page"},
+            "query": {
+                "redirects": [
+                    {"from": "テスト項目", "to": "試験項目"},
+                    {"from": "別項目", "to": "別の項目"},
+                ]
             },
-            {
-                "query": {
-                    "pages": [
-                        {"pageid": 101, "title": "テスト項目"},
-                        {"pageid": 102, "title": "別項目"},
-                    ]
-                }
-            },
-        ]
+        }
 
         observations, stats = fetch_mediawiki_redirect_observations(
             MEDIAWIKI_REDIRECT_SOURCES[0],
@@ -93,13 +100,16 @@ class MediaWikiRedirectTests(unittest.TestCase):
             {(item.canonical, item.synonym) for item in observations},
             {("試験項目", "テスト項目"), ("別の項目", "別項目")},
         )
+        self.assertEqual(fetch_json.call_count, 1)
+        params = fetch_json.call_args.args[1]
+        self.assertEqual(params["generator"], "allredirects")
+        self.assertEqual(params["redirects"], "1")
 
     @patch("dictionary_engine._fetch_json")
     def test_redirect_batch_marks_completed_cycle(self, fetch_json) -> None:
-        fetch_json.side_effect = [
-            {"query": {"allredirects": [{"fromid": 201, "title": "完了項目"}]}},
-            {"query": {"pages": [{"pageid": 201, "title": "終了項目"}]}},
-        ]
+        fetch_json.return_value = {
+            "query": {"redirects": [{"from": "終了項目", "to": "完了項目"}]},
+        }
 
         _, stats = fetch_mediawiki_redirect_observations(
             MEDIAWIKI_REDIRECT_SOURCES[1],
@@ -109,16 +119,72 @@ class MediaWikiRedirectTests(unittest.TestCase):
 
         self.assertEqual(stats["cursor"], "")
         self.assertTrue(stats["cycleComplete"])
+        self.assertEqual(fetch_json.call_args.args[1]["garcontinue"], "last-page")
+
+
+class DictionaryCollectionBudgetTests(unittest.TestCase):
+    def test_accelerates_until_first_target(self) -> None:
+        budget = dictionary_collection_budget(102_821)
+
+        self.assertEqual(budget["mode"], "accelerated")
+        self.assertEqual(budget["wikipediaLimit"], 100_000)
+        self.assertEqual(budget["wiktionaryLimit"], 50_000)
+        self.assertEqual(budget["wikidataTermLimit"], 100)
+
+    def test_returns_to_steady_budget_at_target(self) -> None:
+        budget = dictionary_collection_budget(500_000)
+
+        self.assertEqual(budget["mode"], "steady")
+        self.assertEqual(budget["wikipediaLimit"], 5_000)
+        self.assertEqual(budget["wiktionaryLimit"], 2_000)
+        self.assertEqual(budget["wikidataTermLimit"], 25)
+
+
+class DictionaryObservationUpsertTests(unittest.TestCase):
+    def test_large_import_path_uses_bulk_upserts_instead_of_row_updates(self) -> None:
+        cursor = FakeBulkUpsertCursor()
+        observations = [
+            DictionaryObservation(canonical="高齢者", synonym="お年寄り"),
+            DictionaryObservation(canonical="個人番号", synonym="マイナンバー"),
+        ]
+
+        result = upsert_dictionary_observations(
+            cursor,
+            observations,
+            source_key="test-source",
+            source_type="wikipedia",
+            source_version="test-v1",
+            priority=9,
+            confidence=0.8,
+        )
+
+        self.assertEqual(result["observed"], 2)
+        self.assertEqual(len(cursor.calls), 4)
+        self.assertTrue(all(len(values) == 2 for _, values in cursor.calls))
+        self.assertEqual(sum("ON DUPLICATE KEY UPDATE" in sql for sql, _ in cursor.calls), 2)
+        self.assertFalse(any(sql.startswith("UPDATE ") for sql, _ in cursor.calls))
 
 
 class WikidataSeedTests(unittest.TestCase):
-    @patch("dictionary_engine.wikidata_aliases_for_term")
-    def test_explicit_seed_batch_does_not_append_fixed_seeds(self, aliases_for_term) -> None:
-        aliases_for_term.return_value = {"試験用別名"}
+    @patch("dictionary_engine.fetch_wikidata_entities")
+    @patch("dictionary_engine.wikidata_entity_ids_for_term")
+    def test_explicit_seed_batch_does_not_append_fixed_seeds(
+        self,
+        entity_ids_for_term,
+        fetch_entities,
+    ) -> None:
+        entity_ids_for_term.return_value = ["Q1"]
+        fetch_entities.return_value = {
+            "Q1": {
+                "labels": {"ja": {"value": "試験用語"}},
+                "aliases": {"ja": [{"value": "試験用別名"}]},
+            }
+        }
 
         pairs, stats = build_wikidata_pairs(["試験用語"], max_terms=10)
 
-        aliases_for_term.assert_called_once()
+        entity_ids_for_term.assert_called_once()
+        fetch_entities.assert_called_once_with(["Q1"])
         self.assertEqual(stats["seedTerms"], 1)
         self.assertIn(normalize_pair("試験用語", "試験用別名"), pairs)
 
