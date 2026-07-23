@@ -41,39 +41,49 @@ def main() -> int:
     summaries.append(execute_minutes_dictionary_update(batch_size=batch_size))
 
     if env_bool("REIKI_DAILY_DICTIONARY_INTERNET", True):
-        compiled_status = compiled_synonym_dictionary_status(get_compiled_dictionary_path())
-        current_term_count = int(compiled_status.get("termCount") or 0)
         target_term_count = env_int(
             "REIKI_DAILY_DICTIONARY_ACCELERATED_UNTIL_TERMS",
             THESAURUS_TARGET_TERM_COUNT,
             10_000,
             5_000_000,
         )
-        budget = dictionary_collection_budget(
-            current_term_count,
-            accelerated=env_bool("REIKI_DAILY_DICTIONARY_ACCELERATED", True),
-            target_term_count=target_term_count,
-        )
-        wikipedia_limit = env_int(
-            "REIKI_DAILY_DICTIONARY_WIKIPEDIA_LIMIT",
-            int(budget["wikipediaLimit"]),
-            0,
-            200_000,
-        )
-        wiktionary_limit = env_int(
-            "REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT",
-            int(budget["wiktionaryLimit"]),
-            0,
-            100_000,
-        )
-        wikidata_term_limit = env_int(
-            "REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS",
-            int(budget["wikidataTermLimit"]),
+        catchup_batch_limit = env_int(
+            "REIKI_DAILY_DICTIONARY_CATCHUP_BATCHES",
+            4,
             1,
-            500,
+            10,
         )
-        summaries.append(
-            execute_internet_dictionary_update(
+        compiled_status = compiled_synonym_dictionary_status(get_compiled_dictionary_path())
+        current_term_count = int(compiled_status.get("termCount") or 0)
+
+        for batch_number in range(1, catchup_batch_limit + 1):
+            budget = dictionary_collection_budget(
+                current_term_count,
+                accelerated=env_bool("REIKI_DAILY_DICTIONARY_ACCELERATED", True),
+                target_term_count=target_term_count,
+            )
+            if batch_number > 1 and budget["mode"] != "accelerated":
+                break
+
+            wikipedia_limit = env_int(
+                "REIKI_DAILY_DICTIONARY_WIKIPEDIA_LIMIT",
+                int(budget["wikipediaLimit"]),
+                0,
+                200_000,
+            )
+            wiktionary_limit = env_int(
+                "REIKI_DAILY_DICTIONARY_WIKTIONARY_LIMIT",
+                int(budget["wiktionaryLimit"]),
+                0,
+                100_000,
+            )
+            wikidata_term_limit = env_int(
+                "REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS",
+                int(budget["wikidataTermLimit"]),
+                1,
+                500,
+            )
+            summary = execute_internet_dictionary_update(
                 include_wikidata=env_bool("REIKI_DAILY_DICTIONARY_WIKIDATA", True),
                 include_curated=env_bool("REIKI_DAILY_DICTIONARY_CURATED", True),
                 include_mediawiki=env_bool("REIKI_DAILY_DICTIONARY_MEDIAWIKI", True),
@@ -82,10 +92,29 @@ def main() -> int:
                 wiktionary_limit=wiktionary_limit,
                 wikidata_term_limit=wikidata_term_limit,
             )
-        )
-        summaries[-1]["collectionMode"] = budget["mode"]
-        summaries[-1]["startingTermCount"] = current_term_count
-        summaries[-1]["acceleratedUntilTerms"] = target_term_count
+            ending_term_count = int(
+                (summary.get("compiledDictionary") or {}).get("termCount")
+                or current_term_count
+            )
+            summary["collectionMode"] = budget["mode"]
+            summary["startingTermCount"] = current_term_count
+            summary["endingTermCount"] = ending_term_count
+            summary["acceleratedUntilTerms"] = target_term_count
+            summary["catchupBatch"] = batch_number
+            summary["catchupBatchLimit"] = catchup_batch_limit
+            summaries.append(summary)
+
+            if budget["mode"] != "accelerated":
+                break
+            if ending_term_count >= target_term_count:
+                break
+            if summary.get("errors"):
+                summary["catchupStoppedReason"] = "source-errors"
+                break
+            if ending_term_count <= current_term_count:
+                summary["catchupStoppedReason"] = "no-term-growth"
+                break
+            current_term_count = ending_term_count
     else:
         summaries.append(execute_dictionary_compile())
 
