@@ -52,6 +52,12 @@ const TABS = [
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
 const MINUTES_SEARCH_HISTORY_KEY = 'minutes_search_history_v1';
 const BOOKMARKS_KEY = 'reiki_bookmarks';
+const DICTIONARY_OPERATIONS = new Set([
+  'dictionary-update',
+  'internet-dictionary-update',
+  'minutes-dictionary-update',
+  'dictionary-compile',
+]);
 type BrowseSource = 'mine-city' | 'egov' | 'local-public-service';
 
 type PendingDocumentAnchor = {
@@ -1281,6 +1287,9 @@ function AppShell() {
     if (tab !== 'settings') return;
     const hasRunning = syncRuns.some((run) => run.status === 'running');
     if (!hasRunning) return;
+    const hadRunningDictionary = syncRuns.some(
+      (run) => run.status === 'running' && DICTIONARY_OPERATIONS.has(String(run.summary?.operation || '')),
+    );
     const timer = window.setInterval(() => {
       void (async () => {
         try {
@@ -1288,6 +1297,12 @@ function AppShell() {
           setSyncStatus(status);
           setSyncRuns(runs);
           setMinutesStatus(minutes);
+          const hasRunningDictionary = runs.some(
+            (run) => run.status === 'running' && DICTIONARY_OPERATIONS.has(String(run.summary?.operation || '')),
+          );
+          if (hadRunningDictionary && !hasRunningDictionary) {
+            await loadSynonyms();
+          }
           if (!runs.some((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync')) {
             setMinutesSyncing(false);
           }
@@ -5674,14 +5689,19 @@ function AppShell() {
                   <RefreshCw className="size-5 text-primary" />
                   <h2 className="text-xl font-semibold">関連語辞書更新</h2>
                 </div>
-                <p className="mt-2 text-sm text-muted-foreground">Wikipedia・Wiktionary・Wikidata・既存DBから出典付きで関連語を累積します。毎日カーソルを進め、50万語を第1目標、100万語を最終目標として検索全体で共通利用します。</p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Wikipedia・Wiktionary・Wikidata・既存DBから出典付きで関連語を累積します。毎日カーソルを進め、50万語を第1目標、100万語を最終目標として検索全体で共通利用します。
+                </p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  WordNet・既存DBの再構築は同じ元データから辞書を作り直す処理です。元データに変更がなければ登録語数は増えません。新しい語を追加する場合は、インターネット辞書取り込みまたは会議録からの増分作成を実行します。
+                </p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
                     disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerDictionaryUpdate()}
                   >
-                    最新辞書を取得して再作成
+                    WordNet・既存DBを再構築
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
@@ -5832,7 +5852,14 @@ function AppShell() {
                         {run.summary && Object.keys(run.summary).length > 0 ? (
                           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                             {run.summary.reindexed != null ? <span className="text-primary">再索引 {run.summary.reindexed}件</span> : null}
-                            {run.summary.inserted != null ? <span className="text-primary">辞書登録 {Number(run.summary.inserted).toLocaleString()}件</span> : null}
+                            {run.summary.inserted != null ? (
+                              <span className="text-primary">
+                                {run.summary.operation === 'dictionary-update' ? '再構築' : '辞書登録'} {Number(run.summary.inserted).toLocaleString()}件
+                              </span>
+                            ) : null}
+                            {run.summary.compiledDictionary?.termCount != null ? (
+                              <span>登録語数 {Number(run.summary.compiledDictionary.termCount).toLocaleString()}語</span>
+                            ) : null}
                             {run.summary.wordnetPairs != null ? <span>WordNet {Number(run.summary.wordnetPairs).toLocaleString()}件</span> : null}
                             {run.summary.domainPairs != null ? <span>既存DB {Number(run.summary.domainPairs).toLocaleString()}件</span> : null}
                             {run.summary.minutesPairs != null ? <span>会議録候補 {Number(run.summary.minutesPairs).toLocaleString()}件</span> : null}
