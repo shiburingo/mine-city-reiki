@@ -52,22 +52,109 @@
 }
 
 .minutes-theme {
+  --minutes-accent-ink-strong: color-mix(in srgb, var(--primary) 22%, var(--foreground));
+  --minutes-accent-ink: color-mix(in srgb, var(--primary) 38%, var(--foreground));
+  --minutes-accent-muted: color-mix(in srgb, var(--primary) 18%, var(--muted-foreground));
+  --minutes-accent-surface: color-mix(in srgb, var(--primary) 8%, var(--card));
+  --minutes-accent-surface-hover: color-mix(in srgb, var(--primary) 13%, var(--card));
+  --minutes-accent-border: color-mix(in srgb, var(--primary) 26%, var(--border));
+  --minutes-header-surface: color-mix(in srgb, var(--primary) 9%, var(--card));
+  --minutes-header-border: color-mix(in srgb, var(--primary) 22%, var(--border));
+  --minutes-tab-rail: color-mix(in srgb, var(--primary) 5%, var(--card));
+  --minutes-tab-idle: color-mix(in srgb, var(--primary) 2%, var(--card));
+  --minutes-tab-active: color-mix(in srgb, var(--primary) 50%, var(--foreground));
+  --minutes-tab-active-hover: color-mix(in srgb, var(--primary) 58%, var(--foreground));
+  --minutes-tab-active-foreground: #ffffff;
   --minutes-panel: color-mix(in srgb, var(--card) 93%, var(--accent) 7%);
   --minutes-soft: color-mix(in srgb, var(--card) 78%, var(--accent) 22%);
   --minutes-selected: color-mix(in srgb, var(--card) 62%, var(--accent) 38%);
   --minutes-section: color-mix(in srgb, var(--card) 72%, var(--chart-5) 28%);
-  --minutes-strong: var(--primary-surface);
-  --minutes-strong-hover: var(--primary-surface-hover);
-  --minutes-strong-foreground: var(--primary-surface-foreground);
+  --minutes-strong: var(--minutes-tab-active);
+  --minutes-strong-hover: var(--minutes-tab-active-hover);
+  --minutes-strong-foreground: var(--minutes-tab-active-foreground);
   background: var(--background);
   color: var(--foreground);
 }
 
 .dark .minutes-theme {
+  --minutes-accent-ink-strong: color-mix(in srgb, var(--primary) 20%, var(--foreground));
+  --minutes-accent-ink: color-mix(in srgb, var(--primary) 42%, var(--muted-foreground));
+  --minutes-accent-muted: color-mix(in srgb, var(--primary) 16%, var(--muted-foreground));
+  --minutes-accent-surface: color-mix(in srgb, var(--primary) 8%, var(--card));
+  --minutes-accent-surface-hover: color-mix(in srgb, var(--primary) 13%, var(--card));
+  --minutes-accent-border: color-mix(in srgb, var(--primary) 28%, var(--border));
+  --minutes-header-surface: color-mix(in srgb, var(--primary) 6%, var(--card));
+  --minutes-header-border: color-mix(in srgb, var(--primary) 20%, var(--border));
+  --minutes-tab-rail: color-mix(in srgb, var(--primary) 5%, var(--card));
+  --minutes-tab-idle: color-mix(in srgb, var(--primary) 2%, var(--card));
+  --minutes-tab-active: color-mix(in srgb, var(--primary) 30%, var(--card));
+  --minutes-tab-active-hover: color-mix(in srgb, var(--primary) 38%, var(--card));
+  --minutes-tab-active-foreground: var(--foreground);
   --minutes-panel: color-mix(in srgb, var(--card) 95%, var(--accent) 5%);
   --minutes-soft: color-mix(in srgb, var(--card) 84%, var(--accent) 16%);
   --minutes-selected: color-mix(in srgb, var(--card) 70%, var(--primary) 30%);
   --minutes-section: color-mix(in srgb, var(--card) 82%, var(--chart-5) 18%);
+}
+
+.minutes-header {
+  border-color: var(--minutes-header-border);
+  background: var(--minutes-header-surface);
+  color: var(--minutes-accent-ink-strong);
+}
+
+.minutes-header__description {
+  color: var(--minutes-accent-muted);
+}
+
+.minutes-nav {
+  border: 1px solid var(--minutes-header-border);
+  background: var(--minutes-tab-rail);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--card) 76%, transparent),
+    0 8px 24px color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+.minutes-nav-tab {
+  border-color: transparent;
+  background: var(--minutes-tab-idle);
+  color: var(--minutes-accent-ink);
+}
+
+.minutes-nav-tab:hover {
+  border-color: var(--minutes-accent-border);
+  background: var(--minutes-accent-surface-hover);
+  color: var(--minutes-accent-ink-strong);
+}
+
+.minutes-nav-tab[aria-current="page"] {
+  border-color: color-mix(in srgb, var(--minutes-tab-active) 76%, var(--border));
+  background: var(--minutes-tab-active);
+  color: var(--minutes-tab-active-foreground);
+  box-shadow:
+    0 7px 16px color-mix(in srgb, var(--minutes-tab-active) 24%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--minutes-tab-active-foreground) 14%, transparent);
+}
+
+.minutes-nav-tab[aria-current="page"]:hover {
+  background: var(--minutes-tab-active-hover);
+  color: var(--minutes-tab-active-foreground);
+}
+
+.minutes-nav-tab[aria-current="page"]::after {
+  position: absolute;
+  bottom: 0.3rem;
+  left: 50%;
+  width: 1.5rem;
+  height: 0.15rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--minutes-tab-active-foreground) 78%, transparent);
+  content: "";
+  transform: translateX(-50%);
+}
+
+.minutes-nav-tab:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 38%, transparent);
+  outline-offset: 2px;
 }
 
 .minutes-theme [class~="bg-white"],
@@ -110,14 +197,19 @@
   background-color: var(--minutes-strong) !important;
 }
 
-.minutes-theme [class~="text-[#173f36]"],
-.minutes-theme [class~="text-[#2f765e]"] {
-  color: var(--primary) !important;
+.minutes-theme [class~="text-[#173f36]"] {
+  color: var(--minutes-accent-ink-strong) !important;
+}
+
+.minutes-theme [class~="text-[#2f765e]"],
+.minutes-theme [class~="text-blue-700"],
+.minutes-theme [class~="text-primary"] {
+  color: var(--minutes-accent-ink) !important;
 }
 
 .minutes-theme [class~="text-[#37564d]"],
 .minutes-theme [class~="text-[#4d685f]"] {
-  color: var(--muted-foreground) !important;
+  color: var(--minutes-accent-muted) !important;
 }
 
 .minutes-theme [class~="text-white"] {
@@ -138,11 +230,11 @@
 .minutes-theme [class~="border-[#2f765e]"],
 .minutes-theme [class~="border-[#79b28d]"],
 .minutes-theme [class~="border-[#c7ddd3]"] {
-  border-color: color-mix(in srgb, var(--primary) 55%, var(--border)) !important;
+  border-color: var(--minutes-accent-border) !important;
 }
 
 .minutes-theme [class~="ring-[#2f765e]"] {
-  --tw-ring-color: color-mix(in srgb, var(--primary) 58%, transparent) !important;
+  --tw-ring-color: color-mix(in srgb, var(--minutes-accent-ink) 52%, transparent) !important;
 }
 
 .minutes-theme [class~="hover:bg-[#edf6f0]"]:hover,
@@ -163,7 +255,7 @@
 
 .minutes-theme [class~="hover:border-[#79b28d]"]:hover,
 .minutes-theme [class~="hover:border-[#2f765e]"]:hover {
-  border-color: var(--primary) !important;
+  border-color: var(--minutes-accent-ink) !important;
 }
 
 .minutes-role {

@@ -3191,19 +3191,19 @@ function AppShell() {
   );
 
   const renderMinutesTopBar = (): JSX.Element => (
-    <div className="no-print border-b bg-[#173f36] px-6 py-5 text-white">
+    <div className="minutes-header no-print border-b px-6 py-5">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <button
             type="button"
             onClick={() => setMinutesPage('home')}
-            className="text-left"
+            className="rounded-lg text-left transition-opacity hover:opacity-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-2"
           >
             <h2 className="text-2xl font-semibold tracking-tight">会議録検索システム</h2>
           </button>
-          <p className="mt-1 text-sm text-white/75">検索方法を選んでから、条件入力、検索結果、本文閲覧へ順に進みます。</p>
+          <p className="minutes-header__description mt-1 text-sm">検索方法を選んでから、条件入力、検索結果、本文閲覧へ順に進みます。</p>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <nav aria-label="会議録の検索方法" className="minutes-nav grid gap-1.5 rounded-[1.4rem] p-1.5 sm:grid-cols-2 xl:grid-cols-4">
           {([
             ['browse', '会議録の閲覧', BookOpen],
             ['keyword', '言葉から検索', Search],
@@ -3216,18 +3216,15 @@ function AppShell() {
                 key={page}
                 type="button"
                 onClick={() => goToMinutesSearchMethod(page)}
-                className={`inline-flex min-w-36 items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                  active
-                    ? 'border-white bg-white text-[#173f36] shadow-sm'
-                    : 'border-white/20 bg-white/10 text-white hover:border-white/40 hover:bg-white/15'
-                }`}
+                aria-current={active ? 'page' : undefined}
+                className="minutes-nav-tab relative inline-flex min-h-12 min-w-36 items-center justify-center gap-2 rounded-2xl border px-4 pb-3.5 pt-3 text-sm font-semibold transition"
               >
                 <Icon className="size-4" />
                 {label}
               </button>
             );
           })}
-        </div>
+        </nav>
       </div>
     </div>
   );
