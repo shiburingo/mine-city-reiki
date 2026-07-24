@@ -527,7 +527,72 @@ function minutesExecutiveTitleRank(title: string): number {
 
 function isMinutesCouncilTitle(title: string): boolean {
   const normalized = normalizeOrderText(title).replace(/\s+/g, '');
-  return /^(議長|副議長|委員長|副委員長|議員|委員|[0-9０-９]+番)$/.test(normalized);
+  return /^(議長|副議長|臨時議長|座長|委員長|副委員長|議員|委員|仮議席[0-9０-９]+番|[0-9０-９]+番)$/.test(normalized);
+}
+
+type MinutesSpeakerCandidateGroup = 'council' | 'executive' | 'other';
+
+const MINUTES_SPEAKER_CANDIDATE_GROUP_OPTIONS: Array<{
+  value: MinutesSpeakerCandidateGroup;
+  label: string;
+}> = [
+  { value: 'council', label: '議員' },
+  { value: 'executive', label: '執行部' },
+  { value: 'other', label: 'その他' },
+];
+
+function classifyMinutesSpeakerCandidateGroup(
+  roles: Set<string>,
+  titles: Set<string>,
+  speakerGroups: Set<string>,
+): MinutesSpeakerCandidateGroup {
+  const normalizedTitles = [...titles]
+    .map((title) => normalizeOrderText(title).replace(/\s+/g, ''))
+    .filter(Boolean);
+  const normalizedGroups = new Set(
+    [...speakerGroups].map((group) => normalizeOrderText(group).replace(/\s+/g, '')).filter(Boolean),
+  );
+
+  if (
+    normalizedGroups.has('議員・委員')
+    || roles.has('questioner')
+    || roles.has('chair')
+    || normalizedTitles.some(isMinutesCouncilTitle)
+  ) {
+    return 'council';
+  }
+
+  // 美祢市議会の事務局は執行部ではなく「その他」として扱う。
+  if (normalizedGroups.has('事務局') || roles.has('secretariat')) {
+    return 'other';
+  }
+
+  if (
+    normalizedGroups.has('執行部')
+    || normalizedTitles.some((title) => minutesExecutiveTitleRank(title) < 999)
+  ) {
+    return 'executive';
+  }
+
+  return 'other';
+}
+
+function minutesSpeakerCandidateGroupRank(
+  group: MinutesSpeakerCandidateGroup,
+  roles: Set<string>,
+  titles: Set<string>,
+): number {
+  if (group === 'council') return 0;
+  if (group === 'executive') {
+    const titleRanks = [...titles]
+      .map((title) => minutesExecutiveTitleRank(title))
+      .filter((rank) => rank < 999);
+    return titleRanks.length > 0 ? Math.min(...titleRanks) : 999;
+  }
+  if (roles.has('secretariat')) return 0;
+  if (roles.has('report')) return 10;
+  if (roles.has('answerer')) return 20;
+  return 90;
 }
 
 function minutesSpeakerCandidateRank(roles: Set<string>, titles: Set<string>): number {
@@ -1270,6 +1335,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
   const [minutesMeetings, setMinutesMeetings] = useState<MinutesMeeting[]>([]);
   const [minutesQuery, setMinutesQuery] = useState('');
   const [minutesSpeaker, setMinutesSpeaker] = useState('');
+  const [minutesSpeakerCandidateGroup, setMinutesSpeakerCandidateGroup] = useState<MinutesSpeakerCandidateGroup>('council');
   const [minutesRole, setMinutesRole] = useState('all');
   const [minutesSection, setMinutesSection] = useState('all');
   const [minutesMeetingId, setMinutesMeetingId] = useState<number | null>(null);
@@ -2236,6 +2302,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
   function resetMinutesSearchFields() {
     setMinutesQuery('');
     setMinutesSpeaker('');
+    setMinutesSpeakerCandidateGroup('council');
     setMinutesRole('all');
     setMinutesSection('all');
     setMinutesMeetingId(null);
@@ -2703,30 +2770,30 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
     ? selectedSearchResult.highlightTerms
     : searchFields.flatMap((f) => (f.q.trim() ? f.q.trim().split(/\s+/) : []));
   const selectedSearchRelatedHighlightTerms = selectedSearchResult?.relatedHighlightTerms || [];
-  const deferredMinutesSpeaker = useDeferredValue(minutesSpeaker);
-  const filteredMinutesSpeakers = useMemo(() => {
-    const needle = deferredMinutesSpeaker.trim();
-    return minutesSpeakers
-      .filter((speaker) => !needle || `${speaker.displayName} ${speaker.title}`.includes(needle));
-  }, [minutesSpeakers, deferredMinutesSpeaker]);
   const groupedMinutesSpeakers = useMemo(() => {
     const groups = new Map<string, {
       displayName: string;
       title: string;
       roleSummary: string;
       utteranceCount: number;
-      candidateRank: number;
       roles: Set<string>;
       titles: Set<string>;
+      candidateGroups: Set<MinutesSpeakerCandidateGroup>;
     }>();
-    for (const speaker of filteredMinutesSpeakers) {
+    for (const speaker of minutesSpeakers) {
       const displayName = (speaker.displayName || '氏名なし').trim();
       const key = displayName.replace(/\s+/g, '');
+      const candidateGroup = classifyMinutesSpeakerCandidateGroup(
+        new Set(speaker.role ? [speaker.role] : []),
+        new Set(speaker.title ? [speaker.title] : []),
+        new Set(speaker.speakerGroup ? [speaker.speakerGroup] : []),
+      );
       const existing = groups.get(key);
       if (existing) {
         existing.utteranceCount += speaker.utteranceCount;
         if (speaker.role) existing.roles.add(speaker.role);
         if (speaker.title) existing.titles.add(speaker.title);
+        existing.candidateGroups.add(candidateGroup);
         continue;
       }
       groups.set(key, {
@@ -2736,6 +2803,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
         utteranceCount: speaker.utteranceCount,
         roles: new Set(speaker.role ? [speaker.role] : []),
         titles: new Set(speaker.title ? [speaker.title] : []),
+        candidateGroups: new Set([candidateGroup]),
       });
     }
     return [...groups.values()]
@@ -2748,13 +2816,44 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
           roleSummary: roles.length === 1 ? minutesRoleLabel(roles[0]) : '複数区分',
           utteranceCount: speaker.utteranceCount,
           candidateRank: minutesSpeakerCandidateRank(speaker.roles, speaker.titles),
+          candidateGroups: [...speaker.candidateGroups],
+          candidateGroupRanks: {
+            council: minutesSpeakerCandidateGroupRank('council', speaker.roles, speaker.titles),
+            executive: minutesSpeakerCandidateGroupRank('executive', speaker.roles, speaker.titles),
+            other: minutesSpeakerCandidateGroupRank('other', speaker.roles, speaker.titles),
+          },
         };
       })
       .sort((a, b) => {
         if (a.candidateRank !== b.candidateRank) return a.candidateRank - b.candidateRank;
         return b.utteranceCount - a.utteranceCount || a.displayName.localeCompare(b.displayName, 'ja-JP');
       });
-  }, [filteredMinutesSpeakers]);
+  }, [minutesSpeakers]);
+  const minutesSpeakerCandidateCounts = useMemo(() => {
+    const counts: Record<MinutesSpeakerCandidateGroup, number> = {
+      council: 0,
+      executive: 0,
+      other: 0,
+    };
+    for (const speaker of groupedMinutesSpeakers) {
+      for (const group of speaker.candidateGroups) {
+        counts[group] += 1;
+      }
+    }
+    return counts;
+  }, [groupedMinutesSpeakers]);
+  const visibleGroupedMinutesSpeakers = useMemo(() => (
+    groupedMinutesSpeakers
+      .filter((speaker) => speaker.candidateGroups.includes(minutesSpeakerCandidateGroup))
+      .sort((a, b) => {
+        const rankDifference = (
+          a.candidateGroupRanks[minutesSpeakerCandidateGroup]
+          - b.candidateGroupRanks[minutesSpeakerCandidateGroup]
+        );
+        if (rankDifference !== 0) return rankDifference;
+        return b.utteranceCount - a.utteranceCount || a.displayName.localeCompare(b.displayName, 'ja-JP');
+      })
+  ), [groupedMinutesSpeakers, minutesSpeakerCandidateGroup]);
   const minutesExecutiveTitleFilters = useMemo(() => {
     const counts = new Map<string, number>();
     const sourceSpeakers = allMinutesSpeakers.length > 0 ? allMinutesSpeakers : minutesSpeakers;
@@ -3570,6 +3669,43 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
           </button>
         ))}
       </div>
+    </div>
+  );
+
+  const renderMinutesSpeakerCandidateGroupToggle = (): JSX.Element => (
+    <div
+      className="mt-4 grid w-full max-w-xl grid-cols-3 gap-1 rounded-2xl border bg-[#edf3ef] p-1"
+      role="group"
+      aria-label="発言者候補の区分"
+    >
+      {MINUTES_SPEAKER_CANDIDATE_GROUP_OPTIONS.map((option) => {
+        const active = minutesSpeakerCandidateGroup === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => {
+              setMinutesSpeakerCandidateGroup(option.value);
+              setMinutesSpeaker('');
+            }}
+            className={`inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition ${
+              active
+                ? 'bg-[#2f765e] text-white shadow-sm'
+                : 'text-[#37564d] hover:bg-white'
+            }`}
+          >
+            <span>{option.label}</span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs ${
+                active ? 'bg-white/20 text-white' : 'bg-white text-muted-foreground'
+              }`}
+            >
+              {minutesSpeakerCandidateCounts[option.value].toLocaleString()}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 
@@ -4674,11 +4810,12 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                         <p className="mt-1 text-sm text-muted-foreground">条件に対応する発言者を選択して検索します。</p>
                       </div>
                       <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
-                        {groupedMinutesSpeakers.length.toLocaleString()}人
+                        {visibleGroupedMinutesSpeakers.length.toLocaleString()}人
                       </span>
                     </div>
+                    {renderMinutesSpeakerCandidateGroupToggle()}
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {groupedMinutesSpeakers.slice(0, 18).map((speaker) => (
+                      {visibleGroupedMinutesSpeakers.slice(0, 18).map((speaker) => (
                         <button
                           key={speaker.displayName}
                           type="button"
@@ -4692,8 +4829,8 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                           <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
                         </button>
                       ))}
-                      {groupedMinutesSpeakers.length > 18 ? (
-                        <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(groupedMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
+                      {visibleGroupedMinutesSpeakers.length > 18 ? (
+                        <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(visibleGroupedMinutesSpeakers.length - 18).toLocaleString()}人はプルダウンから選択</span>
                       ) : null}
                     </div>
                   </div>
@@ -4864,11 +5001,12 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                         <p className="mt-1 text-sm text-muted-foreground">候補を選択してから発言集を作成します。</p>
                       </div>
                       <span className="w-fit rounded-full bg-[#e3f0e8] px-3 py-1 text-xs font-semibold text-[#2f765e]">
-                        {groupedMinutesSpeakers.length.toLocaleString()}人
+                        {visibleGroupedMinutesSpeakers.length.toLocaleString()}人
                       </span>
                     </div>
+                    {renderMinutesSpeakerCandidateGroupToggle()}
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {groupedMinutesSpeakers.slice(0, 24).map((speaker) => (
+                      {visibleGroupedMinutesSpeakers.slice(0, 24).map((speaker) => (
                         <button
                           key={speaker.displayName}
                           type="button"
@@ -4881,8 +5019,8 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                           <span className="ml-2 text-xs font-medium text-muted-foreground">{speaker.utteranceCount.toLocaleString()}</span>
                         </button>
                       ))}
-                      {groupedMinutesSpeakers.length > 24 ? (
-                        <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(groupedMinutesSpeakers.length - 24).toLocaleString()}人は入力欄から選択</span>
+                      {visibleGroupedMinutesSpeakers.length > 24 ? (
+                        <span className="rounded-full border bg-white px-3 py-1.5 text-sm text-muted-foreground">ほか{(visibleGroupedMinutesSpeakers.length - 24).toLocaleString()}人は入力欄から選択</span>
                       ) : null}
                     </div>
                   </div>
