@@ -297,14 +297,46 @@
 
 .public-minutes-hero__action,
 .public-minutes-hero__theme,
+.public-minutes-hero__palette-trigger,
 .public-minutes-notice {
   border-color: color-mix(in srgb, var(--primary) 18%, var(--border));
   background: color-mix(in srgb, var(--card) 96%, var(--primary) 4%);
 }
 
-.public-minutes-hero__action:hover {
+.public-minutes-hero__action:hover,
+.public-minutes-hero__palette-trigger:hover {
   border-color: color-mix(in srgb, var(--primary) 42%, var(--border));
   background: color-mix(in srgb, var(--card) 89%, var(--primary) 11%);
+}
+
+.public-minutes-palette-panel {
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--border));
+  background: color-mix(in srgb, var(--card) 97%, var(--primary) 3%);
+  box-shadow:
+    0 22px 50px color-mix(in srgb, var(--foreground) 15%, transparent),
+    0 2px 8px color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+
+.public-minutes-palette-option {
+  border-color: color-mix(in srgb, var(--primary) 12%, var(--border));
+  background: color-mix(in srgb, var(--card) 98%, var(--primary) 2%);
+}
+
+.public-minutes-palette-option:hover {
+  border-color: color-mix(in srgb, var(--primary) 36%, var(--border));
+  background: color-mix(in srgb, var(--card) 92%, var(--primary) 8%);
+}
+
+.public-minutes-palette-option.is-selected {
+  border-color: color-mix(in srgb, var(--primary) 62%, var(--border));
+  background: color-mix(in srgb, var(--card) 86%, var(--primary) 14%);
+  color: color-mix(in srgb, var(--primary) 58%, var(--foreground));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.public-minutes-palette-option__swatches {
+  border-color: color-mix(in srgb, var(--foreground) 18%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--card) 88%, transparent);
 }
 
 .dark .public-minutes-page {

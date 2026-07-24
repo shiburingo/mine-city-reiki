@@ -1,6 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { BarChart2, Bookmark, BookMarked, BookOpen, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
-import { PortalHeader, ThemeToggle } from '@mine-troutfarm/ui';
+import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
+import { PortalHeader, ThemeToggle, usePortalUi } from '@mine-troutfarm/ui';
 import {
   askQuestion,
   buildDocumentsCsvUrl,
@@ -1068,6 +1068,103 @@ function LoginCard({ onLogin }: { onLogin: (username: string, password: string) 
           </button>
         </form>
       </main>
+    </div>
+  );
+}
+
+function PublicMinutesPaletteControl() {
+  const { paletteId, palette, palettes, setPaletteId } = usePortalUi();
+  const [open, setOpen] = useState(false);
+  const controlRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!controlRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={controlRef} className="relative">
+      <button
+        type="button"
+        className="public-minutes-hero__palette-trigger inline-flex size-11 items-center justify-center rounded-xl border transition"
+        aria-label={`カラーパレット設定。現在は${palette.name}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls="public-minutes-palette-panel"
+        title={`カラーパレット: ${palette.name}`}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Settings2 className="size-5" aria-hidden="true" />
+      </button>
+      {open ? (
+        <section
+          id="public-minutes-palette-panel"
+          role="dialog"
+          aria-label="カラーパレット設定"
+          className="public-minutes-palette-panel absolute right-0 top-full z-50 mt-2 w-[min(23rem,calc(100vw-2rem))] rounded-2xl border p-3"
+        >
+          <div className="flex items-start justify-between gap-3 px-1 pb-3">
+            <div>
+              <p className="font-semibold text-foreground">カラーパレット</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">画面の配色を選択できます。</p>
+            </div>
+            <button
+              type="button"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg border text-muted-foreground transition hover:text-foreground"
+              aria-label="カラーパレット設定を閉じる"
+              onClick={() => setOpen(false)}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          </div>
+          <div role="radiogroup" aria-label="カラーパレット" className="grid max-h-[min(30rem,68vh)] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+            {palettes.map((item) => {
+              const selected = item.id === paletteId;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  className={`public-minutes-palette-option flex min-w-0 items-center gap-3 rounded-xl border px-3 py-3 text-left transition${selected ? ' is-selected' : ''}`}
+                  onClick={() => {
+                    setPaletteId(item.id);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="public-minutes-palette-option__swatches grid size-9 shrink-0 grid-cols-2 overflow-hidden rounded-full border" aria-hidden="true">
+                    <span style={{ backgroundColor: item.colors.primary }} />
+                    <span style={{ backgroundColor: item.darkColors.primary }} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold text-foreground">{item.name}</span>
+                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">{item.description}</span>
+                  </span>
+                  {selected ? <Check className="size-4 shrink-0" aria-hidden="true" /> : null}
+                </button>
+              );
+            })}
+          </div>
+          <p className="px-1 pt-3 text-xs leading-5 text-muted-foreground">選択した配色と表示モードは、このブラウザに保存されます。</p>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -4918,6 +5015,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
               <div className="public-minutes-hero__theme inline-flex size-11 items-center justify-center rounded-xl border">
                 <ThemeToggle />
               </div>
+              <PublicMinutesPaletteControl />
             </div>
           </div>
         </header>

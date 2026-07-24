@@ -20,24 +20,34 @@ type PortalUiContextValue = {
 
 const PortalUiContext = createContext<PortalUiContextValue | null>(null);
 
-export function PortalUiProvider({ children }: { children: ReactNode }) {
+type PortalUiProviderProps = {
+  children: ReactNode;
+  storageKey?: string;
+  defaultPaletteId?: string;
+};
+
+export function PortalUiProvider({
+  children,
+  storageKey = PORTAL_PALETTE_STORAGE_KEY,
+  defaultPaletteId = DEFAULT_PORTAL_PALETTE_ID,
+}: PortalUiProviderProps) {
   const { resolvedTheme } = useTheme();
   const themeMode: ThemeMode = resolvedTheme === "dark" ? "dark" : "light";
 
   const [paletteId, setPaletteId] = useState<string>(() => {
-    if (typeof window === "undefined") return DEFAULT_PORTAL_PALETTE_ID;
-    return localStorage.getItem(PORTAL_PALETTE_STORAGE_KEY) ?? DEFAULT_PORTAL_PALETTE_ID;
+    if (typeof window === "undefined") return getPortalPaletteById(defaultPaletteId).id;
+    return getPortalPaletteById(localStorage.getItem(storageKey) ?? defaultPaletteId).id;
   });
 
   const palette = useMemo(() => getPortalPaletteById(paletteId), [paletteId]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(PORTAL_PALETTE_STORAGE_KEY, paletteId);
+      localStorage.setItem(storageKey, paletteId);
     } catch {
       // ignore
     }
-  }, [paletteId]);
+  }, [paletteId, storageKey]);
 
   useEffect(() => {
     applyPortalPalette(themeMode, palette);

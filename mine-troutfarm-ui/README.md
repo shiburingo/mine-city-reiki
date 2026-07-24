@@ -32,6 +32,8 @@ import { PortalUiProvider } from "@mine-troutfarm/ui";
 
 `PortalUiProvider` は `next-themes` の `ThemeProvider` 内に置くか、内部で組み合わせてください。
 
+`storageKey` と `defaultPaletteId` を指定すると、用途ごとにパレット設定を分離できます。省略時は従来どおり `colorPalette` と `beppu-bentenike` を使用します。
+
 ### 3) ヘッダーを使う
 
 ```tsx
