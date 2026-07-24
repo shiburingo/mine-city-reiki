@@ -62,6 +62,33 @@ class MinutesRosterProfileTests(unittest.TestCase):
 
         self.assertEqual("杉山武司", result[0].speaker_name)
 
+    def test_same_day_roster_overrides_exact_typo_in_year_dictionary(self) -> None:
+        tagged = utterance("杉山武司")
+        profiles = {
+            "杉山武志": {
+                "displayName": "杉山武志",
+                "title": "委員",
+                "role": "questioner",
+                "speakerGroup": "議員・委員",
+                "confidence": 0.96,
+                "sourceTableKey": "minutes-1356-p1-t1",
+                "profileScope": "meeting-day",
+            },
+            "杉山武司": {
+                "displayName": "杉山武司",
+                "title": "委員",
+                "role": "questioner",
+                "speakerGroup": "議員・委員",
+                "confidence": 0.9,
+                "sourceTableKey": "utterance",
+                "profileScope": "meeting-year",
+            },
+        }
+
+        result = app_module.apply_roster_profiles_to_utterances([tagged], profiles)
+
+        self.assertEqual("杉山武志", result[0].speaker_name)
+
     def test_ambiguous_roster_match_is_not_applied(self) -> None:
         tagged = utterance("杉山武司")
         profiles = {

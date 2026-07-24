@@ -4644,17 +4644,22 @@ def apply_roster_profiles_to_utterances(
             continue
         normalized_name = normalize_minutes_speaker_name(utterance.speaker_name)
         profile = profiles.get(normalized_name)
-        if not profile:
-            profile = find_minutes_roster_name_correction(
+        if not profile or profile.get("profileScope") != "meeting-day":
+            corrected_profile = find_minutes_roster_name_correction(
                 utterance.speaker_name,
                 utterance.speaker_title,
                 utterance.speaker_role,
                 profiles,
             )
-            corrected_name = normalize_text(profile.get("displayName") or "").strip() if profile else ""
+            corrected_name = (
+                normalize_text(corrected_profile.get("displayName") or "").strip()
+                if corrected_profile
+                else ""
+            )
             if corrected_name:
                 original_name = utterance.speaker_name
                 utterance.speaker_name = corrected_name
+                profile = corrected_profile
                 utterance.reason = (
                     f"{utterance.reason}; same-day roster corrected speaker name "
                     f"{original_name} -> {corrected_name}"
