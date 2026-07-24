@@ -339,6 +339,20 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--card) 88%, transparent);
 }
 
+@media (max-width: 639px) {
+  .public-minutes-palette-panel {
+    position: fixed;
+    inset: 5.5rem 1rem auto;
+    width: auto;
+    max-height: calc(100dvh - 7rem);
+    overflow: hidden;
+  }
+
+  .public-minutes-palette-panel [role="radiogroup"] {
+    max-height: calc(100dvh - 15rem);
+  }
+}
+
 .dark .public-minutes-page {
   background:
     radial-gradient(circle at 8% -8%, color-mix(in srgb, var(--primary) 11%, transparent) 0, transparent 34rem),
