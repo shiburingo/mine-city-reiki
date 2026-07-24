@@ -304,9 +304,33 @@
 }
 
 .public-minutes-hero__action:hover,
+.public-minutes-hero__theme:hover,
 .public-minutes-hero__palette-trigger:hover {
   border-color: color-mix(in srgb, var(--primary) 42%, var(--border));
   background: color-mix(in srgb, var(--card) 89%, var(--primary) 11%);
+}
+
+.public-minutes-hero__theme {
+  overflow: hidden;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.public-minutes-hero__theme > button {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.public-minutes-hero__theme > button:hover {
+  background: transparent;
+}
+
+.public-minutes-hero__theme > button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 68%, var(--foreground));
+  outline-offset: -3px;
 }
 
 .public-minutes-palette-panel {
