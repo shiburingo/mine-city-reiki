@@ -1,0 +1,111 @@
+.public-minutes-file-fallback {
+  box-sizing: border-box;
+  display: grid;
+  min-height: 100vh;
+  margin: 0;
+  padding: clamp(24px, 7vw, 88px);
+  place-items: center;
+  color: #153f38;
+  font-family: "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  background:
+    radial-gradient(circle at 18% 12%, rgb(141 187 174 / 28%), transparent 34rem),
+    linear-gradient(145deg, #edf5f1, #f8faf8 58%, #e2eee9);
+}
+
+.public-minutes-file-fallback,
+.public-minutes-file-fallback * {
+  box-sizing: border-box;
+}
+
+.public-minutes-file-fallback__panel {
+  width: min(680px, 100%);
+  padding: clamp(30px, 6vw, 64px);
+  border: 1px solid rgb(21 63 56 / 16%);
+  border-radius: 32px;
+  background: rgb(255 255 255 / 88%);
+  box-shadow: 0 24px 70px rgb(21 63 56 / 12%);
+}
+
+.public-minutes-file-fallback__eyebrow {
+  margin: 0 0 14px;
+  color: #317a68;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.public-minutes-file-fallback h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 5vw, 3rem);
+  line-height: 1.25;
+  letter-spacing: -0.035em;
+}
+
+.public-minutes-file-fallback p {
+  margin: 24px 0 0;
+  color: #526b65;
+  font-size: 1rem;
+  line-height: 1.9;
+}
+
+.public-minutes-file-fallback a {
+  display: inline-flex;
+  min-height: 50px;
+  margin-top: 30px;
+  padding: 0 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 800;
+  text-decoration: none;
+  background: #246b5b;
+  box-shadow: 0 10px 28px rgb(36 107 91 / 22%);
+}
+
+.public-minutes-file-fallback a:hover,
+.public-minutes-file-fallback a:focus-visible {
+  background: #174f43;
+}
+
+.public-minutes-file-fallback a:focus-visible {
+  outline: 3px solid #82b9ab;
+  outline-offset: 4px;
+}
+
+.public-minutes-file-fallback__note {
+  font-size: 0.84rem !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .public-minutes-file-fallback {
+    color: #e4f0ec;
+    background:
+      radial-gradient(circle at 18% 12%, rgb(54 128 109 / 24%), transparent 34rem),
+      linear-gradient(145deg, #091a17, #0d211d 58%, #071512);
+  }
+
+  .public-minutes-file-fallback__panel {
+    border-color: rgb(172 213 201 / 18%);
+    background: rgb(11 31 27 / 92%);
+    box-shadow: 0 24px 70px rgb(0 0 0 / 34%);
+  }
+
+  .public-minutes-file-fallback__eyebrow {
+    color: #8cc5b6;
+  }
+
+  .public-minutes-file-fallback p {
+    color: #b4c9c3;
+  }
+
+  .public-minutes-file-fallback a {
+    color: #092019;
+    background: #8cc5b6;
+  }
+
+  .public-minutes-file-fallback a:hover,
+  .public-minutes-file-fallback a:focus-visible {
+    background: #b0d8cd;
+  }
+}

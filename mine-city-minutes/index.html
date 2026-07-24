@@ -5,10 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="美祢市議会の会議録を、会議名・言葉・発言者から検索して閲覧できる公開システムです。" />
     <meta name="robots" content="index,follow" />
+    <link rel="stylesheet" href="../src/styles/public-minutes-file-fallback.css" />
     <title>美祢市議会会議録検索システム</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="public-minutes-file-fallback" aria-labelledby="public-minutes-file-title">
+        <div class="public-minutes-file-fallback__panel">
+          <p class="public-minutes-file-fallback__eyebrow">MINE CITY COUNCIL MINUTES</p>
+          <h1 id="public-minutes-file-title">美祢市議会会議録検索システム</h1>
+          <p>
+            このファイルは開発用の入口です。会議録検索は、安全なHTTPS公開ページからご利用ください。
+          </p>
+          <a href="https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-minutes/">
+            公開ページを開く
+          </a>
+          <p class="public-minutes-file-fallback__note">
+            公開ページはログイン不要です。ローカルファイルからデータベースへ直接接続することはありません。
+          </p>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
