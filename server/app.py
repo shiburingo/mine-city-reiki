@@ -8806,6 +8806,26 @@ def api_document_history_detail(document_id: int, history_id: int):
     })
 
 
+def dictionary_status_payload() -> dict[str, Any]:
+    compiled = compiled_synonym_dictionary_status(get_compiled_dictionary_path())
+    current_term_count = int(compiled.get('termCount') or 0)
+    return {
+        'compiled': compiled,
+        'growth': {
+            'currentTermCount': current_term_count,
+            'targetTermCount': THESAURUS_TARGET_TERM_COUNT,
+            'ultimateTermCount': THESAURUS_ULTIMATE_TERM_COUNT,
+            'targetProgress': round(min(1.0, current_term_count / THESAURUS_TARGET_TERM_COUNT), 6),
+            'ultimateProgress': round(min(1.0, current_term_count / THESAURUS_ULTIMATE_TERM_COUNT), 6),
+        },
+    }
+
+
+@app.get('/api/dictionary/status')
+def api_dictionary_status():
+    return jsonify(dictionary_status_payload())
+
+
 @app.get('/api/synonyms')
 def api_synonyms_list():
     with db_cursor() as (_, cur):
@@ -8820,8 +8840,7 @@ def api_synonyms_list():
         )
         stats = cur.fetchall() or []
         source_states = dictionary_source_statuses(cur)
-    compiled = compiled_synonym_dictionary_status(get_compiled_dictionary_path())
-    current_term_count = int(compiled.get('termCount') or 0)
+    dictionary_status = dictionary_status_payload()
     return jsonify({
         'items': [
             {
@@ -8843,14 +8862,7 @@ def api_synonyms_list():
             }
             for r in stats
         ],
-        'compiled': compiled,
-        'growth': {
-            'currentTermCount': current_term_count,
-            'targetTermCount': THESAURUS_TARGET_TERM_COUNT,
-            'ultimateTermCount': THESAURUS_ULTIMATE_TERM_COUNT,
-            'targetProgress': round(min(1.0, current_term_count / THESAURUS_TARGET_TERM_COUNT), 6),
-            'ultimateProgress': round(min(1.0, current_term_count / THESAURUS_ULTIMATE_TERM_COUNT), 6),
-        },
+        **dictionary_status,
         'sources': [
             {
                 'sourceKey': row['source_key'],

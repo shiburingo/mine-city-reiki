@@ -187,6 +187,11 @@ export type SynonymGrowthStatus = {
   ultimateProgress: number;
 };
 
+export type DictionaryStatus = {
+  compiled: SynonymCompiledStatus;
+  growth: SynonymGrowthStatus;
+};
+
 export type DictionarySourceStatus = {
   sourceKey: string;
   displayName: string;

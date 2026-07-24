@@ -8,6 +8,7 @@ import {
   createSynonym,
   deleteSynonym,
   fetchAnalytics,
+  fetchDictionaryStatus,
   fetchDocumentDetail,
   fetchDocumentHistory,
   fetchDocumentHistoryDetail,
@@ -36,7 +37,7 @@ import {
   updateSyncSettings,
 } from './api';
 import { fetchAuthConfig, fetchMe, login, logout } from './authApi';
-import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DictionarySourceStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem } from './types';
+import type { AnalyticsData, AskCandidateGroup, AskResponse, AuthUser, BrowseCategory, DictionarySourceStatus, DictionaryStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesExchangeItem, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, MinutesTable, RevisionItem, SearchField, SearchResult, SourceScope, SyncRun, SyncStatus, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem } from './types';
 import { ArticleContent, type ArticleLinkMap, type SourceAnchorLinkMap, type SourceDocumentLinkMap, type SourceDocumentTitleLinkMap } from './ArticleContent';
 
 const TABS = [
@@ -52,6 +53,7 @@ const TABS = [
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
 const MINUTES_SEARCH_HISTORY_KEY = 'minutes_search_history_v1';
 const BOOKMARKS_KEY = 'reiki_bookmarks';
+const DICTIONARY_STATUS_CACHE_KEY = 'reiki_dictionary_status_v1';
 const DICTIONARY_OPERATIONS = new Set([
   'dictionary-update',
   'internet-dictionary-update',
@@ -170,6 +172,31 @@ function loadBookmarks(): number[] {
 
 function saveBookmarks(ids: number[]): void {
   localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(ids));
+}
+
+function loadCachedDictionaryStatus(): DictionaryStatus | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(DICTIONARY_STATUS_CACHE_KEY) || 'null') as Partial<DictionaryStatus> | null;
+    if (
+      !value?.compiled
+      || !value.growth
+      || typeof value.compiled.exists !== 'boolean'
+      || !Number.isFinite(value.growth.currentTermCount)
+    ) {
+      return null;
+    }
+    return value as DictionaryStatus;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedDictionaryStatus(status: DictionaryStatus): void {
+  try {
+    localStorage.setItem(DICTIONARY_STATUS_CACHE_KEY, JSON.stringify(status));
+  } catch {
+    // The live API response remains available when browser storage is disabled.
+  }
 }
 
 function asNumber(value: unknown): number | null {
@@ -1084,12 +1111,14 @@ function AppShell() {
   const [bookmarksLoading, setBookmarksLoading] = useState(false);
 
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
+  const [initialDictionaryStatus] = useState<DictionaryStatus | null>(() => loadCachedDictionaryStatus());
   const [synonymItems, setSynonymItems] = useState<SynonymItem[]>([]);
   const [synonymStats, setSynonymStats] = useState<SynonymStatsItem[]>([]);
-  const [synonymCompiled, setSynonymCompiled] = useState<SynonymCompiledStatus | null>(null);
-  const [synonymGrowth, setSynonymGrowth] = useState<SynonymGrowthStatus | null>(null);
+  const [synonymCompiled, setSynonymCompiled] = useState<SynonymCompiledStatus | null>(initialDictionaryStatus?.compiled ?? null);
+  const [synonymGrowth, setSynonymGrowth] = useState<SynonymGrowthStatus | null>(initialDictionaryStatus?.growth ?? null);
   const [dictionarySources, setDictionarySources] = useState<DictionarySourceStatus[]>([]);
   const [synonymLoading, setSynonymLoading] = useState(false);
+  const [dictionaryStatusLoading, setDictionaryStatusLoading] = useState(false);
   const [newSynonymCanonical, setNewSynonymCanonical] = useState('');
   const [newSynonymTerm, setNewSynonymTerm] = useState('');
   const [internetDictionaryUrl, setInternetDictionaryUrl] = useState('');
@@ -1109,6 +1138,7 @@ function AppShell() {
   const minutesReaderScrollRef = useRef<HTMLDivElement | null>(null);
   const minutesReaderScrollFrameRef = useRef<number | null>(null);
   const minutesReaderScrollRequestSeqRef = useRef(0);
+  const dictionaryStatusLoadingRef = useRef(false);
   const selectedReturnPointRef = useRef<LinkReturnPoint | null>(null);
   const browseReturnPointRef = useRef<LinkReturnPoint | null>(null);
   const pendingSelectedReturnPointRef = useRef<LinkReturnPoint | null>(null);
@@ -1217,6 +1247,7 @@ function AppShell() {
           return;
         }
       }
+      void loadDictionaryStatus();
       const [status, runs, minutes] = await Promise.all([
         fetchSyncStatus(),
         fetchSyncRuns(),
@@ -1283,7 +1314,7 @@ function AppShell() {
       if (minutesSpeakers.length === 0) void loadMinutesSpeakers();
       if (allMinutesSpeakers.length === 0) void loadAllMinutesSpeakers();
       if (minutesMeetings.length === 0) void loadMinutesMeetings();
-      if (synonymStats.length === 0 && !synonymLoading) void loadSynonyms();
+      if (!synonymCompiled || !synonymGrowth) void loadDictionaryStatus();
     }
     if (tab === 'settings') {
       void loadMinutesStatus();
@@ -1583,6 +1614,26 @@ function AppShell() {
     }
   }
 
+  function applyDictionaryStatus(status: DictionaryStatus) {
+    setSynonymCompiled(status.compiled);
+    setSynonymGrowth(status.growth);
+    saveCachedDictionaryStatus(status);
+  }
+
+  async function loadDictionaryStatus() {
+    if (dictionaryStatusLoadingRef.current) return;
+    dictionaryStatusLoadingRef.current = true;
+    setDictionaryStatusLoading(true);
+    try {
+      applyDictionaryStatus(await fetchDictionaryStatus());
+    } catch {
+      // Keep the last known count visible; settings can still retry the full request.
+    } finally {
+      dictionaryStatusLoadingRef.current = false;
+      setDictionaryStatusLoading(false);
+    }
+  }
+
   async function loadSynonyms() {
     setSynonymLoading(true);
     try {
@@ -1592,6 +1643,7 @@ function AppShell() {
       setSynonymCompiled(compiled ?? null);
       setSynonymGrowth(growth ?? null);
       setDictionarySources(sources);
+      if (compiled && growth) saveCachedDictionaryStatus({ compiled, growth });
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : '同義語取得に失敗しました。');
     } finally {
@@ -4322,9 +4374,11 @@ function AppShell() {
                     <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
                       <p className="text-xs font-semibold text-muted-foreground">辞書の登録語数</p>
                       <p className="mt-1 text-sm font-semibold text-[#173f36]">
-                        {synonymLoading && synonymRegisteredTermCount === 0
+                        {dictionaryStatusLoading && synonymRegisteredTermCount === 0
                           ? '読み込み中…'
-                          : `${synonymRegisteredTermCount.toLocaleString()}語`}
+                          : synonymRegisteredTermCount > 0
+                            ? `${synonymRegisteredTermCount.toLocaleString()}語`
+                            : '未取得'}
                       </p>
                     </div>
                   </div>

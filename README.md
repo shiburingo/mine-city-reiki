@@ -190,6 +190,7 @@ PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p
 |---|---|---|
 | POST | `/api/cache/clear` | キャッシュクリア（`scope`: `search` / `ask` / `all`） |
 | GET | `/api/synonyms` | 同義語一覧 |
+| GET | `/api/dictionary/status` | コンパイル済み関連語辞書の軽量ステータス |
 | POST | `/api/synonyms` | 同義語追加 |
 | DELETE | `/api/synonyms/:id` | 同義語削除 |
 | GET | `/api/analytics` | 利用統計 |
