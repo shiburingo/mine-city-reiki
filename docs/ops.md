@@ -5,6 +5,8 @@
 | 種別 | パス / 名前 |
 |---|---|
 | 静的 UI | `/var/www/mine-city-reiki/` |
+| 管理 UI | `/mine-city-reiki/` |
+| 公開会議録 UI | `/mine-city-minutes/` |
 | API サービス | `mine-city-reiki-api.service`（Gunicorn、ポート 8795） |
 | API 環境変数 | `/etc/mine-city-reiki-api.env` |
 | 同期サービス | `mine-city-reiki-sync.service` |
@@ -71,6 +73,37 @@ cd "${OLD}"
 ```bash
 curl -fsS http://127.0.0.1:8795/api/health
 curl -ksS https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-reiki-api/api/health
+curl -ksSI https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-minutes/
+curl -ksS https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-reiki-api/api/public/minutes/status
+```
+
+### 公開会議録ページの nginx 設定
+
+`deploy/nginx/snippets/mine-city-reiki.conf.example` には、管理UIとAPIに加えて `/mine-city-minutes/` の静的配信、SPAフォールバック、CSP等のレスポンスヘッダーを定義しています。スニペットを変更したリリースでは、更新スクリプト実行後に既存設定を退避して反映します。
+
+```bash
+TS="$(date +%Y%m%d-%H%M%S)"
+sudo cp /etc/nginx/snippets/mine-city-reiki.conf \
+  "/etc/nginx/snippets/mine-city-reiki.conf.${TS}.bak"
+sudo install -m 0644 \
+  /opt/mine-city-reiki/deploy/nginx/snippets/mine-city-reiki.conf.example \
+  /etc/nginx/snippets/mine-city-reiki.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+公開後は、ログインなしの読み取りと管理操作の遮断を両方確認します。
+
+```bash
+# 認証不要の公開読み取りは 200
+curl -ksS -o /dev/null -w '%{http_code}\n' \
+  https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-reiki-api/api/public/minutes/meetings
+
+# 公開プレフィックスの変更操作と、従来の管理APIは 2xx にならない
+curl -ksS -o /dev/null -w '%{http_code}\n' -X POST \
+  https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-reiki-api/api/public/minutes/sync
+curl -ksS -o /dev/null -w '%{http_code}\n' \
+  https://youson-btwhjbrrqvjc.dynamic-m.com/mine-city-reiki-api/api/minutes/status
 ```
 
 ---
@@ -222,6 +255,8 @@ REIKI_DAILY_DICTIONARY_CATCHUP_BATCHES=4
 # REIKI_DAILY_DICTIONARY_WIKIDATA_TERMS=100
 REIKI_DICTIONARY_USER_AGENT=mine-city-reiki-thesaurus-bot/0.1 (https://github.com/shiburingo/mine-city-reiki)
 REIKI_SYNONYM_JSON_COMPAT_MAX_TERMS=100000
+# 公開会議録APIのIP単位・1分当たり上限
+REIKI_PUBLIC_MINUTES_RATE_LIMIT_PER_MINUTE=180
 ```
 
 ---

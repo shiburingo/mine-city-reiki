@@ -47,6 +47,12 @@
 - **会議録管理** — PDF差分同期、全件コンパイル、再タグ付け、会議録由来辞書更新を管理画面から実行できます。
 - **辞書更新** — WordNet・Wikipedia・Wiktionary・Wikidata・既存DBから関連語を累積し、検索用SQLite索引へ原子的にコンパイルします。
 
+### 公開会議録ページ
+- **ログイン不要** — `/mine-city-minutes/` で「美祢市議会会議録検索システム」を公開し、会議録の閲覧・言葉検索・発言者検索・発言集作成を利用できます。
+- **既存検索基盤を共用** — MariaDB、コンパイル済み会議録、Meilisearch、関連語辞書は管理画面と共通です。公開ページのためのデータ複製は行いません。
+- **読み取り専用 API** — 公開ページから利用できるのは、厳密に許可した `/api/public/minutes/*` の GET / HEAD だけです。同期・再タグ付け・コンパイル・辞書更新などの変更操作は公開しません。
+- **公開向け保護** — IP単位のレート制限、クエリ長制限、CSP、Permissions-Policy、Referrer-Policyを適用します。
+
 ### 他アプリ連携 API
 - 同ホスト上の業務アプリから `/mine-city-reiki-api/api/reference/*` で条文検索・参照が可能です。
 
@@ -61,7 +67,7 @@
 | データベース | MariaDB（例規・辞書・キャッシュ・会議録・コンパイル世代を管理） |
 | 検索エンジン | Meilisearch + MariaDB 転置索引 / FULLTEXT フォールバック |
 | 形態素解析 | Janome 0.5.0 |
-| 認証 | 共通認証 `mine-trout-cash-api`（ポート 8787, `/api/auth/*`）に委譲 |
+| 認証 | 管理画面・管理APIは共通認証 `mine-trout-cash-api`（ポート 8787, `/api/auth/*`）に委譲。公開会議録の許可済みGETだけ認証不要 |
 | 共有 UI | mine-troutfarm-ui（ローカル npm パッケージ） |
 | デプロイ | Raspberry Pi + Nginx リバースプロキシ |
 
@@ -71,6 +77,8 @@
 
 ```
 mine-city-reiki/
+├── mine-city-minutes/
+│   └── index.html       # ログイン不要の公開会議録ページ用エントリ
 ├── src/app/
 │   ├── App.tsx          # メイン UI（タブ・検索・閲覧・Q&A・設定）
 │   ├── api.ts           # REST API クライアント
@@ -183,6 +191,19 @@ PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p
 | GET | `/api/minutes/meetings` | 会議一覧 |
 | GET | `/api/minutes/meetings/:id` | 会議詳細・日程一覧 |
 | GET | `/api/minutes/days/:id` | 日程単位の会議録、発言、表 |
+
+### 公開会議録（認証不要・読み取り専用）
+
+| メソッド | パス | 説明 |
+|---|---|---|
+| GET / HEAD | `/api/public/minutes/status` | 公開用に内部情報を除いた会議録件数 |
+| GET / HEAD | `/api/public/minutes/search` | 会議録検索 |
+| GET / HEAD | `/api/public/minutes/meetings` | 会議一覧 |
+| GET / HEAD | `/api/public/minutes/speakers` | 発言者一覧 |
+| GET / HEAD | `/api/public/minutes/meetings/:id` | 会議詳細・日程一覧 |
+| GET / HEAD | `/api/public/minutes/days/:id` | 日程単位の会議録、発言、表 |
+
+上記以外の `/api/public/minutes/*`、POST / PUT / DELETE、管理APIは公開認証の例外に含めません。
 
 ### キャッシュ・同義語・アナリティクス
 

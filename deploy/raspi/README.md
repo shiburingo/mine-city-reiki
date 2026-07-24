@@ -1,6 +1,8 @@
 # mine-city-reiki 本番反映
 
 - UI: `/var/www/mine-city-reiki/`
+- 管理 UI URL: `/mine-city-reiki/`
+- 公開会議録 UI URL: `/mine-city-minutes/`
 - API: `mine-city-reiki-api.service`
 - API env: `/etc/mine-city-reiki-api.env`
 - nginx snippet: `/etc/nginx/snippets/mine-city-reiki.conf`
@@ -16,6 +18,8 @@ cd /opt/mine-city-reiki
 ```
 
 更新スクリプトは配備ユーザーで実行し、`npm` を `sudo` で直接実行しません。過去の手動更新で `node_modules` または `dist` に root 所有ファイルが残っている場合は、依存関係の導入とビルドの前に所有権を配備ユーザーへ修復します。
+
+`deploy/nginx/snippets/mine-city-reiki.conf.example` を変更したリリースでは、`update.sh` の後に本番スニペットへ反映し、`sudo nginx -t` が成功してから nginx をreloadします。公開会議録ページは同じ `dist/` に含まれますが、URLは管理UIと分離した `/mine-city-minutes/` です。
 
 ## Meilisearch
 

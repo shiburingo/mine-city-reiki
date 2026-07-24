@@ -1,6 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { BarChart2, Bookmark, BookMarked, BookOpen, ChevronLeft, ChevronRight, Clock, Database, Download, FileSearch, Printer, RefreshCw, Search, Settings2, Star, Trash2, X } from 'lucide-react';
-import { PortalHeader } from '@mine-troutfarm/ui';
+import { BarChart2, Bookmark, BookMarked, BookOpen, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
+import { PortalHeader, ThemeToggle } from '@mine-troutfarm/ui';
 import {
   askQuestion,
   buildDocumentsCsvUrl,
@@ -22,6 +22,7 @@ import {
   fetchSyncRuns,
   fetchSyncStatus,
   fetchSynonyms,
+  isPublicMinutesPage,
   runDictionaryCompile,
   runMinutesCompile,
   runMinutesSync,
@@ -51,7 +52,8 @@ const TABS = [
 ] as const;
 
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
-const MINUTES_SEARCH_HISTORY_KEY = 'minutes_search_history_v1';
+const PUBLIC_MINUTES_MODE = isPublicMinutesPage();
+const MINUTES_SEARCH_HISTORY_KEY = PUBLIC_MINUTES_MODE ? 'public_minutes_search_history_v1' : 'minutes_search_history_v1';
 const BOOKMARKS_KEY = 'reiki_bookmarks';
 const DICTIONARY_STATUS_CACHE_KEY = 'reiki_dictionary_status_v1';
 const DICTIONARY_OPERATIONS = new Set([
@@ -1070,10 +1072,10 @@ function LoginCard({ onLogin }: { onLogin: (username: string, password: string) 
   );
 }
 
-function AppShell() {
+function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }) {
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [tab, setTab] = useState<TabId>('dashboard');
+  const [tab, setTab] = useState<TabId>(publicMinutesMode ? 'minutes' : 'dashboard');
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(EMPTY_SYNC_STATUS);
   const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1237,6 +1239,13 @@ function AppShell() {
     setLoading(true);
     setGlobalError(null);
     try {
+      if (publicMinutesMode) {
+        setAuthEnabled(false);
+        setUser(null);
+        setTab('minutes');
+        setMinutesStatus(await fetchMinutesStatus());
+        return;
+      }
       const enabled = await fetchAuthConfig();
       setAuthEnabled(enabled);
       if (enabled) {
@@ -1272,6 +1281,7 @@ function AppShell() {
 
   // パーマリンク: 起動時にハッシュから状態を復元
   useEffect(() => {
+    if (publicMinutesMode) return;
     const hash = window.location.hash.slice(1);
     if (!hash) return;
     const params = new URLSearchParams(hash);
@@ -1285,13 +1295,45 @@ function AppShell() {
     void bootstrap();
   }, []);
 
+  useEffect(() => {
+    if (!publicMinutesMode) return;
+    const previousTitle = document.title;
+    document.title = '美祢市議会会議録検索システム';
+    let description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    const createdDescription = !description;
+    if (!description) {
+      description = document.createElement('meta');
+      description.name = 'description';
+      document.head.appendChild(description);
+    }
+    const previousDescription = description.content;
+    description.content = '美祢市議会の会議録を、会議名・言葉・発言者から検索して閲覧できる公開システムです。';
+    let robots = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
+    const createdRobots = !robots;
+    if (!robots) {
+      robots = document.createElement('meta');
+      robots.name = 'robots';
+      document.head.appendChild(robots);
+    }
+    const previousRobots = robots.content;
+    robots.content = 'index,follow';
+    return () => {
+      document.title = previousTitle;
+      if (createdDescription) description?.remove();
+      else if (description) description.content = previousDescription;
+      if (createdRobots) robots?.remove();
+      else if (robots) robots.content = previousRobots;
+    };
+  }, [publicMinutesMode]);
+
   // パーマリンク: tab/doc 変更時にハッシュ更新
   useEffect(() => {
+    if (publicMinutesMode) return;
     const params = new URLSearchParams();
     params.set('tab', tab);
     if (selectedDocId) params.set('doc', String(selectedDocId));
     window.history.replaceState(null, '', `#${params.toString()}`);
-  }, [tab, selectedDocId]);
+  }, [publicMinutesMode, tab, selectedDocId]);
 
   useEffect(() => {
     if (tab === 'browse' && browseList.length === 0 && !browseLoading) {
@@ -1314,12 +1356,12 @@ function AppShell() {
       if (minutesSpeakers.length === 0) void loadMinutesSpeakers();
       if (allMinutesSpeakers.length === 0) void loadAllMinutesSpeakers();
       if (minutesMeetings.length === 0) void loadMinutesMeetings();
-      if (!synonymCompiled || !synonymGrowth) void loadDictionaryStatus();
+      if (!publicMinutesMode && (!synonymCompiled || !synonymGrowth)) void loadDictionaryStatus();
     }
     if (tab === 'settings') {
       void loadMinutesStatus();
     }
-  }, [tab]);
+  }, [publicMinutesMode, tab]);
 
   useEffect(() => {
     if (tab !== 'settings') return;
@@ -1353,7 +1395,7 @@ function AppShell() {
   }, [tab, syncRuns]);
 
   useEffect(() => {
-    if (tab !== 'minutes') return;
+    if (publicMinutesMode || tab !== 'minutes') return;
     const hasRunningMinutes = syncRuns.some((run) => run.status === 'running' && run.summary?.operation === 'minutes-sync')
       || minutesStatus.latestRun?.status === 'running';
     if (!hasRunningMinutes) return;
@@ -1370,7 +1412,7 @@ function AppShell() {
       })();
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [tab, syncRuns, minutesStatus.latestRun?.status]);
+  }, [publicMinutesMode, tab, syncRuns, minutesStatus.latestRun?.status]);
 
   useEffect(() => {
     if (tab !== 'minutes' || (minutesPage !== 'speaker' && minutesPage !== 'collection')) return;
@@ -3199,9 +3241,15 @@ function AppShell() {
             onClick={() => setMinutesPage('home')}
             className="rounded-lg text-left transition-opacity hover:opacity-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-2"
           >
-            <h2 className="text-2xl font-semibold tracking-tight">会議録検索システム</h2>
+            <h2 className="text-2xl font-semibold tracking-tight">
+              {publicMinutesMode ? '検索・閲覧メニュー' : '会議録検索システム'}
+            </h2>
           </button>
-          <p className="minutes-header__description mt-1 text-sm">検索方法を選んでから、条件入力、検索結果、本文閲覧へ順に進みます。</p>
+          <p className="minutes-header__description mt-1 text-sm">
+            {publicMinutesMode
+              ? '会議録を選ぶか、言葉・発言者を指定して検索してください。'
+              : '検索方法を選んでから、条件入力、検索結果、本文閲覧へ順に進みます。'}
+          </p>
         </div>
         <nav aria-label="会議録の検索方法" className="minutes-nav grid gap-1.5 rounded-[1.4rem] p-1.5 sm:grid-cols-2 xl:grid-cols-4">
           {([
@@ -4336,8 +4384,10 @@ function AppShell() {
                 <div className="rounded-3xl border bg-white p-5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-[#173f36]">運用情報</p>
-                      <p className="mt-1 text-xs text-muted-foreground">会議録データと関連語辞書の状態を表示します。</p>
+                      <p className="text-sm font-semibold text-[#173f36]">{publicMinutesMode ? '公開データ' : '運用情報'}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {publicMinutesMode ? '現在公開している会議録の収録状況です。' : '会議録データと関連語辞書の状態を表示します。'}
+                      </p>
                     </div>
                   </div>
                   <div className="mt-4 space-y-3">
@@ -4368,16 +4418,31 @@ function AppShell() {
                         <p className="mt-1 text-sm text-muted-foreground">未登録</p>
                       )}
                     </div>
-                    <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
-                      <p className="text-xs font-semibold text-muted-foreground">辞書の登録語数</p>
-                      <p className="mt-1 text-sm font-semibold text-[#173f36]">
-                        {dictionaryStatusLoading && synonymRegisteredTermCount === 0
-                          ? '読み込み中…'
-                          : synonymRegisteredTermCount > 0
-                            ? `${synonymRegisteredTermCount.toLocaleString()}語`
-                            : '未取得'}
-                      </p>
-                    </div>
+                    {publicMinutesMode ? (
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          ['会議日', `${minutesStatus.dayCount.toLocaleString()}件`],
+                          ['発言', `${minutesStatus.utteranceCount.toLocaleString()}件`],
+                          ['発言者', `${minutesStatus.speakerCount.toLocaleString()}人`],
+                        ].map(([label, value]) => (
+                          <div key={label} className="rounded-2xl border bg-[#fbfdfb] px-3 py-3 text-center">
+                            <p className="text-xs font-semibold text-muted-foreground">{label}</p>
+                            <p className="mt-1 text-sm font-semibold text-[#173f36]">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border bg-[#fbfdfb] px-3 py-3">
+                        <p className="text-xs font-semibold text-muted-foreground">辞書の登録語数</p>
+                        <p className="mt-1 text-sm font-semibold text-[#173f36]">
+                          {dictionaryStatusLoading && synonymRegisteredTermCount === 0
+                            ? '読み込み中…'
+                            : synonymRegisteredTermCount > 0
+                              ? `${synonymRegisteredTermCount.toLocaleString()}語`
+                              : '未取得'}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4810,6 +4875,71 @@ function AppShell() {
 
   if (loading) {
     return <div className="min-h-screen bg-background p-8 text-muted-foreground">読み込み中…</div>;
+  }
+  if (publicMinutesMode) {
+    return (
+      <div className="public-minutes-page min-h-screen bg-background text-foreground">
+        <a
+          href="#public-minutes-main"
+          className="sr-only z-50 rounded-lg bg-card px-4 py-2 font-semibold text-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
+        >
+          本文へ移動
+        </a>
+        <header className="public-minutes-hero border-b">
+          <div className="mx-auto flex max-w-[96rem] flex-col gap-5 px-4 py-7 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+            <div className="flex min-w-0 items-start gap-4">
+              <div className="public-minutes-hero__mark mt-0.5 inline-flex size-12 shrink-0 items-center justify-center rounded-2xl border">
+                <Landmark className="size-6" aria-hidden="true" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="public-minutes-hero__eyebrow text-xs font-bold tracking-[0.18em]">MINE CITY COUNCIL MINUTES</p>
+                  <span className="public-minutes-hero__badge inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold">
+                    <ShieldCheck className="size-3.5" aria-hidden="true" />
+                    ログイン不要
+                  </span>
+                </div>
+                <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">美祢市議会会議録検索システム</h1>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground sm:text-base">
+                  美祢市議会の会議録を、会議・言葉・発言者から検索して閲覧できます。
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <a
+                href="https://www2.city.mine.lg.jp/gyosei/shigikai/11159.html"
+                target="_blank"
+                rel="noreferrer"
+                className="public-minutes-hero__action inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 text-sm font-semibold transition"
+              >
+                美祢市議会の公開資料
+                <ExternalLink className="size-4" aria-hidden="true" />
+              </a>
+              <div className="public-minutes-hero__theme inline-flex size-11 items-center justify-center rounded-xl border">
+                <ThemeToggle />
+              </div>
+            </div>
+          </div>
+        </header>
+        <main id="public-minutes-main" className="mx-auto max-w-[96rem] space-y-4 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+          {globalError ? (
+            <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {globalError}
+            </div>
+          ) : null}
+          {renderMinutesWorkspace()}
+          <section className="public-minutes-notice rounded-2xl border px-5 py-4 text-sm leading-6 text-muted-foreground">
+            <h2 className="font-semibold text-foreground">ご利用にあたって</h2>
+            <p className="mt-1">
+              検索結果は会議録PDFから抽出・整形したデータです。内容の確認が必要な場合は、各会議録の「PDF原文」から美祢市が公開する原文をご確認ください。
+            </p>
+          </section>
+        </main>
+        <footer className="border-t px-4 py-6 text-center text-xs text-muted-foreground">
+          データ出典: 美祢市議会公開会議録
+        </footer>
+      </div>
+    );
   }
   if (authEnabled && !user) {
     return <LoginCard onLogin={handleLogin} />;
@@ -6208,5 +6338,5 @@ function AppShell() {
 }
 
 export default function App() {
-  return <AppShell />;
+  return <AppShell publicMinutesMode={PUBLIC_MINUTES_MODE} />;
 }

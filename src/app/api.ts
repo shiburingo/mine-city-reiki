@@ -1,6 +1,19 @@
 import type { AnalyticsData, AskResponse, BrowseCategory, DictionarySourceStatus, DictionaryStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
+export const PUBLIC_MINUTES_PAGE_PATH = '/mine-city-minutes';
+
+export function isPublicMinutesPage(pathname?: string): boolean {
+  const currentPath = pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '');
+  return (
+    currentPath === PUBLIC_MINUTES_PAGE_PATH
+    || currentPath.startsWith(`${PUBLIC_MINUTES_PAGE_PATH}/`)
+    || currentPath === `/mine-city-reiki${PUBLIC_MINUTES_PAGE_PATH}`
+    || currentPath.startsWith(`/mine-city-reiki${PUBLIC_MINUTES_PAGE_PATH}/`)
+  );
+}
+
+const MINUTES_READ_API_PREFIX = isPublicMinutesPage() ? '/public/minutes' : '/minutes';
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -17,6 +30,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(error || 'API error');
   }
   return data as T;
+}
+
+function minutesReadFetch<T>(path = ''): Promise<T> {
+  return apiFetch<T>(`${MINUTES_READ_API_PREFIX}${path}`);
 }
 
 export async function fetchHealth() {
@@ -193,7 +210,7 @@ export async function searchLawsForRelated(fields: SearchField[], excludeDocId: 
 }
 
 export async function fetchMinutesStatus(): Promise<MinutesStatus> {
-  return apiFetch<MinutesStatus>('/minutes/status');
+  return minutesReadFetch<MinutesStatus>('/status');
 }
 
 export async function runMinutesSync(recentDays = 365): Promise<{ ok: boolean; started: boolean; recentDays: number }> {
@@ -238,7 +255,7 @@ export async function searchMinutes(params: {
   if (params.pageSize) qs.set('pageSize', String(params.pageSize));
   if (params.context) qs.set('context', params.context);
   if (params.includeSpeakerMeta) qs.set('includeSpeakerMeta', 'true');
-  const data = await apiFetch<{ items: MinutesSearchResult[]; total: number | null; hasMore?: boolean; nextCursor?: string | null }>(`/minutes/search?${qs.toString()}`);
+  const data = await minutesReadFetch<{ items: MinutesSearchResult[]; total: number | null; hasMore?: boolean; nextCursor?: string | null }>(`/search?${qs.toString()}`);
   return {
     items: data.items || [],
     total: data.total ?? null,
@@ -263,19 +280,19 @@ export async function fetchMinutesSpeakers(params: {
   if (params.fromDate) qs.set('fromDate', params.fromDate);
   if (params.toDate) qs.set('toDate', params.toDate);
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
-  const data = await apiFetch<{ items: MinutesSpeaker[] }>(`/minutes/speakers${suffix}`);
+  const data = await minutesReadFetch<{ items: MinutesSpeaker[] }>(`/speakers${suffix}`);
   return data.items || [];
 }
 
 export async function fetchMinutesMeetings(): Promise<MinutesMeeting[]> {
-  const data = await apiFetch<{ items: MinutesMeeting[] }>('/minutes/meetings');
+  const data = await minutesReadFetch<{ items: MinutesMeeting[] }>('/meetings');
   return data.items || [];
 }
 
 export async function fetchMinutesMeetingDetail(meetingId: number): Promise<MinutesMeetingDetail> {
-  return apiFetch<MinutesMeetingDetail>(`/minutes/meetings/${meetingId}`);
+  return minutesReadFetch<MinutesMeetingDetail>(`/meetings/${meetingId}`);
 }
 
 export async function fetchMinutesDayDetail(dayId: number): Promise<MinutesDayDetail> {
-  return apiFetch<MinutesDayDetail>(`/minutes/days/${dayId}`);
+  return minutesReadFetch<MinutesDayDetail>(`/days/${dayId}`);
 }

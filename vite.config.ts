@@ -5,6 +5,14 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/mine-city-reiki/',
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        publicMinutes: 'mine-city-minutes/index.html',
+      },
+    },
+  },
   server: {
     port: 5175,
     proxy: {

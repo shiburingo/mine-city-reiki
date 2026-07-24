@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -62,6 +63,26 @@ except Exception:
 APP_VERSION = "0.1.0"
 APP_SLUG = "mine-city-reiki"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+PUBLIC_MINUTES_API_PREFIX = "/api/public/minutes"
+PUBLIC_MINUTES_STATIC_PATHS = {
+    f"{PUBLIC_MINUTES_API_PREFIX}/status",
+    f"{PUBLIC_MINUTES_API_PREFIX}/search",
+    f"{PUBLIC_MINUTES_API_PREFIX}/meetings",
+    f"{PUBLIC_MINUTES_API_PREFIX}/speakers",
+}
+PUBLIC_MINUTES_DETAIL_PATH_RE = re.compile(
+    rf"^{re.escape(PUBLIC_MINUTES_API_PREFIX)}/(?:meetings|days)/[1-9][0-9]*$"
+)
+try:
+    PUBLIC_MINUTES_RATE_LIMIT_PER_MINUTE = max(
+        0,
+        int(os.environ.get("REIKI_PUBLIC_MINUTES_RATE_LIMIT_PER_MINUTE", "180") or 180),
+    )
+except ValueError:
+    PUBLIC_MINUTES_RATE_LIMIT_PER_MINUTE = 180
+PUBLIC_MINUTES_QUERY_STRING_MAX_BYTES = 2048
+_PUBLIC_MINUTES_RATE_LOCK = threading.Lock()
+_PUBLIC_MINUTES_RATE_BUCKETS: dict[str, deque[float]] = {}
 MINE_CITY_INDEX_URL = "https://www2.city.mine.lg.jp/section/reiki/reiki_taikei/r_taikei_05.html"
 TOKYO_OFFSET = "+09:00"
 SOURCE_SCOPES = {"all", "mine-city", "egov", "local-public-service"}
@@ -7475,6 +7496,62 @@ def search_documents(query: str, source: str = 'all', limit: int = 20, fuzzy: bo
     return len(results), results
 
 
+def is_public_minutes_request(method: str, path: str) -> bool:
+    if method.upper() not in {"GET", "HEAD"}:
+        return False
+    return path in PUBLIC_MINUTES_STATIC_PATHS or bool(PUBLIC_MINUTES_DETAIL_PATH_RE.fullmatch(path))
+
+
+def public_minutes_client_key() -> str:
+    real_ip = (request.headers.get("X-Real-IP") or "").strip()
+    forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",", 1)[0].strip()
+    return (real_ip or forwarded_for or request.remote_addr or "unknown")[:128]
+
+
+def enforce_public_minutes_request_limits():
+    if len(request.query_string) > PUBLIC_MINUTES_QUERY_STRING_MAX_BYTES:
+        return jsonify({"ok": False, "error": "検索条件が長すぎます。"}), 400
+    field_limits = {
+        "q": 200,
+        "speaker": 100,
+        "role": 80,
+        "section": 80,
+        "years": 200,
+        "fromDate": 16,
+        "toDate": 16,
+        "cursor": 512,
+    }
+    for field, max_length in field_limits.items():
+        if len(request.args.get(field) or "") > max_length:
+            return jsonify({"ok": False, "error": f"{field} が長すぎます。"}), 400
+
+    if PUBLIC_MINUTES_RATE_LIMIT_PER_MINUTE <= 0:
+        return None
+    now = time.monotonic()
+    cutoff = now - 60.0
+    client_key = public_minutes_client_key()
+    with _PUBLIC_MINUTES_RATE_LOCK:
+        bucket = _PUBLIC_MINUTES_RATE_BUCKETS.setdefault(client_key, deque())
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        if len(bucket) >= PUBLIC_MINUTES_RATE_LIMIT_PER_MINUTE:
+            retry_after = max(1, int(60.0 - (now - bucket[0])))
+            response = jsonify({"ok": False, "error": "アクセスが集中しています。少し待ってから再試行してください。"})
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        bucket.append(now)
+        if len(_PUBLIC_MINUTES_RATE_BUCKETS) > 4096:
+            stale_keys = [
+                key
+                for key, timestamps in _PUBLIC_MINUTES_RATE_BUCKETS.items()
+                if not timestamps or timestamps[-1] <= cutoff
+            ]
+            for key in stale_keys:
+                _PUBLIC_MINUTES_RATE_BUCKETS.pop(key, None)
+    return None
+
+
 @app.before_request
 def enforce_auth():
     if not request.path.startswith('/api/'):
@@ -7483,6 +7560,8 @@ def enforce_auth():
         return None
     if request.method == 'OPTIONS':
         return ('', 204)
+    if is_public_minutes_request(request.method, request.path):
+        return enforce_public_minutes_request_limits()
     status, payload = auth_verify()
     if status >= 400:
         err = payload.get('error') if isinstance(payload, dict) else None
@@ -7493,6 +7572,21 @@ def enforce_auth():
         return None
     g.auth_user = payload.get('user') or {}
     return None
+
+
+@app.after_request
+def add_public_minutes_response_headers(response: Response):
+    if is_public_minutes_request(request.method, request.path):
+        if request.path.endswith("/search"):
+            response.headers.setdefault("Cache-Control", "public, max-age=15, stale-while-revalidate=60")
+        elif PUBLIC_MINUTES_DETAIL_PATH_RE.fullmatch(request.path):
+            response.headers.setdefault("Cache-Control", "public, max-age=300, stale-while-revalidate=1800")
+        else:
+            response.headers.setdefault("Cache-Control", "public, max-age=60, stale-while-revalidate=300")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
 
 
 @app.errorhandler(ValueError)
@@ -7769,6 +7863,7 @@ def api_reference_search():
     return api_search()
 
 
+@app.get('/api/public/minutes/status')
 @app.get('/api/minutes/status')
 def api_minutes_status():
     with db_cursor() as (_, cur):
@@ -7800,24 +7895,28 @@ def api_minutes_status():
         )
         latest_days = cur.fetchall() or []
         latest_compile = latest_minutes_compile_status(cur)
+    is_public = request.path.startswith(PUBLIC_MINUTES_API_PREFIX)
+    latest_run = (
+        {
+            "id": 0 if is_public else int(run["id"]),
+            "status": run["status"],
+            "startedAt": str(run["started_at"]) if run.get("started_at") else None,
+            "finishedAt": str(run["finished_at"]) if run.get("finished_at") else None,
+            "recentDays": 0 if is_public else int(run.get("recent_days") or 0),
+            "summary": {} if is_public else json.loads(run.get("summary_json") or "{}"),
+            "errorText": None if is_public else run.get("error_text"),
+        }
+        if run
+        else None
+    )
     return jsonify(
         {
             "dayCount": day_count,
             "utteranceCount": utterance_count,
             "tableCount": table_count,
             "speakerCount": speaker_count,
-            "latestCompile": latest_compile,
-            "latestRun": {
-                "id": int(run["id"]),
-                "status": run["status"],
-                "startedAt": str(run["started_at"]) if run.get("started_at") else None,
-                "finishedAt": str(run["finished_at"]) if run.get("finished_at") else None,
-                "recentDays": int(run.get("recent_days") or 0),
-                "summary": json.loads(run.get("summary_json") or "{}"),
-                "errorText": run.get("error_text"),
-            }
-            if run
-            else None,
+            "latestCompile": None if is_public else latest_compile,
+            "latestRun": latest_run,
             "latestDays": [
                 {
                     "id": int(row["id"]),
@@ -7850,6 +7949,7 @@ def api_minutes_compile():
     return jsonify({"ok": True, "started": True, "trigger": trigger}), 202
 
 
+@app.get('/api/public/minutes/search')
 @app.get('/api/minutes/search')
 def api_minutes_search():
     query = (request.args.get("q") or "").strip()
@@ -7953,6 +8053,7 @@ def api_minutes_search():
     })
 
 
+@app.get('/api/public/minutes/meetings')
 @app.get('/api/minutes/meetings')
 def api_minutes_meetings():
     with db_cursor() as (_, cur):
@@ -8012,6 +8113,7 @@ def api_minutes_meetings():
     return jsonify({"items": items})
 
 
+@app.get('/api/public/minutes/speakers')
 @app.get('/api/minutes/speakers')
 def api_minutes_speakers():
     role = (request.args.get("role") or "").strip()
@@ -8077,6 +8179,7 @@ def api_minutes_speakers():
     return jsonify({"items": items})
 
 
+@app.get('/api/public/minutes/meetings/<int:meeting_id>')
 @app.get('/api/minutes/meetings/<int:meeting_id>')
 def api_minutes_meeting_detail(meeting_id: int):
     with db_cursor() as (_, cur):
@@ -8184,6 +8287,7 @@ def api_minutes_meeting_detail(meeting_id: int):
     )
 
 
+@app.get('/api/public/minutes/days/<int:day_id>')
 @app.get('/api/minutes/days/<int:day_id>')
 def api_minutes_day_detail(day_id: int):
     with db_cursor() as (_, cur):

@@ -4,6 +4,17 @@ location /mine-city-reiki/ {
   try_files $uri $uri/ /mine-city-reiki/index.html;
 }
 
+location = /mine-city-minutes { return 301 /mine-city-minutes/; }
+location /mine-city-minutes/ {
+  root /var/www/mine-city-reiki;
+  try_files $uri $uri/ /mine-city-minutes/index.html;
+  add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self' data:; form-action 'self'; frame-ancestors 'self'; img-src 'self' data: https:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests" always;
+  add_header Permissions-Policy "camera=(), geolocation=(), microphone=()" always;
+  add_header Referrer-Policy "same-origin" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "SAMEORIGIN" always;
+}
+
 location /mine-city-reiki-api/ {
   proxy_http_version 1.1;
   proxy_set_header Host $host;
