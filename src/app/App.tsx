@@ -51,6 +51,7 @@ const TABS = [
   { id: 'settings', label: '設定', icon: Settings2 },
 ] as const;
 
+const PUBLIC_MINUTES_URL = '/mine-city-minutes/';
 const SEARCH_HISTORY_KEY = 'reiki_search_history';
 const PUBLIC_MINUTES_MODE = isPublicMinutesPage();
 const MINUTES_SEARCH_HISTORY_KEY = PUBLIC_MINUTES_MODE ? 'public_minutes_search_history_v1' : 'minutes_search_history_v1';
@@ -5082,6 +5083,17 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                 </button>
               );
             })}
+            <a
+              href={PUBLIC_MINUTES_URL}
+              target="_blank"
+              rel="noreferrer"
+              title="会議録検索システム（公開）を新しいタブで開く"
+              className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl border border-border bg-background px-4 text-center text-sm font-semibold text-foreground transition hover:border-primary hover:bg-accent"
+            >
+              <ExternalLink className="size-4" aria-hidden="true" />
+              <span>会議録検索システム（公開）</span>
+              <span className="sr-only">を新しいタブで開く</span>
+            </a>
           </div>
         </section>
 
