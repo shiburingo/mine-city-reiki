@@ -4525,6 +4525,42 @@ def normalize_minutes_speaker_name(name: str) -> str:
     return re.sub(r"\s+", "", normalize_text(name))
 
 
+def find_minutes_roster_name_correction(
+    speaker_name: str,
+    speaker_title: str,
+    speaker_role: str,
+    profiles: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Resolve a one-character PDF extraction error against the same-day roster."""
+    normalized_name = normalize_minutes_speaker_name(speaker_name)
+    normalized_title = re.sub(r"\s+", "", normalize_text(speaker_title))
+    if len(normalized_name) < 3 or not normalized_title:
+        return None
+
+    prefix_length = 2 if len(normalized_name) >= 4 else 1
+    candidates: list[dict[str, Any]] = []
+    for profile in profiles.values():
+        if float(profile.get("confidence") or 0) < 0.93:
+            continue
+        if profile.get("profileScope") != "meeting-day":
+            continue
+        if str(profile.get("role") or "") != speaker_role:
+            continue
+        if re.sub(r"\s+", "", normalize_text(profile.get("title") or "")) != normalized_title:
+            continue
+
+        candidate_name = normalize_minutes_speaker_name(profile.get("displayName") or "")
+        if len(candidate_name) != len(normalized_name):
+            continue
+        if candidate_name[:prefix_length] != normalized_name[:prefix_length]:
+            continue
+        if sum(left != right for left, right in zip(candidate_name, normalized_name)) != 1:
+            continue
+        candidates.append(profile)
+
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def fiscal_year_for_date(value: date | datetime | None) -> int:
     if isinstance(value, datetime):
         value = value.date()
@@ -4590,6 +4626,7 @@ def extract_roster_profiles_from_tables(tables: list[Any]) -> dict[str, dict[str
                 "speakerGroup": group,
                 "confidence": confidence,
                 "sourceTableKey": table_key,
+                "profileScope": "meeting-day",
             }
             if current is None or confidence > float(current.get("confidence") or 0):
                 profiles[normalized] = profile
@@ -4605,7 +4642,23 @@ def apply_roster_profiles_to_utterances(
     for utterance in utterances:
         if utterance.speaker_role in {"chair", "secretariat"}:
             continue
-        profile = profiles.get(normalize_minutes_speaker_name(utterance.speaker_name))
+        normalized_name = normalize_minutes_speaker_name(utterance.speaker_name)
+        profile = profiles.get(normalized_name)
+        if not profile:
+            profile = find_minutes_roster_name_correction(
+                utterance.speaker_name,
+                utterance.speaker_title,
+                utterance.speaker_role,
+                profiles,
+            )
+            corrected_name = normalize_text(profile.get("displayName") or "").strip() if profile else ""
+            if corrected_name:
+                original_name = utterance.speaker_name
+                utterance.speaker_name = corrected_name
+                utterance.reason = (
+                    f"{utterance.reason}; same-day roster corrected speaker name "
+                    f"{original_name} -> {corrected_name}"
+                )
         if not profile:
             continue
         role = str(profile.get("role") or "")
@@ -4623,7 +4676,7 @@ def apply_roster_profiles_to_utterances(
         utterance.speaker_group = group
         utterance.speech_type = speech_type_from_role(role)
         utterance.confidence = max(utterance.confidence, float(profile.get("confidence") or 0))
-        utterance.reason = "same-day roster table identifies speaker role"
+        utterance.reason = f"{utterance.reason}; same-day roster table identifies speaker role"
     return reclassify_contextual_utterances(utterances)
 
 
@@ -4678,6 +4731,7 @@ def load_meeting_day_roster_profiles(cur, day_id: int) -> dict[str, dict[str, An
             "role": row.get("role") or "unknown",
             "sourceTableKey": row.get("source_table_key") or "",
             "confidence": float(row.get("confidence") or 0),
+            "profileScope": "meeting-day",
         }
     return profiles
 
@@ -4706,6 +4760,7 @@ def load_meeting_year_speaker_profiles(cur, meeting_date: date | datetime | None
             "role": row.get("role") or "unknown",
             "sourceTableKey": row.get("source_type") or "year-dictionary",
             "confidence": min(0.9, float(row.get("confidence") or 0.75)),
+            "profileScope": "meeting-year",
         }
     return profiles
 
@@ -5176,8 +5231,10 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
             utterance.text,
         )
         search_text_changed = row.get("search_text") != search_text
+        name_changed = row.get("speaker_name") != utterance.speaker_name
         speaker_changed = (
-            row.get("speaker_role") != utterance.speaker_role
+            name_changed
+            or row.get("speaker_role") != utterance.speaker_role
             or row.get("speaker_group") != utterance.speaker_group
             or row.get("speech_type") != utterance.speech_type
         )
@@ -5211,12 +5268,13 @@ def retag_meeting_day_utterances(cur, day_id: int) -> dict[str, int]:
             cur.execute(
                 """
                 UPDATE meeting_utterances
-                SET speaker_id=%s, speaker_role=%s, speaker_group=%s, speech_type=%s,
+                SET speaker_id=%s, speaker_name=%s, speaker_role=%s, speaker_group=%s, speech_type=%s,
                     search_text=%s, confidence=%s, reason=%s, engine_version=%s
                 WHERE id=%s
                 """,
                 (
                     speaker_id,
+                    utterance.speaker_name,
                     utterance.speaker_role,
                     utterance.speaker_group,
                     utterance.speech_type,
