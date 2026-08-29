@@ -86,9 +86,8 @@ ALTER TABLE sync_settings
 ALTER TABLE sync_settings
   ADD COLUMN IF NOT EXISTS browse_nav_json LONGTEXT NULL;
 
-INSERT INTO sync_settings (id, enabled, day_of_month, hour, minute, timezone, source_scope)
-VALUES (1, 0, 1, 3, 0, '+09:00', 'all')
-ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP;
+INSERT IGNORE INTO sync_settings (id, enabled, day_of_month, hour, minute, timezone, source_scope)
+VALUES (1, 0, 1, 3, 0, '+09:00', 'all');
 
 CREATE TABLE IF NOT EXISTS sync_runs (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

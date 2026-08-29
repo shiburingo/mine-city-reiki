@@ -32,7 +32,6 @@ class DailyDictionaryCatchupTests(unittest.TestCase):
         env.update(environment or {})
         with (
             patch.dict(os.environ, env, clear=True),
-            patch.object(run_daily_dictionary_update, "ensure_schema"),
             patch.object(
                 run_daily_dictionary_update,
                 "execute_minutes_dictionary_update",
@@ -121,7 +120,6 @@ class DailyDictionaryCatchupTests(unittest.TestCase):
                 {"REIKI_DAILY_DICTIONARY_CATCHUP_BATCHES": "4"},
                 clear=True,
             ),
-            patch.object(run_daily_dictionary_update, "ensure_schema"),
             patch.object(
                 run_daily_dictionary_update,
                 "execute_minutes_dictionary_update",

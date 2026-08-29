@@ -6,7 +6,6 @@ import sys
 from typing import Any
 
 from app import (
-    ensure_schema,
     execute_dictionary_compile,
     execute_internet_dictionary_update,
     execute_minutes_dictionary_update,
@@ -35,7 +34,6 @@ def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def main() -> int:
-    ensure_schema()
     summaries: list[dict[str, Any]] = []
     batch_size = env_int("REIKI_DAILY_DICTIONARY_MINUTES_BATCH", 3000, 100, 10000)
     summaries.append(execute_minutes_dictionary_update(batch_size=batch_size))

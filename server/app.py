@@ -393,7 +393,23 @@ def ensure_fulltext_index(cur, table: str, index_name: str, columns: str) -> Non
 
 
 def ensure_enum_values(cur, table: str, column: str, values: list[str]) -> None:
-    enum_values = ",".join([f"'{v}'" for v in values])
+    escaped_values = [value.replace("'", "''") for value in values]
+    enum_values = ",".join(f"'{value}'" for value in escaped_values)
+    expected_type = f"enum({enum_values})".lower()
+    cur.execute(
+        """
+        SELECT COLUMN_TYPE, IS_NULLABLE
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+        """,
+        (CFG.db_name, table, column),
+    )
+    current = cur.fetchone() or {}
+    if (
+        str(current.get("COLUMN_TYPE") or "").lower() == expected_type
+        and str(current.get("IS_NULLABLE") or "").upper() == "NO"
+    ):
+        return
     cur.execute(f"ALTER TABLE `{table}` MODIFY COLUMN `{column}` ENUM({enum_values}) NOT NULL")
 
 
@@ -1538,6 +1554,22 @@ def clear_local_caches() -> None:
 
 def get_compiled_dictionary_path() -> Path:
     return compiled_dictionary_path(os.getenv("REIKI_SYNONYM_COMPILED_PATH") or None)
+
+
+def compile_synonym_dictionary_snapshot(
+    *,
+    min_priority: int = 1,
+    max_edges_per_term: int = 64,
+) -> dict[str, Any]:
+    # Compilation can take tens of seconds. Close its consistent-read transaction
+    # before touching sync_settings so hourly schema checks cannot invalidate it.
+    with db_cursor() as (_, cur):
+        return compile_synonym_dictionary(
+            cur,
+            output_path=get_compiled_dictionary_path(),
+            min_priority=min_priority,
+            max_edges_per_term=max_edges_per_term,
+        )
 
 
 def get_cache_generation(cur) -> int:
@@ -4256,10 +4288,10 @@ def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool
             )
             summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
             update_sync_run_summary(cur, run_id, summary)
-            summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
+        summary['compiledDictionary'] = compile_synonym_dictionary_snapshot()
+        with db_cursor(commit=True) as (_, cur):
             bump_cache_generation(cur)
             prune_expired_caches(cur)
-        with db_cursor(commit=True) as (_, cur):
             set_sync_run_status(cur, run_id, 'success', summary, None)
         return summary
     except Exception as exc:
@@ -4334,10 +4366,10 @@ def execute_internet_dictionary_update(
         summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
         with db_cursor(commit=True) as (_, cur):
             update_sync_run_summary(cur, run_id, summary)
-            summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
+        summary['compiledDictionary'] = compile_synonym_dictionary_snapshot()
+        with db_cursor(commit=True) as (_, cur):
             bump_cache_generation(cur)
             prune_expired_caches(cur)
-        with db_cursor(commit=True) as (_, cur):
             set_sync_run_status(cur, run_id, 'success', summary, None)
         return summary
     except Exception as exc:
@@ -4405,8 +4437,8 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
     try:
         if total == 0:
             summary['progressLabel'] = '未抽出の会議録はありません'
+            summary['compiledDictionary'] = compile_synonym_dictionary_snapshot()
             with db_cursor(commit=True) as (_, cur):
-                summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
                 bump_cache_generation(cur)
                 set_sync_run_status(cur, run_id, 'success', summary, None)
             return summary
@@ -4441,8 +4473,9 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
             summary['progressCurrent'] = total
             summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
             update_sync_run_summary(cur, run_id, summary)
-            summary['compiledDictionary'] = compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
-            summary['progressLabel'] = '会議録固有名詞辞書作成が完了しました'
+        summary['compiledDictionary'] = compile_synonym_dictionary_snapshot()
+        summary['progressLabel'] = '会議録固有名詞辞書作成が完了しました'
+        with db_cursor(commit=True) as (_, cur):
             bump_cache_generation(cur)
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
@@ -4486,13 +4519,11 @@ def execute_dictionary_compile(min_priority: int = 1, max_edges_per_term: int = 
         'progressLabel': '検索用関連語辞書をコンパイルしています',
     }
     try:
+        compiled = compile_synonym_dictionary_snapshot(
+            min_priority=min_priority,
+            max_edges_per_term=max_edges_per_term,
+        )
         with db_cursor(commit=True) as (_, cur):
-            compiled = compile_synonym_dictionary(
-                cur,
-                output_path=get_compiled_dictionary_path(),
-                min_priority=min_priority,
-                max_edges_per_term=max_edges_per_term,
-            )
             summary.update(compiled)
             summary['progressCurrent'] = 1
             summary['progressLabel'] = '検索用関連語辞書のコンパイルが完了しました'
@@ -9071,7 +9102,8 @@ def api_synonyms_create():
             (canonical, synonym, priority, priority),
         )
         new_id = int(cur.lastrowid) if cur.lastrowid else 0
-        compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
+    compile_synonym_dictionary_snapshot()
+    with db_cursor(commit=True) as (_, cur):
         bump_cache_generation(cur)
     clear_local_caches()
     return jsonify({'id': new_id, 'canonicalTerm': canonical, 'synonymTerm': synonym, 'priority': priority, 'isActive': True, 'sourceType': 'manual', 'sourceVersion': ''})
@@ -9083,7 +9115,8 @@ def api_synonyms_delete(synonym_id: int):
         cur.execute("DELETE FROM law_synonyms WHERE id=%s", (synonym_id,))
         if cur.rowcount == 0:
             raise ValueError('同義語が見つかりません。')
-        compile_synonym_dictionary(cur, output_path=get_compiled_dictionary_path())
+    compile_synonym_dictionary_snapshot()
+    with db_cursor(commit=True) as (_, cur):
         bump_cache_generation(cur)
     clear_local_caches()
     return jsonify({'ok': True})

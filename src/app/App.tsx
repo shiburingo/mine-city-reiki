@@ -5279,8 +5279,8 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                     syncRuns.slice(0, 3).map((run) => (
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium">{run.runType === 'scheduled' ? '定期同期' : '手動同期'}</span>
-                          <span className={run.status === 'failed' ? 'text-red-600' : 'text-emerald-700'}>{run.status}</span>
+                          <span className="font-medium">{syncRunLabel(run)}</span>
+                          <span className={run.status === 'failed' ? 'text-red-600' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status}</span>
                         </div>
                         <p className="mt-2 text-muted-foreground">開始: {formatDateTime(run.startedAt)}</p>
                         <p className="text-muted-foreground">終了: {formatDateTime(run.finishedAt)}</p>
