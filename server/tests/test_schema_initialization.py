@@ -11,6 +11,27 @@ import app
 
 
 class SchemaInitializationTests(unittest.TestCase):
+    def test_database_advisory_lock_helpers_use_named_lock(self) -> None:
+        cur = MagicMock()
+        cur.fetchone.return_value = {"locked": 1}
+        cursor_context = MagicMock()
+        cursor_context.__enter__.return_value = cur
+        cursor_context.__exit__.return_value = False
+        conn = MagicMock()
+        conn.cursor.return_value = cursor_context
+
+        self.assertTrue(app.acquire_db_advisory_lock(conn, "schema-lock", 120))
+        app.release_db_advisory_lock(conn, "schema-lock")
+
+        self.assertEqual(
+            cur.execute.call_args_list[0].args,
+            ("SELECT GET_LOCK(%s, %s) AS locked", ("schema-lock", 120)),
+        )
+        self.assertEqual(
+            cur.execute.call_args_list[1].args,
+            ("SELECT RELEASE_LOCK(%s)", ("schema-lock",)),
+        )
+
     def test_sync_settings_seed_does_not_update_existing_row(self) -> None:
         schema = (Path(app.__file__).parent / "schema.mariadb.sql").read_text(encoding="utf-8")
 

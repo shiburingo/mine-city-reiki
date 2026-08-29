@@ -335,6 +335,17 @@ def execute_sql_script(cur, sql_text: str) -> None:
                 cur.execute(statement)
 
 
+def acquire_db_advisory_lock(conn, lock_name: str, timeout_seconds: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT GET_LOCK(%s, %s) AS locked", (lock_name, timeout_seconds))
+        return int((cur.fetchone() or {}).get("locked") or 0) == 1
+
+
+def release_db_advisory_lock(conn, lock_name: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+
+
 def ensure_index(cur, table: str, index_name: str, definition: str) -> None:
     cur.execute(
         """
@@ -427,7 +438,13 @@ def ensure_schema() -> None:
             conn.commit()
     except Exception:
         pass
-    with db_connect(with_database=True) as conn:
+    conn = db_connect(with_database=True)
+    schema_lock_name = f"mine_city_reiki_schema_init:{CFG.db_name}"[:64]
+    schema_lock_acquired = False
+    try:
+        schema_lock_acquired = acquire_db_advisory_lock(conn, schema_lock_name, 120)
+        if not schema_lock_acquired:
+            raise TimeoutError("Timed out waiting for the database schema initialization lock")
         with conn.cursor() as cur:
             execute_sql_script(cur, sql_text)
             ensure_column(cur, "law_documents", "search_tokens", "search_tokens LONGTEXT NOT NULL DEFAULT '' AFTER normalized_title")
@@ -959,6 +976,16 @@ def ensure_schema() -> None:
             ensure_fulltext_index(cur, "meeting_compiled_utterances", "ft_minutes_compiled_body_text", "(body_search_text)")
             seed_law_synonyms(cur)
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if schema_lock_acquired:
+            try:
+                release_db_advisory_lock(conn, schema_lock_name)
+            except Exception:
+                pass
+        conn.close()
 
 
 @contextmanager
