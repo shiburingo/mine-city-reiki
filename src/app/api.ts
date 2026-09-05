@@ -32,8 +32,14 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+const minutesRequests = new Map<string, Promise<unknown>>();
+
 function minutesReadFetch<T>(path = ''): Promise<T> {
-  return apiFetch<T>(`${MINUTES_READ_API_PREFIX}${path}`);
+  const pending = minutesRequests.get(path);
+  if (pending) return pending as Promise<T>;
+  const request = apiFetch<T>(`${MINUTES_READ_API_PREFIX}${path}`).finally(() => minutesRequests.delete(path));
+  minutesRequests.set(path, request);
+  return request;
 }
 
 export async function fetchHealth() {
@@ -295,4 +301,9 @@ export async function fetchMinutesMeetingDetail(meetingId: number): Promise<Minu
 
 export async function fetchMinutesDayDetail(dayId: number): Promise<MinutesDayDetail> {
   return minutesReadFetch<MinutesDayDetail>(`/days/${dayId}`);
+}
+
+export async function fetchMinutesUtteranceText(dayId: number, utteranceId: number): Promise<string> {
+  const data = await minutesReadFetch<{ text: string }>(`/days/${dayId}?utteranceId=${utteranceId}`);
+  return data.text;
 }

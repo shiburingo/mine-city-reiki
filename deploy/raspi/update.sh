@@ -7,6 +7,10 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url ori
 else
   echo '[mine-city-reiki] git pull skipped (no origin configured)'
 fi
+if [ -n "${EXPECTED_REVISION:-}" ] && [ "$(git rev-parse HEAD)" != "${EXPECTED_REVISION}" ]; then
+  echo '[mine-city-reiki] unexpected revision; deployment stopped before build/restart' >&2
+  exit 1
+fi
 for generated_dir in node_modules dist; do
   if [ -d "${generated_dir}" ]; then
     legacy_owner="$(find "${generated_dir}" \( ! -uid "$(id -u)" -o ! -gid "$(id -g)" \) -print -quit)"
@@ -24,6 +28,18 @@ fi
 cd "${APP_DIR}/server"
 source venv/bin/activate
 pip install -q -r requirements.txt
+# Prepare the read-only minutes accelerator before new API workers are started.
+service_user="$(systemctl show mine-city-reiki-api.service --property=User --value)"
+service_group="$(systemctl show mine-city-reiki-api.service --property=Group --value)"
+compile_properties=(--property=EnvironmentFile=/etc/mine-city-reiki-api.env --property="WorkingDirectory=${APP_DIR}/server")
+if [ -n "${service_user}" ]; then
+  compile_properties+=(--property="User=${service_user}")
+fi
+if [ -n "${service_group}" ]; then
+  compile_properties+=(--property="Group=${service_group}")
+fi
+sudo systemd-run --wait --pipe --collect "${compile_properties[@]}" \
+  /usr/bin/env DB_AUTO_INIT=0 "${APP_DIR}/server/venv/bin/python" rebuild_minutes_search.py --if-needed --allow-empty
 if [ -f "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.service" ] && [ -f "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.timer" ]; then
   sudo install -m 0644 "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.service" /etc/systemd/system/mine-city-reiki-dictionary.service
   sudo install -m 0644 "${APP_DIR}/deploy/systemd/mine-city-reiki-dictionary.timer" /etc/systemd/system/mine-city-reiki-dictionary.timer

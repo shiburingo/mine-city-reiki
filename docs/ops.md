@@ -186,7 +186,36 @@ Meilisearchの削除タスクは要求件数と実削除件数を照合し、不
 ### 会議録同期とコンパイル
 
 - 「会議録のみ差分同期」は元WebページのPDF URL・内容ハッシュを比較し、追加・変更日程だけを再抽出します。
-- 同期成功後は全会議録を新しい世代へコンパイルし、軽量検索テーブル、日程閲覧JSON、Meilisearch専用索引を作り直します。
+- 同期成功後は全会議録を新しい世代へコンパイルし、軽量検索テーブル、日程閲覧JSON、SQLite FTS5文字索引を作り直します。
+
+### 2026-09-05 検索索引の移行
+
+`deploy/raspi/update.sh` はAPI再起動前に有効な会議録世代の検索索引を確認し、未作成・旧形式なら生成します。既存索引が正常なら再作成しません。PDF再取得、再タグ付け、辞書再構築は不要です。`server/rebuild_minutes_search.py` はDBを読み取るだけで、検索用の派生ファイルを生成します。手動で強制作成する場合は次を使用します。
+
+```bash
+cd /opt/mine-city-reiki
+sudo systemd-run --wait --pipe --collect \
+  --property=EnvironmentFile=/etc/mine-city-reiki-api.env \
+  --property=WorkingDirectory=/opt/mine-city-reiki/server \
+  /usr/bin/env DB_AUTO_INIT=0 /opt/mine-city-reiki/server/venv/bin/python rebuild_minutes_search.py
+```
+
+稼働サービスに `User` / `Group` が指定されている場合は、上記にも同じプロパティを追加してください。出力先は `REIKI_MINUTES_SEARCH_DIR`（未指定なら `server/data/minutes-search`）。親ディレクトリが作成・書込可能で、生成ファイルをAPIユーザーが読めることを確認します。`ProtectSystem` を緩めず、必要な派生データディレクトリだけを `ReadWritePaths` に指定します。
+
+出力の `documents` を有効世代の `meeting_compiled_utterances` 件数と照合し、通常の更新手順でAPIを再起動してください。必要ディスク容量は新旧の検索索引と作成中ファイルの分を確保します。起動時に全件作成はしません。ファイルがない・破損している場合もDB照合で動きますが、遅くなる可能性があります。
+
+再起動後はサービス状態、公開APIの200応答、AND/OR、同じ語を逆順にした関連語検索、無制限の次ページ、本文展開の末尾、gzip応答を確認します。通常検索と無制限の先頭60件が同じであることも確認してください。旧コードへ戻す場合は旧Meilisearch索引が対応する世代か確認し、不一致なら旧コードの索引再構築が必要です。新旧の検索ファイルや旧Meilisearch索引を移行直後に手動削除しないでください。
+
+ローカル検証は `server` を作業ディレクトリにして実行します。
+
+```bash
+cd server
+DB_AUTO_INIT=0 venv/bin/python -m unittest discover -s tests
+venv/bin/python benchmark_minutes_search.py data/search-validation/minutes.jsonl.gz \
+  --output-dir data/search-validation/index --dictionary data/search-validation/dictionary.json
+```
+
+ベンチマークの入力は先頭行が `{"compileId":世代ID}`、以降が `meeting_compiled_utterances` のJSON行のgzipファイルです。原語ごとの出典付き辞書エッジを別JSONで渡せます。全件文字列照合との集合比較を先に行い、検索のみを5回測定します。これはネットワーク・認証・DB接続・画面描画を含まない測定です。
 - 新世代は全処理成功後だけ有効化します。有効世代と直前の成功世代を残し、失敗時は旧世代で検索・閲覧を継続します。
 - 再タグ付けはPDFを再取得せず、年度別話者辞書、会議日名簿、状態機械、最新ルールを全発言へ再適用します。
 

@@ -1,6 +1,7 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader, ThemeToggle, usePortalUi } from '@mine-troutfarm/ui';
+import { MinutesResultBody } from './MinutesResultBody';
 import {
   askQuestion,
   buildDocumentsCsvUrl,
@@ -1368,7 +1369,6 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
   const [minutesSyncing, setMinutesSyncing] = useState(false);
   const [selectedMinutesResult, setSelectedMinutesResult] = useState<MinutesSearchResult | null>(null);
   const [minutesDayDetail, setMinutesDayDetail] = useState<MinutesDayDetail | null>(null);
-  const [minutesDetailLoading, setMinutesDetailLoading] = useState(false);
   const [selectedMinutesMeetingDetail, setSelectedMinutesMeetingDetail] = useState<MinutesMeetingDetail | null>(null);
   const [selectedMinutesMeetingDayId, setSelectedMinutesMeetingDayId] = useState<number | null>(null);
   const [minutesMeetingDetailLoading, setMinutesMeetingDetailLoading] = useState(false);
@@ -1691,10 +1691,15 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
   }, [selectedDoc, pendingSelectedArticleHit]);
 
   useEffect(() => {
-    if (tab !== 'minutes') return;
-    if (selectedMinutesResult && minutesDayDetail?.id === selectedMinutesResult.dayId) return;
-    void loadMinutesDay(selectedMinutesResult);
-  }, [tab, selectedMinutesResult?.dayId, minutesDayDetail?.id]);
+    const dayId = selectedMinutesResult?.dayId;
+    if (tab !== 'minutes' || minutesPage !== 'detail' || !dayId) return;
+    let current = true;
+    fetchMinutesDayDetail(dayId).then(
+      (detail) => { if (current) setMinutesDayDetail(detail); },
+      () => { if (current) setMinutesDayDetail(null); },
+    );
+    return () => { current = false; };
+  }, [tab, minutesPage, selectedMinutesResult?.dayId]);
 
   useEffect(() => {
     return () => {
@@ -2475,22 +2480,6 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-  }
-
-  async function loadMinutesDay(result: MinutesSearchResult | null) {
-    if (!result) {
-      setMinutesDayDetail(null);
-      return;
-    }
-    setMinutesDetailLoading(true);
-    try {
-      const detail = await fetchMinutesDayDetail(result.dayId);
-      setMinutesDayDetail(detail);
-    } catch {
-      setMinutesDayDetail(null);
-    } finally {
-      setMinutesDetailLoading(false);
-    }
   }
 
   async function loadRelatedArticles(doc: DocumentDetail) {
@@ -3879,7 +3868,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
         </div>
         {expanded ? (
           <div className="mt-4 rounded-2xl border bg-[#f8fbf8] p-4 text-sm leading-7">
-            {renderMinutesText(result.text, 'text-sm leading-7', minutesExactHighlightTerms(result), minutesRelatedHighlightTerms(result))}
+            <MinutesResultBody result={result} renderText={(text) => renderMinutesText(text, 'text-sm leading-7', minutesExactHighlightTerms(result), minutesRelatedHighlightTerms(result))} />
           </div>
         ) : null}
       </article>

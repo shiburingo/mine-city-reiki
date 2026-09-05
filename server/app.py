@@ -4,6 +4,7 @@ import csv
 import base64
 import html as html_lib
 import hashlib
+import gzip
 import io
 import json
 import os
@@ -29,6 +30,11 @@ from pymysql.cursors import DictCursor
 from werkzeug.exceptions import HTTPException
 
 from meeting_minutes.crawler import crawl_minutes_pdfs
+from meeting_minutes.search import (
+    SEARCH_VERSION as MINUTES_SEARCH_VERSION, EXACT_EXECUTIVE_TITLE_FILTERS, build_snapshot, flatten_groups,
+    presence_sql as minutes_presence_sql, query_groups as minutes_query_groups,
+    score_sql as minutes_group_score_sql, search_snapshot,
+)
 from meeting_minutes.pdf_extractor import download_pdf, extract_pdf_from_bytes
 from meeting_minutes.speaker_tagger import ENGINE_VERSION as SPEAKER_ENGINE_VERSION
 from meeting_minutes.speaker_tagger import TaggedUtterance, classify_speaker, reclassify_contextual_utterances, speech_type_from_role, tag_utterances
@@ -1661,6 +1667,21 @@ def scored_synonyms_map(cur=None) -> Any:
     }
     LOCAL_SCORED_SYNONYM_CACHE = (now, result)
     return result
+
+
+def minutes_synonym_edges(cur, term: str) -> list[tuple[str, int, str]]:
+    dictionary = scored_synonyms_map(cur)
+    if hasattr(dictionary, "get_search_edges"):
+        return dictionary.get_search_edges(term)
+    # Older JSON snapshots do not expose provenance. Read only this term's
+    # edges rather than treating automatically extracted topics as synonyms.
+    cur.execute(
+        """SELECT canonical_term, synonym_term, priority, source_type FROM law_synonyms
+           WHERE is_active=1 AND priority>=8 AND (canonical_term=%s OR synonym_term=%s)""",
+        (term, term),
+    )
+    return [(row["synonym_term"] if row["canonical_term"] == term else row["canonical_term"],
+             int(row["priority"]), row["source_type"]) for row in (cur.fetchall() or [])]
 
 
 def make_content_hash(text: str) -> str:
@@ -5754,7 +5775,56 @@ def serialize_minutes_content_items(utterances: list[dict[str, Any]], tables: li
     return items
 
 
-MINUTES_COMPILE_ENGINE_VERSION = f"minutes-compile:{APP_VERSION}:{SPEAKER_ENGINE_VERSION}:{TABLE_ENGINE_VERSION}:meili-v1"
+MINUTES_COMPILE_ENGINE_VERSION = f"minutes-compile:{APP_VERSION}:{SPEAKER_ENGINE_VERSION}:{TABLE_ENGINE_VERSION}:{MINUTES_SEARCH_VERSION}"
+
+
+def minutes_search_snapshot_root() -> Path:
+    return Path(os.getenv("REIKI_MINUTES_SEARCH_DIR") or Path(__file__).parent / "data" / "minutes-search")
+
+
+def compile_minutes_search_snapshot(version_id: int | None = None) -> dict[str, Any]:
+    with db_cursor() as (_, cur):
+        version_id = version_id or active_minutes_compile_version_id(cur)
+        if not version_id:
+            raise ValueError("有効な会議録コンパイルがありません。先に会議録をコンパイルしてください。")
+        cur.execute("SELECT COUNT(*) AS cnt FROM meeting_compiled_utterances WHERE version_id=%s", (version_id,))
+        expected = int(cur.fetchone()["cnt"])
+
+        def rows():
+            last_id = 0
+            count = 0
+            while True:
+                cur.execute(
+                    """SELECT utterance_id, day_id, session_id, meeting_date, section, meeting_name, day_title,
+                              pdf_url, page_url, utterance_order, speaker_name, speaker_title, speaker_role,
+                              speech_type, page_start, page_end, position_top_start, position_top_end, body_search_text
+                       FROM meeting_compiled_utterances WHERE version_id=%s AND utterance_id>%s
+                       ORDER BY utterance_id LIMIT 500""", (version_id, last_id),
+                )
+                batch = cur.fetchall() or []
+                if not batch:
+                    break
+                for row in batch:
+                    count += 1
+                    yield row
+                last_id = int(batch[-1]["utterance_id"])
+            if count != expected:
+                raise RuntimeError("会議録検索索引の件数検証に失敗しました。")
+
+        return build_snapshot(rows(), minutes_search_snapshot_root(), version_id)
+
+
+def prune_minutes_search_snapshots() -> None:
+    with db_cursor() as (_, cur):
+        cur.execute("SELECT id FROM meeting_compile_versions")
+        ids = {int(row["id"]) for row in (cur.fetchall() or [])}
+        keep = {f"minutes-search-{version_id}.sqlite3" for version_id in ids}
+        high_water = max(ids, default=0)
+    for path in minutes_search_snapshot_root().glob("minutes-search-*.sqlite3"):
+        match = re.fullmatch(r"minutes-search-([0-9]+)\.sqlite3", path.name)
+        # Do not delete a generation created by another compiler after the read.
+        if match and int(match[1]) <= high_water and path.name not in keep:
+            path.unlink(missing_ok=True)
 
 
 def active_minutes_compile_version_id(cur) -> int | None:
@@ -6016,19 +6086,9 @@ def execute_minutes_compile(trigger: str = "manual") -> dict[str, Any]:
                 update_sync_run_summary(cur, run_id, summary)
                 cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
 
-        if meili_is_enabled():
-            try:
-                with db_cursor(commit=True) as (_, cur):
-                    summary["progressLabel"] = "会議録検索インデックスを作成しています"
-                    update_sync_run_summary(cur, run_id, summary)
-                    cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
-                indexed = index_meili_minutes_compile(version_id)
-                summary["meiliMinutesIndexed"] = indexed
-            except Exception as exc:
-                # The compiled MySQL generation remains a complete fallback. Do not make
-                # a transient search-engine failure take the minutes reader offline.
-                summary["meiliMinutesError"] = str(exc)
-                app.logger.exception("Meeting minutes Meilisearch indexing failed; MySQL fallback remains active")
+        summary["progressLabel"] = "本文全体の高速検索索引を作成しています"
+        update_minutes_compile_run_summary(run_id, version_id, summary)
+        summary["searchSnapshot"] = compile_minutes_search_snapshot(version_id)
 
         with db_cursor(commit=True) as (_, cur):
             summary["progressCurrent"] = summary["progressTotal"]
@@ -6049,6 +6109,10 @@ def execute_minutes_compile(trigger: str = "manual") -> dict[str, Any]:
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, "success", summary, None)
             cur.execute("UPDATE meeting_compile_versions SET summary_json=%s WHERE id=%s", (json.dumps(summary, ensure_ascii=False), version_id))
+        try:
+            prune_minutes_search_snapshots()
+        except Exception:
+            app.logger.warning("Old minutes search snapshots could not be pruned", exc_info=True)
         return summary
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
@@ -6161,6 +6225,8 @@ def encode_minutes_cursor(row: dict[str, Any]) -> str:
         "day": int(row.get("day_id") or row.get("dayId") or 0),
         "o": int(row.get("utterance_order") or row.get("order") or 0),
         "u": int(row.get("utterance_id") or row.get("id") or 0),
+        "s": int(row.get("match_score") or row.get("matchScore") or 0),
+        "scope": str(row.get("search_scope") or row.get("searchScope") or ""),
     }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -6181,6 +6247,8 @@ def decode_minutes_cursor(value: str) -> dict[str, Any] | None:
             "day_id": max(0, int(payload.get("day") or 0)),
             "utterance_order": max(0, int(payload.get("o") or 0)),
             "utterance_id": max(0, int(payload.get("u") or 0)),
+            "match_score": max(0, int(payload.get("s") or 0)),
+            "search_scope": str(payload.get("scope") or ""),
         }
     except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return None
@@ -6211,17 +6279,6 @@ def minutes_cursor_filter(
     )
 
 
-EXACT_EXECUTIVE_TITLE_FILTERS = {
-    "市長",
-    "副市長",
-    "教育長",
-    "病院事業管理者",
-    "代表監査委員",
-    "会計管理者",
-    "消防長",
-}
-
-
 def append_minutes_role_filter(
     conditions: list[str],
     params: list[Any],
@@ -6246,17 +6303,6 @@ def append_minutes_role_filter(
     params.append(role)
 
 
-def minutes_boolean_query(terms: list[str], fallback: str, require_all: bool = True) -> str:
-    tokens = terms or ([normalize_text(fallback)] if normalize_text(fallback) else [])
-    safe_tokens: list[str] = []
-    for token in tokens:
-        value = re.sub(r'[+\-<>()~*"@]+', " ", token).strip()
-        if len(value) >= 2:
-            prefix = "+" if require_all else ""
-            safe_tokens.append(f"{prefix}{value}*")
-    return " ".join(safe_tokens)
-
-
 def append_minutes_query_filter(
     conditions: list[str],
     params: list[Any],
@@ -6266,52 +6312,15 @@ def append_minutes_query_filter(
     op: str,
     use_fulltext: bool,
     search_column: str = "u.search_text",
+    term_groups=None,
 ) -> None:
-    normalized_query = normalize_text(query)
-    if not normalized_query:
+    if not normalize_text(query):
         return
-    if use_fulltext:
-        boolean_query = minutes_boolean_query(terms, normalized_query, require_all=match_mode == "exact" and op != "OR")
-        if not boolean_query:
-            return
-        conditions.append(
-            f"MATCH({search_column}) AGAINST (%s IN BOOLEAN MODE)"
-        )
-        params.append(boolean_query)
-        # MySQL FULLTEXT/ngram can return broad Japanese candidates for
-        # katakana and short terms. Keep FULLTEXT as the fast candidate source,
-        # but require at least one expanded term to exist in the actual text.
-        presence_terms = _dedupe_terms(terms, limit=16)
-        if presence_terms:
-            presence_conditions: list[str] = []
-            for term in presence_terms:
-                presence_conditions.append(f"{search_column} LIKE %s")
-                params.append(f"%{term}%")
-            presence_joiner = " AND " if match_mode == "exact" and op != "OR" else " OR "
-            conditions.append("(" + presence_joiner.join(presence_conditions) + ")")
-        return
-
-    if match_mode == "exact":
-        exact_terms = _dedupe_terms(terms or [normalized_query], limit=16)
-        if not exact_terms:
-            return
-        term_conditions: list[str] = []
-        for term in exact_terms:
-            term_conditions.append(f"{search_column} LIKE %s")
-            params.append(f"%{term}%")
-        joiner = " OR " if op == "OR" else " AND "
-        conditions.append("(" + joiner.join(term_conditions) + ")")
-        return
-
-    if not terms:
-        return
-    term_conditions: list[str] = []
-    for term in terms:
-        like = f"%{term}%"
-        term_conditions.append(f"{search_column} LIKE %s")
-        params.append(like)
-    joiner = " OR " if op == "OR" or match_mode == "related" else " AND "
-    conditions.append("(" + joiner.join(term_conditions) + ")")
+    # Never relax the user's predicate, even when the accelerator is unavailable.
+    groups = term_groups if term_groups is not None else minutes_query_groups(query)
+    clause, values = minutes_presence_sql(groups, op, search_column, "%s")
+    conditions.append(f"({clause})")
+    params.extend(values)
 
 
 def build_minutes_where(
@@ -6331,17 +6340,18 @@ def build_minutes_where(
     speaker_exact_only: bool = True,
     use_search_index: bool = False,
     search_column: str = "u.search_text",
+    term_groups=None,
 ) -> tuple[str, list[Any]]:
     conditions = ["1=1"]
     params: list[Any] = []
-    append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext, search_column)
+    append_minutes_query_filter(conditions, params, query, terms, match_mode, op, use_fulltext, search_column, term_groups)
     if speaker:
         if speaker_exact_only:
             conditions.append("u.speaker_name=%s")
             params.append(speaker)
         else:
-            conditions.append("(u.speaker_name=%s OR u.speaker_title=%s OR u.speaker_name LIKE %s OR u.speaker_title LIKE %s)")
-            params.extend([speaker, speaker, f"%{speaker}%", f"%{speaker}%"])
+            conditions.append("(INSTR(u.speaker_name,%s)>0 OR INSTR(u.speaker_title,%s)>0)")
+            params.extend([speaker, speaker])
     append_minutes_role_filter(conditions, params, role, "u.speaker_role", "u.speaker_title")
     if section and section != "all":
         conditions.append(("u.section" if use_search_index else "s.section") + "=%s")
@@ -6420,175 +6430,6 @@ def fetch_minutes_exchange_windows(cur, rows: list[dict[str, Any]]) -> dict[int,
     return grouped
 
 
-def meili_minutes_search_index(payload: dict[str, Any]) -> dict[str, Any]:
-    return meili_request(
-        "POST",
-        f"/indexes/{urllib.parse.quote(CFG.meili_minutes_index)}/search",
-        payload,
-        timeout=5,
-    )
-
-
-def meili_minutes_filters(
-    compile_version_id: int,
-    speaker: str,
-    role: str,
-    section: str,
-    from_date: str,
-    to_date: str,
-    years: list[int] | None,
-    meeting_id: int | None,
-    day_id: int | None,
-) -> list[str] | None:
-    if role.startswith("title:"):
-        # Partial role matching remains on MySQL because Meilisearch filters are
-        # exact by design. Returning None keeps behavior identical during rollout.
-        return None
-    filters = [f"compileVersionId = {int(compile_version_id)}"]
-    if speaker:
-        filters.append(f"speakerName = {json.dumps(speaker, ensure_ascii=False)}")
-    if role and role != "all":
-        filters.append(f"speakerRole = {json.dumps(role, ensure_ascii=False)}")
-    if section and section != "all":
-        filters.append(f"section = {json.dumps(section, ensure_ascii=False)}")
-    if meeting_id:
-        filters.append(f"sessionId = {int(meeting_id)}")
-    if day_id:
-        filters.append(f"dayId = {int(day_id)}")
-    if years:
-        filters.append("calendarYear IN [" + ",".join(str(int(year)) for year in years) + "]")
-    if from_date:
-        filters.append(f"meetingDate >= {json.dumps(from_date)}")
-    if to_date:
-        filters.append(f"meetingDate <= {json.dumps(to_date)}")
-    return filters
-
-
-def meili_minutes_hit_text(hit: dict[str, Any], include_speaker_meta: bool) -> str:
-    values = [str(hit.get("bodyPlain") or "")]
-    if include_speaker_meta:
-        values.extend([str(hit.get("speakerTitle") or ""), str(hit.get("speakerName") or "")])
-    return normalize_text(" ".join(values)).lower()
-
-
-def meili_minutes_hit_matches_exact(hit: dict[str, Any], terms: list[str], include_speaker_meta: bool) -> bool:
-    haystack = meili_minutes_hit_text(hit, include_speaker_meta)
-    return all(normalize_text(term).lower() in haystack for term in terms if normalize_text(term))
-
-
-def serialize_meili_minutes_hit(
-    hit: dict[str, Any],
-    base_terms: list[str],
-    related_terms: list[str],
-    include_speaker_meta: bool,
-) -> dict[str, Any]:
-    body = clean_link_marker_fragments(hit.get("bodyPlain") or hit.get("textPreview") or "")
-    body_lower = normalize_text(body).lower()
-    exact_terms = [term for term in base_terms if normalize_text(term).lower() in body_lower]
-    related = [term for term in related_terms if normalize_text(term).lower() in body_lower]
-    hit_scope = "body" if exact_terms or related or not include_speaker_meta else "speaker"
-    return {
-        "id": int(hit.get("utteranceId") or 0),
-        "dayId": int(hit.get("dayId") or 0),
-        "meetingDate": hit.get("meetingDate") or None,
-        "section": hit.get("section") or "",
-        "meetingName": hit.get("meetingName") or "",
-        "dayTitle": hit.get("dayTitle") or "",
-        "pdfUrl": hit.get("pdfUrl") or "",
-        "pageUrl": hit.get("pageUrl") or "",
-        "speakerName": hit.get("speakerName") or "",
-        "speakerTitle": hit.get("speakerTitle") or "",
-        "speakerRole": hit.get("speakerRole") or "unknown",
-        "speechType": hit.get("speechType") or "statement",
-        "order": int(hit.get("utteranceOrder") or 0),
-        "pageStart": int(hit.get("pageStart") or 0),
-        "pageEnd": int(hit.get("pageEnd") or 0),
-        "positionTopStart": float(hit.get("positionTopStart") or 0),
-        "positionTopEnd": float(hit.get("positionTopEnd") or 0),
-        "snippet": minutes_snippet(body, [*base_terms, *related_terms]),
-        "text": body,
-        "exchange": [],
-        "highlightTerms": base_terms,
-        "relatedHighlightTerms": related_terms,
-        "hitScope": hit_scope,
-    }
-
-
-def search_minutes_meili_items(
-    compile_version_id: int,
-    query: str,
-    base_terms: list[str],
-    weighted_terms: list[tuple[str, int]],
-    speaker: str,
-    role: str,
-    section: str,
-    from_date: str,
-    to_date: str,
-    years: list[int] | None,
-    meeting_id: int | None,
-    day_id: int | None,
-    match_mode: str,
-    include_speaker_meta: bool,
-    limit: int,
-) -> list[dict[str, Any]] | None:
-    if not meili_is_enabled() or not query:
-        return None
-    filters = meili_minutes_filters(
-        compile_version_id, speaker, role, section, from_date, to_date, years, meeting_id, day_id
-    )
-    if filters is None:
-        return None
-    search_terms = [term for term, _score in weighted_terms]
-    related_terms = related_keywords_for_highlight(base_terms, search_terms) if match_mode == "related" else []
-    attributes = ["bodyKeyText"]
-    if include_speaker_meta:
-        attributes.append("speakerKeyText")
-    candidate_limit = min(800, max(limit * 4, 120))
-    key_query = build_meili_query_key_text(search_terms)
-    if not key_query:
-        return None
-    payload: dict[str, Any] = {
-        "q": key_query,
-        "limit": candidate_limit,
-        "matchingStrategy": "all" if match_mode == "exact" else "last",
-        "attributesToSearchOn": attributes,
-        "filter": filters,
-        "attributesToRetrieve": [
-            "utteranceId", "dayId", "meetingDate", "section", "meetingName", "dayTitle", "pdfUrl", "pageUrl",
-            "utteranceOrder", "speakerName", "speakerTitle", "speakerRole", "speechType", "pageStart", "pageEnd",
-            "positionTopStart", "positionTopEnd", "textPreview", "bodyPlain",
-        ],
-    }
-    result = meili_minutes_search_index(payload)
-    hits = result.get("hits") or []
-    if not hits and match_mode == "exact":
-        # The key field is an accelerator. The plain-text fallback preserves
-        # exact recall for unusually long terms outside its compact n-gram set.
-        payload["q"] = " ".join(base_terms)
-        payload["attributesToSearchOn"] = ["bodyPlain", "speakerSearchText"] if include_speaker_meta else ["bodyPlain"]
-        result = meili_minutes_search_index(payload)
-        hits = result.get("hits") or []
-    if match_mode == "exact":
-        hits = [hit for hit in hits if meili_minutes_hit_matches_exact(hit, base_terms, include_speaker_meta)]
-    else:
-        weights = {normalize_text(term).lower(): score for term, score in weighted_terms}
-        scored_hits: list[tuple[int, dict[str, Any]]] = []
-        for hit in hits:
-            haystack = meili_minutes_hit_text(hit, include_speaker_meta)
-            score = sum(weight for term, weight in weights.items() if term and term in haystack)
-            if score:
-                scored_hits.append((score, hit))
-        # Stable passes retain chronological order inside the same relevance band.
-        scored_hits.sort(key=lambda item: int(item[1].get("utteranceOrder") or 0))
-        scored_hits.sort(key=lambda item: str(item[1].get("meetingDate") or ""), reverse=True)
-        scored_hits.sort(key=lambda item: -item[0])
-        hits = [hit for _score, hit in scored_hits]
-    return [
-        serialize_meili_minutes_hit(hit, base_terms, related_terms, include_speaker_meta)
-        for hit in hits[:limit]
-    ]
-
-
 def search_minutes_items(
     query: str = "",
     speaker: str = "",
@@ -6605,18 +6446,25 @@ def search_minutes_items(
     context: str = "none",
     include_speaker_meta: bool = False,
     cursor: dict[str, Any] | None = None,
-    prefer_meili: bool = True,
-    stable_order: bool = False,
 ) -> list[dict[str, Any]]:
-    base_terms = [normalize_text(part) for part in re.split(r"\s+", query or "") if normalize_text(part)]
     with db_cursor() as (_, cur):
-        weighted_terms = expand_keywords_with_scores(base_terms, cur=cur, max_keywords=14, min_priority=5) if match_mode == "related" else [(term, 1000) for term in base_terms]
+        groups = minutes_query_groups(query, match_mode == "related", lambda term: minutes_synonym_edges(cur, term))
+        base_terms = [group[0][0] for group in groups]
+        weighted_terms = flatten_groups(groups)
         terms = [term for term, _score in weighted_terms]
         related_terms = related_keywords_for_highlight(base_terms, terms) if match_mode == "related" else []
         generation = get_cache_generation(cur)
+        search_scope = make_cache_key([
+            MINUTES_SEARCH_VERSION, json.dumps(groups, ensure_ascii=False), speaker, role, section,
+            from_date, to_date, str(sorted(years or [])), str(meeting_id), str(day_id),
+            match_mode, op, context, str(include_speaker_meta), str(generation),
+        ])
+        if cursor and cursor.get("search_scope") != search_scope:
+            raise ValueError("検索条件またはデータが更新されました。もう一度検索してください。")
         cache_key = make_cache_key(
             [
-                "minutes-search",
+                MINUTES_SEARCH_VERSION,
+                search_scope,
                 normalize_text(query),
                 speaker,
                 role,
@@ -6632,8 +6480,6 @@ def search_minutes_items(
                 context,
                 "speaker-meta" if include_speaker_meta else "body-only",
                 encode_minutes_cursor(cursor) if cursor else "",
-                "stable-order" if stable_order else "relevance-order",
-                "meili" if prefer_meili else "mysql",
                 str(generation),
             ]
         )
@@ -6646,30 +6492,19 @@ def search_minutes_items(
         use_compiled_index = active_compile_version_id is not None
         use_search_index = context != "wide" and (use_compiled_index or is_meeting_search_index_ready(cur))
         search_index_table = "meeting_compiled_utterances" if use_compiled_index else "meeting_utterance_search_index"
-        if prefer_meili and cursor is None and use_compiled_index and context != "wide" and limit is not None:
+        snapshot_rows = None
+        if use_compiled_index:
             try:
-                meili_items = search_minutes_meili_items(
-                    active_compile_version_id,
-                    query,
-                    base_terms,
-                    weighted_terms,
-                    speaker,
-                    role,
-                    section,
-                    from_date,
-                    to_date,
-                    years,
-                    meeting_id,
-                    day_id,
-                    match_mode,
-                    include_speaker_meta,
-                    limit,
+                snapshot_rows = search_snapshot(
+                    minutes_search_snapshot_root(), active_compile_version_id, groups,
+                    op=op, related=match_mode == "related", include_meta=include_speaker_meta,
+                    limit=limit, cursor=cursor, speaker=speaker, role=role, section=section,
+                    from_date=from_date, to_date=to_date, years=years, meeting_id=meeting_id, day_id=day_id,
                 )
-                if meili_items:
-                    put_local_cache(LOCAL_MINUTES_SEARCH_CACHE, cache_key, meili_items)
-                    return meili_items
             except Exception:
-                app.logger.warning("Meeting minutes Meilisearch fallback to MySQL", exc_info=True)
+                app.logger.warning("Meeting minutes snapshot unavailable; using literal SQL search", exc_info=True)
+        if snapshot_rows is not None:
+            rows = snapshot_rows
         short_index_term = ""
         if len(base_terms) == 1:
             candidate_short_term = normalize_minutes_short_term(base_terms[0])
@@ -6680,24 +6515,21 @@ def search_minutes_items(
                 and can_satisfy_with_short_index
             ):
                 short_index_term = candidate_short_term
-        use_fulltext_options = (
-            [False]
-            if short_index_term
-            else [True, False]
-            if normalize_text(query) and minutes_boolean_query(terms, query, require_all=match_mode != "related")
-            else [False]
-        )
-        speaker_exact_options = [True, False] if speaker else [True]
-        attempts = [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
+        use_fulltext_options = [False]
+        speaker_exact_options = [True]
+        if speaker and snapshot_rows is None:
+            cur.execute("SELECT 1 FROM meeting_utterances WHERE speaker_name=%s LIMIT 1", (speaker,))
+            speaker_exact_options = [cur.fetchone() is not None]
+        attempts = [] if snapshot_rows is not None else [(use_fulltext, speaker_exact_only) for use_fulltext in use_fulltext_options for speaker_exact_only in speaker_exact_options]
         seen_attempts: set[tuple[bool, bool]] = set()
         compact_results = context != "wide"
         if use_search_index:
             body_search_column = "COALESCE(NULLIF(u.body_search_text, ''), u.text_preview)"
-            query_search_column = "u.search_text" if include_speaker_meta else "u.body_search_text"
+            query_search_column = "CONCAT_WS(' ', u.body_search_text, u.speaker_title, u.speaker_name)" if include_speaker_meta else "u.body_search_text"
             hit_scope_body_column = body_search_column
         else:
             body_search_column = "u.text"
-            query_search_column = "u.search_text" if include_speaker_meta else "u.text"
+            query_search_column = "CONCAT_WS(' ', u.text, u.speaker_title, u.speaker_name)" if include_speaker_meta else "u.text"
             hit_scope_body_column = "u.text"
         preview_anchor = minutes_preview_anchor(terms if match_mode == "related" else base_terms, query)
         index_body_join_sql = ""
@@ -6735,17 +6567,17 @@ def search_minutes_items(
             query,
             include_speaker_meta,
         )
-        match_score_select, match_score_params = minutes_match_score_select(
-            query_search_column,
-            weighted_terms if match_mode == "related" else [],
+        score_expression, match_score_params = minutes_group_score_sql(
+            groups if match_mode == "related" else [], query_search_column, "%s", "GREATEST",
         )
+        match_score_select = f"({score_expression}) AS match_score"
         for use_fulltext, speaker_exact_only in attempts:
             if (use_fulltext, speaker_exact_only) in seen_attempts:
                 continue
             seen_attempts.add((use_fulltext, speaker_exact_only))
             where, params = build_minutes_where(
-                "" if short_index_term else query,
-                [] if short_index_term else terms,
+                query,
+                terms,
                 speaker,
                 role,
                 section,
@@ -6760,16 +6592,12 @@ def search_minutes_items(
                 speaker_exact_only=speaker_exact_only,
                 use_search_index=use_search_index,
                 search_column=query_search_column,
+                term_groups=groups,
             )
-            if short_index_term and not include_speaker_meta:
-                # The short-term index includes metadata as well. Restrict its
-                # already-small candidate set to the body for the default mode.
-                where = f"{where} AND {body_search_column} LIKE %s"
-                params.append(f"%{short_index_term}%")
             cursor_where, cursor_params = minutes_cursor_filter(cursor, use_search_index)
             if cursor_where:
-                where = f"{where} AND {cursor_where}"
-                params.extend(cursor_params)
+                where = f"{where} AND (({score_expression}) < %s OR (({score_expression})=%s AND {cursor_where}))"
+                params.extend(match_score_params + [cursor.get("match_score", 0)] + match_score_params + [cursor.get("match_score", 0)] + cursor_params)
             try:
                 limit_clause = "LIMIT %s" if limit is not None else ""
                 short_join_sql = ""
@@ -6780,7 +6608,7 @@ def search_minutes_items(
                 compiled_params = [active_compile_version_id] if use_compiled_index else []
                 query_params = match_score_params + text_select_params + hit_scope_params + short_join_params + params + compiled_params + ([limit] if limit is not None else [])
                 sort_sql = (
-                    "match_score DESC, " if match_mode == "related" and not stable_order else ""
+                    "match_score DESC, " if match_mode == "related" else ""
                 ) + "u.meeting_date DESC, u.day_id ASC, u.utterance_order ASC, u.utterance_id ASC"
                 if use_search_index:
                     if short_index_term:
@@ -6815,7 +6643,7 @@ def search_minutes_items(
                         JOIN meeting_days d ON d.id=u.day_id
                         JOIN meeting_sessions s ON s.id=d.session_id
                         WHERE {where}
-                        ORDER BY {("match_score DESC, " if match_mode == "related" and not stable_order else "")}d.meeting_date DESC, u.day_id ASC, u.utterance_order ASC, u.id ASC
+                        ORDER BY {("match_score DESC, " if match_mode == "related" else "")}d.meeting_date DESC, u.day_id ASC, u.utterance_order ASC, u.id ASC
                         {limit_clause}
                         """,
                         tuple(query_params),
@@ -6826,11 +6654,6 @@ def search_minutes_items(
                     continue
                 raise
             rows = cur.fetchall() or []
-            # FULLTEXT is the primary path for minutes search. Falling through to
-            # LIKE after FULLTEXT already found rows turns unlimited searches into
-            # a table scan and makes common terms such as 観光 several seconds slower.
-            if (use_fulltext and rows) or (limit is not None and len(rows) >= limit) or (not use_fulltext and (rows or not speaker_exact_only)):
-                break
 
         include_exchange = context == "wide"
         exchange_windows = fetch_minutes_exchange_windows(cur, rows) if include_exchange else {}
@@ -6871,6 +6694,9 @@ def search_minutes_items(
                     "positionTopEnd": float(row.get("position_top_end") or 0),
                     "snippet": snippet,
                     "text": row_text,
+                    "textIsPreview": compact_results,
+                    "matchScore": int(row.get("match_score") or 0),
+                    "searchScope": search_scope,
                     "exchange": exchange,
                     "highlightTerms": base_terms,
                     "relatedHighlightTerms": related_terms,
@@ -6899,6 +6725,10 @@ def get_local_cache(cache: dict[str, tuple[float, Any]], key: str):
 
 def put_local_cache(cache: dict[str, tuple[float, Any]], key: str, payload: Any) -> None:
     cache[key] = (time.time(), payload)
+    if cache is LOCAL_MINUTES_SEARCH_CACHE and len(cache) > 256:
+        oldest = min(list(cache), key=lambda item: cache.get(item, (0, None))[0], default=None)
+        if oldest is not None:
+            cache.pop(oldest, None)
 
 
 def sanitize_search_results(items: Any) -> Any:
@@ -7698,7 +7528,9 @@ def enforce_auth():
 @app.after_request
 def add_public_minutes_response_headers(response: Response):
     if is_public_minutes_request(request.method, request.path):
-        if request.path.endswith("/search"):
+        if response.status_code != 200:
+            response.headers["Cache-Control"] = "no-store"
+        elif request.path.endswith("/search"):
             response.headers.setdefault("Cache-Control", "public, max-age=15, stale-while-revalidate=60")
         elif PUBLIC_MINUTES_DETAIL_PATH_RE.fullmatch(request.path):
             response.headers.setdefault("Cache-Control", "public, max-age=300, stale-while-revalidate=1800")
@@ -7707,6 +7539,22 @@ def add_public_minutes_response_headers(response: Response):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("Referrer-Policy", "same-origin")
+    # Restrict compression to public-content minutes responses, not account,
+    # settings or authentication JSON. Do not compress an already encoded body.
+    minutes_read = is_public_minutes_request(request.method, request.path) or (
+        request.method in {"GET", "HEAD"} and (
+            request.path == "/api/minutes/search" or re.fullmatch(r"/api/minutes/days/[1-9][0-9]*", request.path)
+        )
+    )
+    if minutes_read and response.status_code == 200 and response.mimetype == "application/json" and not response.is_streamed:
+        response.vary.add("Accept-Encoding")
+        if request.accept_encodings["gzip"] > 0 and not response.headers.get("Content-Encoding"):
+            body = response.get_data()
+            if len(body) >= 1024:
+                compressed = gzip.compress(body, compresslevel=1, mtime=0)
+                if len(compressed) < len(body):
+                    response.set_data(compressed)
+                    response.headers["Content-Encoding"] = "gzip"
     return response
 
 
@@ -8095,6 +7943,8 @@ def api_minutes_search():
     raw_limit = (request.args.get("limit") or "20").strip().lower()
     is_unlimited = raw_limit in {"all", "unlimited", "0"}
     cursor = decode_minutes_cursor(request.args.get("cursor") or "")
+    if request.args.get("cursor") and cursor is None:
+        raise ValueError("ページ送りの情報が無効です。もう一度検索してください。")
     page_size_raw = request.args.get("pageSize") or str(MINUTES_CURSOR_PAGE_SIZE)
     try:
         page_size = max(1, min(MINUTES_CURSOR_MAX_PAGE_SIZE, int(page_size_raw)))
@@ -8127,8 +7977,6 @@ def api_minutes_search():
         context=context,
         include_speaker_meta=include_speaker_meta,
         cursor=cursor,
-        prefer_meili=not is_unlimited,
-        stable_order=is_unlimited,
     )
     has_more = is_unlimited and len(items) > page_size
     if has_more:
@@ -8412,6 +8260,21 @@ def api_minutes_meeting_detail(meeting_id: int):
 @app.get('/api/minutes/days/<int:day_id>')
 def api_minutes_day_detail(day_id: int):
     with db_cursor() as (_, cur):
+        utterance_id = request.args.get("utteranceId")
+        if utterance_id is not None:
+            utterance_id = int(utterance_id)
+            version_id = active_minutes_compile_version_id(cur)
+            if version_id:
+                cur.execute(
+                    "SELECT utterance_id AS id, body_search_text AS text FROM meeting_compiled_utterances WHERE version_id=%s AND day_id=%s AND utterance_id=%s",
+                    (version_id, day_id, utterance_id),
+                )
+            else:
+                cur.execute("SELECT id, text FROM meeting_utterances WHERE day_id=%s AND id=%s", (day_id, utterance_id))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "発言が見つかりません。"}), 404
+            return jsonify({"id": int(row["id"]), "dayId": day_id, "text": row.get("text") or ""})
         compiled = compiled_minutes_day_detail(cur, day_id)
         if compiled:
             return jsonify(compiled)

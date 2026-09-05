@@ -49,7 +49,7 @@
 
 ### 公開会議録ページ
 - **ログイン不要** — `/mine-city-minutes/` で「美祢市議会会議録検索システム」を公開し、会議録の閲覧・言葉検索・発言者検索・発言集作成を利用できます。
-- **既存検索基盤を共用** — MariaDB、コンパイル済み会議録、Meilisearch、関連語辞書は管理画面と共通です。公開ページのためのデータ複製は行いません。
+- **既存検索基盤を共用** — MariaDB、コンパイル済み会議録、SQLite文字索引、関連語辞書は管理画面と共通です。公開ページ専用のデータ複製は行いません。
 - **読み取り専用 API** — 公開ページから利用できるのは、厳密に許可した `/api/public/minutes/*` の GET / HEAD だけです。同期・再タグ付け・コンパイル・辞書更新などの変更操作は公開しません。
 - **公開向け保護** — IP単位のレート制限、クエリ長制限、CSP、Permissions-Policy、Referrer-Policyを適用します。
 - **公開ページ専用テーマ** — 初回は「ライトモード＋別府弁天池」で表示し、ヘッダーからライト / ダークと全カラーパレットを変更できます。選択内容は管理画面と分離してブラウザへ保存します。
@@ -186,7 +186,7 @@ PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p
 |---|---|---|
 | GET | `/api/minutes/status` | 会議録件数、同期・コンパイル状態 |
 | POST | `/api/minutes/sync` | 追加・変更PDFだけを差分同期 |
-| POST | `/api/minutes/compile` | 全件コンパイルと専用Meilisearch索引の世代切替 |
+| POST | `/api/minutes/compile` | 全件コンパイルとSQLite文字索引の世代切替 |
 | POST | `/api/minutes/retag` | 最新辞書・ルールによる全発言の再タグ付け |
 | GET | `/api/minutes/search` | 本文・発言者・会議・期間・ロール検索（カーソル対応） |
 | GET | `/api/minutes/meetings` | 会議一覧 |

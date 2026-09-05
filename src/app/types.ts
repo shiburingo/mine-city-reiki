@@ -321,6 +321,7 @@ export type MinutesSearchResult = {
   pageEnd: number;
   snippet: string;
   text: string;
+  textIsPreview?: boolean;
   exchange: MinutesExchangeItem[];
   highlightTerms?: string[];
   relatedHighlightTerms?: string[];

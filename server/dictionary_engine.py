@@ -984,6 +984,22 @@ class IndexedSynonymDictionary:
         self._connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
         self._lock = threading.RLock()
         self._cache: OrderedDict[str, tuple[tuple[str, int], ...]] = OrderedDict()
+        self._search_cache: OrderedDict[str, tuple[tuple[str, int, str], ...]] = OrderedDict()
+
+    def get_search_edges(self, term: str) -> list[tuple[str, int, str]]:
+        normalized = normalize_term(term)
+        with self._lock:
+            cached = self._search_cache.pop(normalized, None)
+            if cached is None:
+                rows = self._connection.execute(
+                    "SELECT related_term, priority, source_type FROM edges WHERE term=? ORDER BY rank",
+                    (normalized,),
+                ).fetchall()
+                cached = tuple((str(row[0]), int(row[1]), str(row[2])) for row in rows)
+            self._search_cache[normalized] = cached
+            if len(self._search_cache) > COMPILED_DICTIONARY_CACHE_SIZE:
+                self._search_cache.popitem(last=False)
+            return list(cached)
 
     def _lookup(self, term: str) -> tuple[tuple[str, int], ...]:
         with self._lock:
@@ -1026,6 +1042,7 @@ class IndexedSynonymDictionary:
     def close(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._search_cache.clear()
             self._connection.close()
 
 
