@@ -109,8 +109,8 @@ mine-city-reiki/
 ### フロントエンド
 
 ```bash
-npm install
-npm run dev          # Vite 開発サーバー（ポート 5173）
+npm ci
+npm run dev          # Vite 開発サーバー（ポート 5175）
 ```
 
 ### バックエンド
@@ -132,10 +132,14 @@ npm run dev:api
 ### ビルド確認
 
 ```bash
-npm run build
+npm run typecheck
+npm run build        # prebuildでも全ソースの型チェックを実行
+npm audit
 python3 -m py_compile server/app.py
-PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p 'test_*.py'
+DB_AUTO_INIT=0 MINE_CITY_REIKI_AUTH_BYPASS=1 PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p 'test_*.py'
 ```
+
+依存関係更新時は `package-lock.json` を更新し、`npm ci` による再現性、型チェック、ビルド、監査を確認してください。ルートの `tsconfig.json` は参照専用のため、`tsc --noEmit` だけでなく `npm run typecheck` を使い、画面・共有UI・Vite設定を明示的に検査します。
 
 ---
 

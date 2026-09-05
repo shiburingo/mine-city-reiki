@@ -72,7 +72,7 @@ function resolveSourceDocumentLink(href: string, sourceDocumentLinks: SourceDocu
   try {
     const url = new URL(href, sourceUrl);
     const pathParts = url.pathname.split('/').filter(Boolean);
-    const externalId = (pathParts.at(-1) || '').replace(/\.html$/i, '');
+    const externalId = (pathParts[pathParts.length - 1] || '').replace(/\.html$/i, '');
     const documentId = sourceDocumentLinks[externalId];
     if (!documentId) return null;
     const sourceAnchorId = url.searchParams.get('id')

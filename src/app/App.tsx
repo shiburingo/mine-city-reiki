@@ -142,7 +142,7 @@ const DEFAULT_MINUTES_INCLUDE_REPLIES = true;
 const DEFAULT_MINUTES_INCLUDE_CHAIR = false;
 const DEFAULT_MINUTES_INCLUDE_SPEAKER_META = false;
 const DEFAULT_MINUTES_SORT_ORDER: 'new' | 'old' = 'new';
-const DEFAULT_MINUTES_SEARCH_LIMIT: MinutesSearchLimit = 60;
+const DEFAULT_MINUTES_SEARCH_LIMIT = 60 satisfies MinutesSearchLimit;
 const MINUTES_INITIAL_RENDER_LIMIT = 200;
 const MINUTES_RENDER_BATCH_SIZE = 200;
 const MINUTES_SEARCH_LIMIT_OPTIONS: { value: MinutesSearchLimit; label: string }[] = [
@@ -383,7 +383,7 @@ function stripMeetingDatePrefix(value: string): string {
     .trim();
 }
 
-function formatMinutesMeetingBrowseTitle(meeting: MinutesMeeting): string {
+function formatMinutesMeetingBrowseTitle(meeting: Pick<MinutesMeeting, 'meetingName' | 'title' | 'section' | 'fromDate' | 'toDate'>): string {
   const title = stripMeetingDatePrefix(meeting.meetingName || meeting.title || '会議録');
   if ((meeting.section || '').includes('委員')) {
     const yearLabel = formatJapaneseEraYear(meeting.fromDate || meeting.toDate);
@@ -3372,13 +3372,11 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
       ))}
     </div>
   );
-  const isHenLabel = (label: string) => /^第[0-9一二三四五六七八九十百千]+編\b/.test(label);
   const renderBrowseTree = (nodes: BrowseTreeNode[], depth = 0): JSX.Element => (
     <div className={depth === 0 ? 'space-y-3' : 'mt-2 space-y-2'}>
       {nodes.map((node) => (
         <details
           key={node.key}
-          defaultOpen={!isHenLabel(node.label)}
           className={`rounded-2xl border bg-background ${depth > 0 ? 'border-dashed' : ''}`}
         >
           <summary className="cursor-pointer list-none rounded-2xl px-4 py-3 text-sm font-semibold marker:hidden hover:bg-accent">
