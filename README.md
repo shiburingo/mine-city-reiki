@@ -3,7 +3,7 @@
 ## フロントエンドのビルド環境（2026-09-09）
 
 - Vite は `8.2.2` に固定。`package-lock.json` と `npm ci` で同じ依存構成を再現します。
-- React 用プラグインは `@vitejs/plugin-react 6.1.1`。React 本体のメジャー更新や React Compiler の導入は行っていません。
+- React 用プラグインは `@vitejs/plugin-react 6.1.1`。React / React DOM は `19.2.8`、型定義は `19.2.18 / 19.2.7`。Compiler は次段階で限定適用します。
 - Node.js の対応範囲は `^20.19.0 || >=22.12.0`。運用ではサポート中の Node.js 22 / 24 LTS を使用します。
 - Vite 8 のブラウザー既定値変更による影響を避けるため、従来の `build.target` を明示して維持しています。
 - 本番ビルド: `VITE_BASE_PATH=/mine-city-reiki/ npm run build`。

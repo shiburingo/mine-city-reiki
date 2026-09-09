@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent, type JSX } from 'react';
 import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader, ThemeToggle, usePortalUi } from '@mine-troutfarm/ui';
 import { MinutesResultBody } from './MinutesResultBody';
