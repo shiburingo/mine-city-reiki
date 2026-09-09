@@ -287,3 +287,11 @@ DB_AUTO_INIT=0 MINE_CITY_REIKI_AUTH_BYPASS=1 PYTHONPATH=server server/venv/bin/p
 - `idx_law_search_terms_article (article_id)`
 
 `(target_type, term, document_id)` 単独索引は、上記の複合索引で左辺一致として利用できるため作成しません。
+
+## 自動検証（2026-09-09）
+
+[GitHub Actions CI](.github/workflows/ci.yml) は main への push と pull request で実行します。
+Node.js 22 / 24 でロックファイルから依存を復元し、型チェックと本番ビルドを必須にしています。
+既存・追加テスト: `PYTHONPATH=server python -m unittest discover -s server/tests`。
+APIテストは CI の Python 3.13 と `server/requirements.txt` を使用します。職員管理のみ別途 `pytest==8.4.2` が必要です。
+CI は本番の認証情報・業務DBを使用せず、本番配備やサービス再起動は行いません。
