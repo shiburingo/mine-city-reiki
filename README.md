@@ -3,8 +3,8 @@
 ## フロントエンドのビルド環境（2026-09-09）
 
 - Vite は `8.2.2` に固定。`package-lock.json` と `npm ci` で同じ依存構成を再現します。
-- React 用プラグインは `@vitejs/plugin-react 6.1.1`。React / React DOM は `19.2.8`、型定義は `19.2.18 / 19.2.7`。Compiler は次段階で限定適用します。
-- Node.js の対応範囲は `^20.19.0 || >=22.12.0`。運用ではサポート中の Node.js 22 / 24 LTS を使用します。
+- React 用プラグインは `@vitejs/plugin-react 6.1.1`。React / React DOM は `19.2.8`、型定義は `19.2.18 / 19.2.7`。React Compiler 1.0.0 は安定版 Babel 接続による annotation モードで、レビュー済みの小さなUI部品に限定適用します。
+- Node.js の対応範囲は `^22.12.0 || >=24`。運用ではサポート中の Node.js 22 / 24 LTS を使用します。
 - Vite 8 のブラウザー既定値変更による影響を避けるため、従来の `build.target` を明示して維持しています。
 - 本番ビルド: `VITE_BASE_PATH=/mine-city-reiki/ npm run build`。
 - フロントエンドだけの配備では、静的ファイルを退避し旧ハッシュ付き assets を保持します。DB 移行や API・収集サービスの再起動は不要です。
@@ -73,7 +73,7 @@
 
 | 層 | 技術 |
 |---|---|
-| フロントエンド | React 18 + TypeScript + Vite + Tailwind CSS 4 |
+| フロントエンド | React 19 + TypeScript + Vite + Tailwind CSS 4 |
 | バックエンド | Python 3 / Flask 3 + Gunicorn（ポート 8795） |
 | データベース | MariaDB（例規・辞書・キャッシュ・会議録・コンパイル世代を管理） |
 | 検索エンジン | Meilisearch + MariaDB 転置索引 / FULLTEXT フォールバック |

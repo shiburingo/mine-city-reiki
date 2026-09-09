@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import babel from "@rolldown/plugin-babel";
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/mine-city-reiki/',
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), babel({ presets: [reactCompilerPreset({ target: "19", compilationMode: "annotation" })] }), tailwindcss()],
   build: {
     // Keep the supported browser range unchanged when upgrading the bundler.
     target: ["es2020","edge88","firefox78","chrome87","safari14"],

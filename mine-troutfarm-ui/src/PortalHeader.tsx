@@ -38,6 +38,7 @@ export function PortalHeader({
   onLogout?: () => void;
   authEnabled?: boolean;
 }) {
+  "use memo";
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const iconSrc = isDark ? "/top/title-icon-dark.svg" : "/top/title-icon-light.svg";
