@@ -6,7 +6,9 @@ export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/mine-city-reiki/',
   plugins: [react(), tailwindcss()],
   build: {
-    rollupOptions: {
+    // Keep the supported browser range unchanged when upgrading the bundler.
+    target: ["es2020","edge88","firefox78","chrome87","safari14"],
+    rolldownOptions: {
       input: {
         main: 'index.html',
         publicMinutes: 'mine-city-minutes/index.html',
@@ -29,6 +31,8 @@ export default defineConfig({
     },
   },
   resolve: {
+    // Linked UI sources must use the application's React, not their dev copy.
+    dedupe: ['react', 'react-dom'],
     alias: {
       '@': '/src',
     },
