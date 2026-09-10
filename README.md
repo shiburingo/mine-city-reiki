@@ -1,9 +1,10 @@
 # mine-city-reiki
 
-## フロントエンドのビルド環境（2026-09-09）
+## フロントエンドのビルド環境（2026-09-10）
 
 - Vite は `8.2.2` に固定。`package-lock.json` と `npm ci` で同じ依存構成を再現します。
-- React 用プラグインは `@vitejs/plugin-react 6.1.1`。React / React DOM は `19.2.8`、型定義は `19.2.18 / 19.2.7`。React Compiler 1.0.0 は安定版 Babel 接続による annotation モードで、レビュー済みの小さなUI部品に限定適用します。
+- React 用プラグインは `@vitejs/plugin-react 6.1.1`。React / React DOM は `19.3.0`、型定義は `19.3.0 / 19.3.0`。React Compiler 1.0.0 は安定版 Babel 接続による annotation モードで、レビュー済みの小さなUI部品に限定適用します。
+- 画面切替には React ViewTransition を使用します。[共通切替部品](src/shared/viewTransitions.tsx)の `useViewState` / `ViewRegion` をタブ・一覧／詳細の表示に限定して適用し、非対応環境・動きを減らす設定・印刷時はアニメーションなしで動作します。API更新や文字入力は対象外です。
 - Node.js の対応範囲は `^22.12.0 || >=24`。運用ではサポート中の Node.js 22 / 24 LTS を使用します。
 - Vite 8 のブラウザー既定値変更による影響を避けるため、従来の `build.target` を明示して維持しています。
 - 本番ビルド: `VITE_BASE_PATH=/mine-city-reiki/ npm run build`。
@@ -295,3 +296,9 @@ Node.js 22 / 24 でロックファイルから依存を復元し、型チェッ�
 既存・追加テスト: `PYTHONPATH=server python -m unittest discover -s server/tests`。
 APIテストは CI の Python 3.13 と `server/requirements.txt` を使用します。職員管理のみ別途 `pytest==8.4.2` が必要です。
 CI は本番の認証情報・業務DBを使用せず、本番配備やサービス再起動は行いません。
+
+## 共有UIの保守
+
+共有UIと画面切替部品は、版・ハッシュ・承認済みの別仕様を管理して配布します。
+フロントエンドで `npm run check:shared-ui` を実行すると、このリポジトリだけで差分を検出できます。
+ビルド前とCIでも実行します。修正・配布手順は [共有UIの保守](.shared-ui/README.md) を参照してください。

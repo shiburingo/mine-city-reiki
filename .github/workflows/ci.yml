@@ -36,6 +36,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: package-lock.json
+      - run: npm run check:shared-ui
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build

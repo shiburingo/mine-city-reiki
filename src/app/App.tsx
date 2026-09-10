@@ -1,3 +1,4 @@
+import { ViewRegion, useViewState, changeView } from '../shared/viewTransitions';
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent, type JSX } from 'react';
 import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader, ThemeToggle, usePortalUi } from '@mine-troutfarm/ui';
@@ -1239,7 +1240,7 @@ function PublicMinutesPaletteControl() {
 function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }) {
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [tab, setTab] = useState<TabId>(publicMinutesMode ? 'minutes' : 'dashboard');
+  const [tab, setTab] = useViewState<TabId>(publicMinutesMode ? 'minutes' : 'dashboard');
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(EMPTY_SYNC_STATUS);
   const [syncRuns, setSyncRuns] = useState<SyncRun[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1354,8 +1355,8 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
   const [minutesSearchReturnPage, setMinutesSearchReturnPage] = useState<MinutesPage>('home');
   const [minutesBrowseFiscalYear, setMinutesBrowseFiscalYear] = useState('');
   const [minutesBrowseSection, setMinutesBrowseSection] = useState<MinutesBrowseSectionFilter>('all');
-  const [minutesResultMode, setMinutesResultMode] = useState<'utterance' | 'meeting' | 'table'>('utterance');
-  const [minutesReaderMode, setMinutesReaderMode] = useState<MinutesReaderMode>('unit');
+  const [minutesResultMode, setMinutesResultMode] = useViewState<'utterance' | 'meeting' | 'table'>('utterance');
+  const [minutesReaderMode, setMinutesReaderMode] = useViewState<MinutesReaderMode>('unit');
   const [minutesReaderScrollRequest, setMinutesReaderScrollRequest] = useState<{ utteranceId: number; requestId: number } | null>(null);
   const [minutesExpandedResultIds, setMinutesExpandedResultIds] = useState<Set<number>>(new Set());
   const [minutesHistory, setMinutesHistory] = useState<MinutesSearchHistoryItem[]>(() => loadMinutesSearchHistory());
@@ -1597,7 +1598,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
       try {
         const detail = await fetchDocumentDetail(selectedDocId);
         if (!cancelled) {
-          setSelectedDoc(detail);
+          changeView(() => setSelectedDoc(detail));
           void loadRelatedArticles(detail);
         }
       } catch (err) {
@@ -1617,7 +1618,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
       try {
         const detail = await fetchDocumentDetail(browseDocId);
         if (!cancelled) {
-          setBrowseDoc(detail);
+          changeView(() => setBrowseDoc(detail));
           if ((detail.source === 'mine-city' || detail.source === 'egov' || detail.source === 'local-public-service') && detail.source !== browseSource) {
             setBrowseSource(detail.source);
             void loadBrowseList(detail.source, true);
@@ -5145,7 +5146,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
             </div>
           </div>
         </header>
-        <main id="public-minutes-main" className="mx-auto max-w-[96rem] space-y-4 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
+        <ViewRegion><main id="public-minutes-main" className="mx-auto max-w-[96rem] space-y-4 px-3 py-5 sm:px-6 sm:py-7 lg:px-8">
           {globalError ? (
             <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               {globalError}
@@ -5158,7 +5159,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
               検索結果は会議録PDFから抽出・整形したデータです。内容の確認が必要な場合は、各会議録の「PDF原文」から美祢市が公開する原文をご確認ください。
             </p>
           </section>
-        </main>
+        </main></ViewRegion>
         <footer className="border-t px-4 py-6 text-center text-xs text-muted-foreground">
           データ出典: 美祢市議会公開会議録
         </footer>
@@ -5188,7 +5189,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
           </div>
         </div>
       ) : null}
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+      <ViewRegion><main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <section className="rounded-3xl border bg-card p-3 shadow-sm">
           <div className="grid gap-2 md:grid-cols-4">
             {TABS.map((item) => {
@@ -6531,7 +6532,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
             </div>
           </div>
         ) : null}
-      </main>
+      </main></ViewRegion>
 
       {/* 印刷用スタイル */}
       <style>{`

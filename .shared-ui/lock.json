@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "release": "1.1.1",
+  "repo": "mine-city-reiki",
+  "scopes": [
+    "mine-troutfarm-ui",
+    "src/shared"
+  ],
+  "files": {
+    ".shared-ui/check.mjs": {
+      "source": "checker-b505151190",
+      "sha256": "9ded5756443f504b3396ea2a353fb87e89f32866d1b80c5169abd01814f4f826"
+    },
+    ".shared-ui/README.md": {
+      "source": "guide-90d16b23b3",
+      "sha256": "279be5d4de6bb2eb40a957dd7b6469ea3cb42ff9708c6acd55f3be03a5c043da"
+    },
+    "mine-troutfarm-ui/package-lock.json": {
+      "source": "nested-dev-lock-901674c4cf",
+      "sha256": "901674c4cf34fecc9d137f8cedc86ff26ea87fa760e8670bcef3da5699619c22"
+    },
+    "mine-troutfarm-ui/package.json": {
+      "source": "package-metadata-c1acf89907",
+      "sha256": "c1acf8990731de5cb13538515edfcdea3cb87ab385462266fd59c7d3b0980afe"
+    },
+    "mine-troutfarm-ui/README.md": {
+      "source": "guide-1f9684d992",
+      "sha256": "1f9684d992dc3a38d999f83c97ed76c4b0dfe8dbaba0ce330c3108f39b50053f"
+    },
+    "mine-troutfarm-ui/src/index.ts": {
+      "source": "exports-92cf415165",
+      "sha256": "92cf41516527cae03c41a2380ffe7cb6ae7ee31719f013716f13b32dc4b9e55a"
+    },
+    "mine-troutfarm-ui/src/palettes.ts": {
+      "source": "palettes-b33f30c62a",
+      "sha256": "b33f30c62aafd7aa244f1b5272f84c430e6639e040d8d544ccd79a7687b9ea04"
+    },
+    "mine-troutfarm-ui/src/PortalHeader.tsx": {
+      "source": "header-21036077c5",
+      "sha256": "21036077c5e61a1bf94ab44303cecfc09ac9e5bfbac786fa368aed7d2e0311a3"
+    },
+    "mine-troutfarm-ui/src/PortalUiProvider.tsx": {
+      "source": "provider-d905958812",
+      "sha256": "d9059588123f72a430787238504f5d59625aabd04e1c8bc86da266a70969aba6"
+    },
+    "mine-troutfarm-ui/src/theme.css": {
+      "source": "theme-7504701c06",
+      "sha256": "7504701c06e1dcbab69cb447c50245b34af50a2ffe831beb320756456a4f2a0f"
+    },
+    "mine-troutfarm-ui/src/ThemeToggle.tsx": {
+      "source": "theme-toggle-f6b6950e25",
+      "sha256": "f6b6950e251b7f49cafe9485eab02a18bb04326201a560f11c7cc9959f202c41"
+    },
+    "mine-troutfarm-ui/theme.css": {
+      "source": "theme-c54ed7358c",
+      "sha256": "c54ed7358cf030834fd37444e9535a6ccad2b2228c9c1c568008dab9cbaa98f9"
+    },
+    "mine-troutfarm-ui/tsconfig.json": {
+      "source": "nested-typescript-2c2573ac44",
+      "sha256": "2c2573ac449e7355a04be3d73bd49ee2e320a8cb2004fe3d1d78504bbd469549"
+    },
+    "src/shared/viewTransitions.css": {
+      "source": "navigation-style-9ddf82b5be",
+      "sha256": "9ddf82b5becd5c86cfecb7880be5716c6b73d4f25343cfacddc7c216b14acbe7"
+    },
+    "src/shared/viewTransitions.tsx": {
+      "source": "navigation-7608ceee44",
+      "sha256": "7608ceee440a5edd50b1984acc0428e66ce5d85180507d31c6afec16e7cf1c97"
+    }
+  }
+}

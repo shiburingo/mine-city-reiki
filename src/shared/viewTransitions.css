@@ -1,0 +1,18 @@
+:root { view-transition-name: none; }
+::view-transition { pointer-events: none; }
+::view-transition-group(.mt-screen) { animation: none; }
+::view-transition-old(.mt-screen) {
+  animation: mt-screen-out 120ms ease-out both;
+  mix-blend-mode: normal;
+}
+::view-transition-new(.mt-screen) {
+  animation: mt-screen-in 160ms ease-out both;
+  mix-blend-mode: normal;
+}
+@keyframes mt-screen-out { to { opacity: 0; } }
+@keyframes mt-screen-in { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce), print {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
+}
