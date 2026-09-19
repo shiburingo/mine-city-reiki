@@ -3,7 +3,8 @@
 このディレクトリの `check.mjs` と `lock.json` は、ポータルの
 `tools/shared-ui/catalog.json` で管理する共有ソースの配布物です。
 ロックの `release` は共有ソースの管理版であり、アプリや既存npmパッケージの版ではありません。
-テーマ・ヘッダー・画面切替だけでなく、各システムのUI基本部品も照合対象です。
+テーマ・ヘッダー・画面切替・UI基本部品に加え、18システムのダーク配色を照合します。
+Reactを使わない4システムは `static/shared/`（イベント予約は `app/static/shared/`）を管理します。
 
 ## このリポジトリだけで検査する
 
@@ -13,6 +14,14 @@
 npm run check:shared-ui
 npm run build
 ```
+
+Python/HTMLのシステムはリポジトリのルートで `node .shared-ui/check.mjs` を実行します。
+こちらにもGitHub Actionsの検査を設けますが、npm依存やReactビルドは追加しません。
+
+`darkTheme.css` は画面専用の基本色、`darkUtilities.css` はReactの旧固定色の互換指定です。
+`darkDashboard.css` は3ダッシュボードの補助指定、`screenTheme.tsx` は月次報告と帳票編集の端末内表示切替です。
+各アプリ固有の帳票・グラフ・状態表示はアプリ側のCSSで調整し、紙面とライトモードへ波及させないでください。
+配色の基準と確認項目はポータルの `docs/dark-mode-design.md` を参照してください。
 
 追加依存・兄弟リポジトリ・ネットワーク・本番認証情報は不要です。
 ビルド前とGitHub Actionsで、共有ファイルの変更・削除・未登録追加を検出します。

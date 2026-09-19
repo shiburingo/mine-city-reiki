@@ -1,0 +1,31 @@
+/* Legacy fixed utility colors, not artwork, paper previews or switch thumbs. */
+@media screen and (forced-colors: none) {
+  .dark :is(.bg-white, .bg-white\/80, .bg-white\/50, .bg-gray-50, .bg-slate-50):not(:where(img, [data-slot="switch-thumb"], .print-a4-sheet, .print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) {
+    background-color: var(--mt-surface);
+  }
+  .dark :is(.bg-gray-100, .bg-gray-200, .bg-slate-100, .bg-slate-200):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) {
+    background-color: var(--mt-raised);
+  }
+  .dark :is(.text-gray-950, .text-gray-900, .text-gray-800, .text-gray-700, .text-slate-950, .text-slate-900, .text-slate-800, .text-slate-700):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) {
+    color: var(--mt-text);
+  }
+  .dark :is(.text-gray-600, .text-gray-500, .text-gray-400, .text-slate-600, .text-slate-500, .text-slate-400):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) {
+    color: var(--mt-secondary);
+  }
+  .dark :is(.border-gray-100, .border-gray-200, .border-gray-300, .border-slate-100, .border-slate-200, .border-slate-300):not(:where(input, select, textarea, [data-slot="select-trigger"], .print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) {
+    border-color: var(--mt-border);
+  }
+  .dark :is(.hover\:bg-gray-50, .hover\:bg-gray-100, .hover\:bg-gray-200, .hover\:bg-slate-50, .hover\:bg-slate-100, .hover\:bg-slate-200):hover {
+    background-color: var(--mt-raised);
+  }
+  .dark :is(.bg-blue-50, .bg-blue-100, .bg-sky-50, .bg-sky-100, .bg-cyan-50, .bg-cyan-100):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { background-color: var(--mt-info-bg); }
+  .dark :is(.text-blue-600, .text-blue-700, .text-blue-800, .text-blue-900, .text-sky-600, .text-sky-700, .text-sky-800, .text-sky-900, .text-cyan-600, .text-cyan-700, .text-cyan-800, .text-cyan-900):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { color: var(--mt-info); }
+  .dark :is(.bg-green-50, .bg-green-100, .bg-emerald-50, .bg-emerald-100, .bg-teal-50, .bg-teal-100, .bg-lime-100):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { background-color: var(--mt-success-bg); }
+  .dark :is(.text-green-600, .text-green-700, .text-green-800, .text-green-900, .text-emerald-600, .text-emerald-700, .text-emerald-800, .text-emerald-900, .text-teal-600, .text-teal-700):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { color: var(--mt-success); }
+  .dark :is(.bg-amber-50, .bg-amber-100, .bg-yellow-50, .bg-yellow-100, .bg-orange-50, .bg-orange-100):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { background-color: var(--mt-warning-bg); }
+  .dark :is(.text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900, .text-yellow-600, .text-yellow-700, .text-yellow-800, .text-orange-600, .text-orange-700, .text-orange-800, .text-orange-900):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { color: var(--mt-warning); }
+  .dark :is(.bg-red-50, .bg-red-100, .bg-rose-50, .bg-rose-100, .bg-pink-50, .bg-pink-100):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { background-color: var(--mt-danger-bg); }
+  .dark :is(.text-red-500, .text-red-600, .text-red-700, .text-red-800, .text-red-900, .text-rose-600, .text-rose-700, .text-rose-800, .text-pink-700, .text-pink-900):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { color: var(--mt-danger); }
+  .dark :is(.bg-purple-50, .bg-purple-100, .bg-violet-50, .bg-violet-100, .bg-indigo-50, .bg-indigo-100, .bg-fuchsia-100):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { background-color: var(--mt-purple-bg); }
+  .dark :is(.text-purple-600, .text-purple-700, .text-purple-800, .text-violet-600, .text-violet-700, .text-violet-900, .text-indigo-600, .text-indigo-700, .text-indigo-800):not(:where(.print-a4-sheet *, .print-only *, .preview-wrap *, .workbook-grid *)) { color: var(--mt-purple); }
+}

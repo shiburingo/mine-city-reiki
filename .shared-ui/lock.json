@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "release": "1.1.1",
+  "release": "1.2.3",
   "repo": "mine-city-reiki",
   "scopes": [
     "mine-troutfarm-ui",
@@ -13,7 +13,7 @@
     },
     ".shared-ui/README.md": {
       "source": "guide-90d16b23b3",
-      "sha256": "279be5d4de6bb2eb40a957dd7b6469ea3cb42ff9708c6acd55f3be03a5c043da"
+      "sha256": "57b50b8091edd76dc0af7db66ef775c636a0c9685a3f522577bba43acab9e4a7"
     },
     "mine-troutfarm-ui/package-lock.json": {
       "source": "nested-dev-lock-901674c4cf",
@@ -58,6 +58,14 @@
     "mine-troutfarm-ui/tsconfig.json": {
       "source": "nested-typescript-2c2573ac44",
       "sha256": "2c2573ac449e7355a04be3d73bd49ee2e320a8cb2004fe3d1d78504bbd469549"
+    },
+    "src/shared/darkTheme.css": {
+      "source": "dark-theme-v1",
+      "sha256": "817c943e8fff73051a7ef0c971854605d5236d9e9357aa3b98dfc72e09e6b36a"
+    },
+    "src/shared/darkUtilities.css": {
+      "source": "dark-utilities-v1",
+      "sha256": "b3cc0e718934926075491a194a7e40fe1fbd2eed240d1471e9189d4aae2af5e3"
     },
     "src/shared/viewTransitions.css": {
       "source": "navigation-style-9ddf82b5be",

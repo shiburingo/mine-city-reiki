@@ -5,6 +5,8 @@ import { PortalUiProvider } from '@mine-troutfarm/ui';
 import App from './app/App';
 import { isPublicMinutesPage } from './app/api';
 import './styles/index.css';
+import './shared/darkTheme.css';
+import './shared/darkUtilities.css';
 
 const PUBLIC_MINUTES_MODE = isPublicMinutesPage();
 const PUBLIC_MINUTES_THEME_STORAGE_KEY = 'mine_city_minutes_theme_v1';

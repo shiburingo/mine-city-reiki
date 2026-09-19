@@ -1,0 +1,112 @@
+/* Shared screen-only dark colors. Keep paper previews and print styles independent. */
+@media screen and (forced-colors: none) {
+  :root:is(.dark, [data-theme="dark"]) {
+    color-scheme: dark;
+    --mt-canvas: #141619;
+    --mt-surface: #202328;
+    --mt-raised: #2b2f36;
+    --mt-field: #191c21;
+    --mt-text: #f2f3f5;
+    --mt-secondary: #bdc3ce;
+    --mt-border: #4b515c;
+    --mt-control-border: #818b9b;
+    --mt-focus: #9dccff;
+    --mt-info: #9dccff;
+    --mt-info-bg: #20354c;
+    --mt-success: #6ee7b7;
+    --mt-success-bg: #153e32;
+    --mt-warning: #fcd68a;
+    --mt-warning-bg: #44351e;
+    --mt-danger: #ffaaa5;
+    --mt-danger-bg: #482a2e;
+    --mt-purple: #d3bdff;
+    --mt-purple-bg: #362d49;
+    /* A neutral reading surface is stable across the stored accent palettes. */
+    --background: var(--mt-canvas) !important;
+    --card: var(--mt-surface) !important;
+    --foreground: var(--mt-text);
+    --card-foreground: var(--mt-text);
+    --popover: var(--mt-raised);
+    --popover-foreground: var(--mt-text);
+    --secondary: var(--mt-raised);
+    --secondary-foreground: var(--mt-text);
+    --muted: var(--mt-raised);
+    --muted-foreground: var(--mt-secondary);
+    --border: var(--mt-border);
+    --input: var(--mt-control-border);
+    --input-background: var(--mt-field);
+    --switch-background: #687487;
+    --ring: var(--mt-focus);
+    --destructive: var(--mt-danger);
+    --destructive-foreground: #291015;
+    --sidebar: var(--mt-surface);
+    --sidebar-foreground: var(--mt-text);
+    --sidebar-accent: var(--mt-raised);
+    --sidebar-accent-foreground: var(--mt-text);
+    --sidebar-border: var(--mt-border);
+    --sidebar-ring: var(--mt-focus);
+    --chart-1: #79b8ff;
+    --chart-2: #6ee7b7;
+    --chart-3: #fcd68a;
+    --chart-4: #d3bdff;
+    --chart-5: #ffaaa5;
+    color: var(--mt-text);
+    background-color: var(--mt-canvas);
+  }
+
+  :root:is(.dark, [data-theme="dark"]) body {
+    color: var(--mt-text);
+    background-color: var(--mt-canvas);
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="button"], [type="submit"]), select, textarea, [data-slot="select-trigger"]):not(:where(.print-a4-sheet *, .workbook-grid *, .preview-wrap *)) {
+    color: var(--mt-text);
+    background-color: var(--mt-field);
+    border-color: var(--mt-control-border);
+    caret-color: var(--mt-focus);
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where(input, textarea)::placeholder {
+    color: var(--mt-secondary);
+    opacity: 1;
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--mt-focus);
+    outline-offset: 3px;
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where(input, select, textarea)[aria-invalid="true"] {
+    border-color: var(--mt-danger);
+  }
+
+  :root:is(.dark, [data-theme="dark"]) ::selection {
+    color: #081321;
+    background: var(--mt-focus);
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where([data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="select-content"], [data-slot="popover-content"]) {
+    color: var(--mt-text);
+    background-color: var(--mt-raised);
+    border-color: var(--mt-control-border);
+    box-shadow: 0 16px 48px #0006, inset 0 1px 0 #ffffff0d;
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where([data-slot="tabs-trigger"][data-state="active"]) {
+    color: var(--mt-text);
+    background-color: var(--mt-raised);
+    border-color: var(--mt-control-border);
+  }
+
+  :root:is(.dark, [data-theme="dark"]) :where([data-slot="switch"][data-state="unchecked"]) {
+    background-color: var(--switch-background);
+  }
+}
+
+@media screen and (prefers-contrast: more) and (forced-colors: none) {
+  :root:is(.dark, [data-theme="dark"]) {
+    --mt-secondary: #e0e4eb;
+    --mt-border: #818b9b;
+    --mt-control-border: #bdc3ce;
+  }
+}
