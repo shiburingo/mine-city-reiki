@@ -4176,7 +4176,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
 
           <div className="grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1fr)_18rem] 2xl:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 max-w-full overflow-hidden rounded-3xl border bg-white">
-              <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
+              <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 dark:bg-card p-4 backdrop-blur">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="text-sm font-semibold text-[#173f36]">会議録閲覧</p>
@@ -4425,7 +4425,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
         ) : (
           <div className="grid min-w-0 max-w-full gap-5 xl:grid-cols-[minmax(0,1fr)_17rem] 2xl:grid-cols-[minmax(0,1fr)_20rem]">
             <div className="min-w-0 max-w-full overflow-hidden rounded-3xl border bg-white">
-              <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 p-4 backdrop-blur">
+              <div className="sticky top-0 z-10 rounded-t-3xl border-b bg-white/95 dark:bg-card p-4 backdrop-blur">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="text-sm font-semibold text-[#173f36]">会議録全文</p>
