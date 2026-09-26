@@ -1,6 +1,7 @@
 import { ViewRegion, useViewState, changeView } from '../shared/viewTransitions';
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ChangeEvent, type JSX } from 'react';
-import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
+import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
+import publicMinutesLogoUrl from '../assets/mine-city-logo.gif';
 import { PortalHeader, ThemeToggle, usePortalUi } from '@mine-troutfarm/ui';
 import { MinutesResultBody } from './MinutesResultBody';
 import { DictionaryGrowthControl } from './DictionaryGrowthControl';
@@ -5112,31 +5113,31 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
           本文へ移動
         </a>
         <header className="public-minutes-hero border-b">
-          <div className="mx-auto flex max-w-[96rem] flex-col gap-5 px-4 py-7 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
-            <div className="flex min-w-0 items-start gap-4">
-              <div className="public-minutes-hero__mark mt-0.5 inline-flex size-12 shrink-0 items-center justify-center rounded-2xl border">
-                <Landmark className="size-6" aria-hidden="true" />
+          <div className="mx-auto flex max-w-[96rem] flex-col gap-5 px-4 py-6 sm:px-6 sm:py-7 lg:px-8 xl:flex-row xl:items-center xl:justify-between">
+            <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-3 sm:gap-x-6">
+              <div className="public-minutes-hero__logo sm:row-span-2">
+                <img src={publicMinutesLogoUrl} alt="交流拠点都市 美祢市 MINE CITY" width={316} height={504} decoding="async" />
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 sm:self-end">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="public-minutes-hero__eyebrow text-xs font-bold tracking-[0.18em]">MINE CITY COUNCIL MINUTES</p>
+                  <p className="public-minutes-hero__eyebrow text-[0.625rem] font-bold tracking-[0.1em] sm:text-xs sm:tracking-[0.18em]">MINE CITY COUNCIL MINUTES</p>
                   <span className="public-minutes-hero__badge inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold">
                     <ShieldCheck className="size-3.5" aria-hidden="true" />
                     ログイン不要
                   </span>
                 </div>
-                <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">美祢市議会会議録検索システム</h1>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground sm:text-base">
-                  美祢市議会の会議録を、会議・言葉・発言者から検索して閲覧できます。
-                </p>
+                <h1 className="mt-2 text-[1.35rem] leading-snug font-bold tracking-tight sm:text-3xl"><span className="block sm:inline-block">美祢市議会</span><span className="block sm:inline-block">会議録検索システム</span></h1>
               </div>
+              <p className="col-span-2 max-w-3xl text-sm leading-6 text-muted-foreground sm:col-span-1 sm:col-start-2 sm:self-start sm:text-base">
+                美祢市議会の会議録を、会議・言葉・発言者から検索して閲覧できます。
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
               <a
                 href="https://www2.city.mine.lg.jp/gyosei/shigikai/11159.html"
                 target="_blank"
                 rel="noreferrer"
-                className="public-minutes-hero__action inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 text-sm font-semibold transition"
+                className="public-minutes-hero__action inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 text-xs font-semibold transition sm:px-4 sm:text-sm"
               >
                 美祢市議会の公開資料
                 <ExternalLink className="size-4" aria-hidden="true" />

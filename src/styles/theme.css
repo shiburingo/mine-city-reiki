@@ -284,11 +284,36 @@
     linear-gradient(118deg, color-mix(in srgb, var(--primary) 9%, var(--card)), color-mix(in srgb, var(--card) 94%, var(--accent) 6%));
 }
 
-.public-minutes-hero__mark,
 .public-minutes-hero__badge {
   border-color: color-mix(in srgb, var(--primary) 26%, var(--border));
   background: color-mix(in srgb, var(--primary) 9%, var(--card));
   color: color-mix(in srgb, var(--primary) 28%, var(--foreground));
+}
+
+.public-minutes-hero__logo {
+  width: 4rem;
+  padding: 0.375rem;
+  border: 1px solid transparent;
+  border-radius: 1rem;
+}
+
+.public-minutes-hero__logo img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.dark .public-minutes-hero__logo {
+  background: #f1f5f2;
+  border-color: #d3dfd7;
+}
+
+@media (min-width: 640px) {
+  .public-minutes-hero__logo {
+    width: 6.5rem;
+    padding: 0.625rem;
+    border-radius: 1.25rem;
+  }
 }
 
 .public-minutes-hero__eyebrow {
