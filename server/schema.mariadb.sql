@@ -132,6 +132,15 @@ ALTER TABLE law_synonyms
 ALTER TABLE law_synonyms
   ADD INDEX IF NOT EXISTS idx_law_synonyms_source (source_type, is_active);
 
+CREATE TABLE IF NOT EXISTS dictionary_growth_settings (
+  id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+  enabled TINYINT(1) NOT NULL DEFAULT 1,
+  revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO dictionary_growth_settings (id, enabled) VALUES (1, 1);
+
 CREATE TABLE IF NOT EXISTS dictionary_sources (
   source_key VARCHAR(64) NOT NULL PRIMARY KEY,
   display_name VARCHAR(128) NOT NULL,

@@ -192,6 +192,14 @@ export type DictionaryStatus = {
   growth: SynonymGrowthStatus;
 };
 
+export type DictionaryGrowthSettings = {
+  enabled: boolean;
+  revision: number;
+  updatedAt: string | null;
+  policy: string;
+  maxSearchAlternatives: number;
+};
+
 export type DictionarySourceStatus = {
   sourceKey: string;
   displayName: string;

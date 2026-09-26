@@ -57,6 +57,7 @@
 - **利用統計（アナリティクス）** — キャッシュヒット率・検索ランキング・質問ランキングをダッシュボードに表示します。
 - **会議録管理** — PDF差分同期、全件コンパイル、再タグ付け、会議録由来辞書更新を管理画面から実行できます。
 - **辞書更新** — WordNet・Wikipedia・Wiktionary・Wikidata・既存DBから関連語を累積し、検索用SQLite索引へ原子的にコンパイルします。
+- **辞書の増強制御** — 設定から自動収集・手動取り込みを中断/再開できます。保存済みの辞書と巡回位置は保持し、同義語・表記揺れ・自治体用語を優先します。会議録の関連語展開は入力語ごとに最大5語です。
 
 ### 公開会議録ページ
 - **ログイン不要** — `/mine-city-minutes/` で「美祢市議会会議録検索システム」を公開し、会議録の閲覧・言葉検索・発言者検索・発言集作成を利用できます。
@@ -228,6 +229,7 @@ DB_AUTO_INIT=0 MINE_CITY_REIKI_AUTH_BYPASS=1 PYTHONPATH=server server/venv/bin/p
 | POST | `/api/cache/clear` | キャッシュクリア（`scope`: `search` / `ask` / `all`） |
 | GET | `/api/synonyms` | 同義語一覧 |
 | GET | `/api/dictionary/status` | コンパイル済み関連語辞書の軽量ステータス |
+| GET / PUT | `/api/dictionary/growth/settings` | 辞書増強の許可・中断設定（認証必須、変更はゲスト不可） |
 | POST | `/api/synonyms` | 同義語追加 |
 | DELETE | `/api/synonyms/:id` | 同義語削除 |
 | GET | `/api/analytics` | 利用統計 |
@@ -265,6 +267,7 @@ DB_AUTO_INIT=0 MINE_CITY_REIKI_AUTH_BYPASS=1 PYTHONPATH=server server/venv/bin/p
 | `law_search_terms` | 転置インデックス（term → document/article） |
 | `law_synonyms` | 同義語辞書 |
 | `dictionary_sources` | 辞書ソース、ライセンス、巡回カーソル、実行状態 |
+| `dictionary_growth_settings` | 辞書増強の許可状態と変更世代。同期状態とは独立して保存 |
 | `dictionary_pair_evidence` | 関連語ペアごとの出典、URL、信頼度、確認履歴 |
 | `law_document_history` | 文書の変更履歴スナップショット（全文含む） |
 | `sync_settings` | 月次更新設定・最終同期情報 |

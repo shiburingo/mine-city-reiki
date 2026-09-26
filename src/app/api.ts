@@ -1,4 +1,5 @@
 import type { AnalyticsData, AskResponse, BrowseCategory, DictionarySourceStatus, DictionaryStatus, DocHistoryItem, DocumentDetail, DocumentSummary, MinutesDayDetail, MinutesMeeting, MinutesMeetingDetail, MinutesSearchResult, MinutesSpeaker, MinutesStatus, SearchField, SearchResponse, SearchResult, SourceScope, SynonymCompiledStatus, SynonymGrowthStatus, SynonymItem, SynonymStatsItem, SyncRun, SyncStatus } from './types';
+import type { DictionaryGrowthSettings } from './types';
 
 const API_BASE = ((import.meta as any).env?.VITE_REIKI_API_BASE || '/mine-city-reiki-api/api').replace(/\/+$/, '');
 export const PUBLIC_MINUTES_PAGE_PATH = '/mine-city-minutes';
@@ -172,6 +173,17 @@ export async function fetchSynonyms(): Promise<{ items: SynonymItem[]; stats: Sy
 
 export async function fetchDictionaryStatus(): Promise<DictionaryStatus> {
   return apiFetch<DictionaryStatus>('/dictionary/status');
+}
+
+export async function fetchDictionaryGrowthSettings(): Promise<DictionaryGrowthSettings> {
+  return apiFetch<DictionaryGrowthSettings>('/dictionary/growth/settings');
+}
+
+export async function updateDictionaryGrowthSettings(enabled: boolean): Promise<DictionaryGrowthSettings> {
+  return apiFetch<DictionaryGrowthSettings>('/dictionary/growth/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export async function createSynonym(canonicalTerm: string, synonymTerm: string, priority?: number): Promise<SynonymItem> {

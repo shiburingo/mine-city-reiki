@@ -20,6 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from dictionary_growth import DictionaryGrowthPaused
+from dictionary_policy import CURATED_SYNONYM_GROUPS, POLICY_VERSION, is_municipal_term, is_spelling_variant, search_priority
+
 
 WORDNET_FALLBACK_VERSION = "1.1"
 WORDNET_RELEASE_API = "https://api.github.com/repos/bond-lab/wnja/releases/latest"
@@ -27,7 +30,7 @@ WORDNET_SQLITE_ASSET = "wnjpn.db.gz"
 WORDNET_SQLITE_FALLBACK_URL = f"https://github.com/bond-lab/wnja/releases/download/v{WORDNET_FALLBACK_VERSION}/{WORDNET_SQLITE_ASSET}"
 ENGINE_VERSION = "dictionary-engine-2026-06-28"
 MINUTES_DICTIONARY_ENGINE_VERSION = "minutes-dictionary-2026-06-30"
-INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-07-23"
+INTERNET_DICTIONARY_ENGINE_VERSION = "internet-dictionary-2026-09-26"
 COMPILED_DICTIONARY_VERSION = "compiled-synonyms-sqlite-2026-07-17"
 WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_REQUEST_INTERVAL_SECONDS = 0.8
@@ -35,12 +38,12 @@ MEDIAWIKI_REQUEST_INTERVAL_SECONDS = 0.25
 THESAURUS_TARGET_TERM_COUNT = 500_000
 THESAURUS_ULTIMATE_TERM_COUNT = 1_000_000
 STEADY_DICTIONARY_BUDGET = {
-    "wikipediaLimit": 5_000,
-    "wiktionaryLimit": 2_000,
+    "wikipediaLimit": 1_000,
+    "wiktionaryLimit": 5_000,
     "wikidataTermLimit": 25,
 }
 ACCELERATED_DICTIONARY_BUDGET = {
-    "wikipediaLimit": 100_000,
+    "wikipediaLimit": 10_000,
     "wiktionaryLimit": 50_000,
     "wikidataTermLimit": 100,
 }
@@ -90,23 +93,6 @@ MINUTES_ROLE_ALIASES = {
     "secretariat": ["議会事務局", "事務局"],
     "report": ["報告"],
 }
-
-CURATED_SYNONYM_GROUPS: list[tuple[int, list[str]]] = [
-    (10, ["老人", "お年寄り", "高齢者", "年寄り", "高齢の方", "シニア", "老年者"]),
-    (9, ["高齢者", "65歳以上", "高齢世帯", "高齢の世帯"]),
-    (9, ["後期高齢者", "75歳以上", "後期高齢"]),
-    (10, ["マイナンバー", "個人番号"]),
-    (9, ["障害者", "障がい者", "障害のある人", "障がいのある人"]),
-    (9, ["子ども", "こども", "児童", "子供"]),
-    (9, ["保育園", "保育所", "保育施設"]),
-    (9, ["認定こども園", "こども園", "認定子ども園"]),
-    (8, ["ごみ", "ゴミ", "廃棄物"]),
-    (8, ["空き家", "空家", "空き家等"]),
-    (8, ["観光客", "来訪者", "旅行者"]),
-    (8, ["公共交通", "地域交通", "生活交通"]),
-    (8, ["上下水道", "水道", "下水道"]),
-    (8, ["養鱒場", "養ます場", "養魚場", "鱒養殖"]),
-]
 
 _LAST_REQUEST_AT_BY_HOST: dict[str, float] = {}
 
@@ -360,7 +346,7 @@ def wikidata_aliases_for_term(term: str, *, limit: int = 5, accepted_labels: set
     return wikidata_aliases_from_entities(term, ids, fetch_wikidata_entities(ids))
 
 
-def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 30) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: int = 30, checkpoint: Callable[[], None] | None = None) -> tuple[set[tuple[str, str]], dict[str, Any]]:
     peer_lookup = curated_peer_terms()
     default_seeds = [terms[0] for _, terms in CURATED_SYNONYM_GROUPS if terms]
     candidate_terms = list(seed_terms) if seed_terms is not None else (
@@ -376,6 +362,8 @@ def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: 
     failed = 0
     seed_entity_ids: dict[str, list[str]] = {}
     for seed in seeds:
+        if checkpoint:
+            checkpoint()
         try:
             seed_entity_ids[seed] = wikidata_entity_ids_for_term(
                 seed,
@@ -391,7 +379,11 @@ def build_wikidata_pairs(seed_terms: Iterable[str] | None = None, *, max_terms: 
         for entity_id in entity_ids
     ]
     try:
+        if checkpoint:
+            checkpoint()
         entities = fetch_wikidata_entities(all_entity_ids) if all_entity_ids else {}
+    except DictionaryGrowthPaused:
+        raise
     except Exception:
         entities = {}
         failed += sum(1 for entity_ids in seed_entity_ids.values() if entity_ids)
@@ -409,6 +401,7 @@ def fetch_mediawiki_redirect_observations(
     *,
     cursor: str = "",
     max_items: int = 1000,
+    checkpoint: Callable[[], None] | None = None,
 ) -> tuple[list[DictionaryObservation], dict[str, Any]]:
     endpoint = str(source["endpoint"])
     page_base_url = str(source["pageBaseUrl"])
@@ -419,6 +412,8 @@ def fetch_mediawiki_redirect_observations(
     cycle_complete = False
 
     while scanned < max_items:
+        if checkpoint:
+            checkpoint()
         limit = min(500, max_items - scanned)
         params = {
             "action": "query",
@@ -441,6 +436,8 @@ def fetch_mediawiki_redirect_observations(
             min_interval=MEDIAWIKI_REQUEST_INTERVAL_SECONDS,
         )
         requests += 1
+        if checkpoint:
+            checkpoint()
         rows = (payload.get("query") or {}).get("redirects") or []
         if not rows:
             cycle_complete = not bool((payload.get("continue") or {}).get("garcontinue"))
@@ -450,6 +447,9 @@ def fetch_mediawiki_redirect_observations(
         scanned += len(rows)
 
         for row in rows:
+            # A redirect to a section may link a subtopic to a broader article.
+            if row.get("tofragment") or row.get("fragment"):
+                continue
             alias = str(row.get("from") or "")
             target = str(row.get("to") or "")
             canonical = normalize_term(target)
@@ -916,10 +916,10 @@ def upsert_dictionary_observations(
           (canonical_term, synonym_term, priority, is_active, source_type, source_version)
         VALUES (%s,%s,%s,1,%s,%s)
         ON DUPLICATE KEY UPDATE
-          priority=GREATEST(priority,VALUES(priority)),
-          is_active=1,
-          source_version=IF(source_type='manual',source_version,VALUES(source_version)),
-          source_type=IF(source_type='manual',source_type,VALUES(source_type))
+          is_active=IF(source_type='manual',is_active,1),
+          source_version=IF(source_type<>'manual' AND VALUES(priority)>priority,VALUES(source_version),source_version),
+          source_type=IF(source_type<>'manual' AND VALUES(priority)>priority,VALUES(source_type),source_type),
+          priority=GREATEST(priority,VALUES(priority))
         """,
         synonym_values,
     )
@@ -936,6 +936,7 @@ def select_wikidata_seed_terms(cur, *, last_synonym_id: int = 0, limit: int = 25
         SELECT id, canonical_term, synonym_term
         FROM law_synonyms
         WHERE is_active=1 AND id>%s
+          AND source_type IN ('manual','curated','domain','minutes-domain')
         ORDER BY id ASC
         LIMIT %s
         """,
@@ -1470,6 +1471,7 @@ def build_hybrid_dictionary(
     include_domain: bool = True,
     max_wordnet_pairs: int = 30000,
     progress: Callable[[str, int, int], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "operation": "dictionary-update",
@@ -1484,6 +1486,8 @@ def build_hybrid_dictionary(
         "progressLabel": "関連語辞書を準備しています",
     }
 
+    if checkpoint:
+        checkpoint()
     cur.execute("DELETE FROM law_synonyms WHERE source_type IN ('wordnet','domain')")
     if progress:
         progress("既存の自動生成辞書を削除しました", 0, summary["progressTotal"])
@@ -1496,6 +1500,8 @@ def build_hybrid_dictionary(
         with tempfile.TemporaryDirectory(prefix="mine-city-reiki-wordnet-") as tmp:
             db_path, wordnet_version = download_wordnet_sqlite(Path(tmp))
             wordnet_pairs, wordnet_stats = build_wordnet_pairs(db_path, max_pairs=max_wordnet_pairs, wordnet_version=wordnet_version)
+        if checkpoint:
+            checkpoint()
         current += 1
         summary.update({f"wordnet{key[0].upper()}{key[1:]}": value for key, value in wordnet_stats.items()})
         summary["wordnetPairs"] = len(wordnet_pairs)
@@ -1504,6 +1510,8 @@ def build_hybrid_dictionary(
         inserted += insert_pairs(cur, wordnet_pairs, "wordnet", f"wnja-{wordnet_version}", 5)
 
     if include_domain:
+        if checkpoint:
+            checkpoint()
         if progress:
             progress("既存DBから関連語候補を生成しています", current, summary["progressTotal"])
         domain_pairs, domain_stats = build_domain_pairs(cur)
@@ -1514,6 +1522,8 @@ def build_hybrid_dictionary(
             progress(f"既存DB関連語 {len(domain_pairs):,}件を登録しています", current, summary["progressTotal"])
         inserted += insert_pairs(cur, domain_pairs, "domain", ENGINE_VERSION, 12)
 
+    if checkpoint:
+        checkpoint()
     current = summary["progressTotal"]
     summary["inserted"] = inserted
     summary["progressCurrent"] = current
@@ -1528,16 +1538,19 @@ def build_internet_dictionary(
     include_curated: bool = True,
     include_mediawiki: bool = True,
     source_url: str = "",
-    wikipedia_limit: int = 5000,
-    wiktionary_limit: int = 2000,
+    wikipedia_limit: int = STEADY_DICTIONARY_BUDGET['wikipediaLimit'],
+    wiktionary_limit: int = STEADY_DICTIONARY_BUDGET['wiktionaryLimit'],
     wikidata_term_limit: int = 25,
     progress: Callable[[str, int, int], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
+    commit_source: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    mediawiki_sources = list(MEDIAWIKI_REDIRECT_SOURCES) if include_mediawiki else []
+    mediawiki_sources = sorted(MEDIAWIKI_REDIRECT_SOURCES, key=lambda source: source['sourceType'] != 'wiktionary') if include_mediawiki else []
     enabled_steps = int(include_curated) + int(include_wikidata) + len(mediawiki_sources) + int(bool(source_url))
     summary: dict[str, Any] = {
         "operation": "internet-dictionary-update",
         "engineVersion": INTERNET_DICTIONARY_ENGINE_VERSION,
+        "selectionPolicy": POLICY_VERSION,
         "includeCurated": include_curated,
         "includeWikidata": include_wikidata,
         "includeMediawiki": include_mediawiki,
@@ -1565,6 +1578,8 @@ def build_internet_dictionary(
     if enabled_steps == 0:
         raise ValueError("取り込み対象を1つ以上選択してください。")
 
+    if checkpoint:
+        checkpoint()
     ensure_dictionary_source_rows(cur)
     current = 0
 
@@ -1587,7 +1602,7 @@ def build_internet_dictionary(
                 source_key="curated-ja-seeds",
                 source_type="curated",
                 source_version=INTERNET_DICTIONARY_ENGINE_VERSION,
-                priority=priority,
+                priority=max(18, priority),
                 confidence=1.0,
             )
             record_result(result)
@@ -1597,40 +1612,60 @@ def build_internet_dictionary(
             processed=stats["pairs"],
             discovered=stats["pairs"],
         )
+        if checkpoint:
+            checkpoint()
+        if commit_source:
+            commit_source()
 
     mediawiki_limits = {
         "jawikipedia-redirects": max(0, int(wikipedia_limit)),
         "jawiktionary-redirects": max(0, int(wiktionary_limit)),
     }
     for source in mediawiki_sources:
+        if checkpoint:
+            checkpoint()
         current += 1
         source_key = str(source["sourceKey"])
         limit = mediawiki_limits[source_key]
+        if limit == 0:
+            continue
         state = dictionary_source_state(cur, source_key)
         cursor = str((state.get("cursor") or {}).get("continue") or "")
         if progress:
             progress(f"{source['displayName']}を巡回しています", current - 1, summary["progressTotal"])
+        cur.execute('SAVEPOINT dictionary_source_batch')
         try:
             observations, source_stats = fetch_mediawiki_redirect_observations(
                 source,
                 cursor=cursor,
                 max_items=limit,
+                checkpoint=checkpoint,
             )
-            result = upsert_dictionary_observations(
-                cur,
-                observations,
-                source_key=source_key,
-                source_type=str(source["sourceType"]),
-                source_version=INTERNET_DICTIONARY_ENGINE_VERSION,
-                priority=int(source["priority"]),
-                confidence=0.9 if source["sourceType"] == "wiktionary" else 0.78,
-            )
-            record_result(result)
-            summary["mediawikiPairs"] += len(observations)
+            grouped: dict[int, list[DictionaryObservation]] = defaultdict(list)
+            for observation in observations:
+                left, right = observation.canonical, observation.synonym
+                # General encyclopedia aliases are no longer a volume target.
+                if source['sourceType'] == 'wikipedia' and not (
+                    is_spelling_variant(left, right) or is_municipal_term(left) or is_municipal_term(right)
+                ):
+                    continue
+                priority = search_priority(left, right, int(source['priority']), str(source['sourceType']))
+                grouped[priority].append(observation)
+            result = {"observed": 0, "added": 0, "confirmed": 0}
+            for priority, selected in sorted(grouped.items(), reverse=True):
+                if checkpoint:
+                    checkpoint()
+                batch = upsert_dictionary_observations(
+                    cur, selected, source_key=source_key,
+                    source_type=str(source['sourceType']), source_version=INTERNET_DICTIONARY_ENGINE_VERSION,
+                    priority=priority, confidence=0.9 if source['sourceType'] == 'wiktionary' else 0.78,
+                )
+                for key in result:
+                    result[key] += batch[key]
+            source_stats['deferredByPolicy'] = len(observations) - result['observed']
             source_stats.update(result)
             source_stats["sourceKey"] = source_key
             source_stats["displayName"] = source["displayName"]
-            summary["sourceStats"].append(source_stats)
             update_dictionary_source_state(
                 cur,
                 source_key,
@@ -1639,24 +1674,37 @@ def build_internet_dictionary(
                 discovered=int(result["added"]),
                 cycle_complete=bool(source_stats["cycleComplete"]),
             )
+            if checkpoint:
+                checkpoint()
             if progress:
                 progress(
                     f"{source['displayName']} {source_stats['scanned']:,}件確認 / 新規 {result['added']:,}件",
                     current,
                     summary["progressTotal"],
                 )
+            if commit_source:
+                commit_source()
+            record_result(result)
+            summary["mediawikiPairs"] += result['observed']
+            summary["sourceStats"].append(source_stats)
+        except DictionaryGrowthPaused:
+            raise
         except Exception as exc:
+            cur.execute('ROLLBACK TO SAVEPOINT dictionary_source_batch')
             error = f"{source_key}: {exc}"
             summary["errors"].append(error)
             update_dictionary_source_state(cur, source_key, cursor={"continue": cursor}, error=str(exc))
 
     if include_wikidata:
+        if checkpoint:
+            checkpoint()
         current += 1
         source_key = "wikidata-ja-aliases"
         state = dictionary_source_state(cur, source_key)
-        last_synonym_id = int((state.get("cursor") or {}).get("lastSynonymId") or 0)
+        last_synonym_id = int((state.get("cursor") or {}).get("priorityLastSynonymId") or 0)
         if progress:
             progress("未調査語をWikidataで補強しています", current - 1, summary["progressTotal"])
+        cur.execute('SAVEPOINT dictionary_source_batch')
         try:
             seeds, next_synonym_id, cycle_complete = select_wikidata_seed_terms(
                 cur,
@@ -1665,12 +1713,14 @@ def build_internet_dictionary(
             )
             if cycle_complete:
                 next_synonym_id = 0
-            pairs, stats = build_wikidata_pairs(seeds, max_terms=max(1, int(wikidata_term_limit))) if seeds else (set(), {
+            pairs, stats = build_wikidata_pairs(seeds, max_terms=max(1, int(wikidata_term_limit)), checkpoint=checkpoint) if seeds else (set(), {
                 "seedTerms": 0,
                 "fetchedTerms": 0,
                 "failedTerms": 0,
                 "pairs": 0,
             })
+            if checkpoint:
+                checkpoint()
             result = upsert_dictionary_observations(
                 cur,
                 [DictionaryObservation(canonical=left, synonym=right) for left, right in pairs],
@@ -1680,38 +1730,49 @@ def build_internet_dictionary(
                 priority=8,
                 confidence=0.82,
             )
-            record_result(result)
-            summary["wikidataStats"] = {**stats, **result, "lastSynonymId": next_synonym_id}
-            summary["wikidataPairs"] = len(pairs)
             update_dictionary_source_state(
                 cur,
                 source_key,
-                cursor={"lastSynonymId": next_synonym_id},
+                cursor={"priorityLastSynonymId": next_synonym_id},
                 processed=len(seeds),
                 discovered=int(result["added"]),
                 cycle_complete=cycle_complete,
             )
+            if checkpoint:
+                checkpoint()
             if progress:
                 progress(
                     f"Wikidata {len(seeds):,}語調査 / 新規 {result['added']:,}件",
                     current,
                     summary["progressTotal"],
                 )
+            if commit_source:
+                commit_source()
+            record_result(result)
+            summary["wikidataStats"] = {**stats, **result, "lastSynonymId": next_synonym_id}
+            summary["wikidataPairs"] = len(pairs)
+        except DictionaryGrowthPaused:
+            raise
         except Exception as exc:
+            cur.execute('ROLLBACK TO SAVEPOINT dictionary_source_batch')
             error = f"{source_key}: {exc}"
             summary["errors"].append(error)
             update_dictionary_source_state(
                 cur,
                 source_key,
-                cursor={"lastSynonymId": last_synonym_id},
+                cursor={"priorityLastSynonymId": last_synonym_id},
                 error=str(exc),
             )
 
     if source_url:
+        if checkpoint:
+            checkpoint()
         current += 1
         if progress:
             progress("指定URLから辞書を取得しています", current - 1, summary["progressTotal"])
         grouped, stats = build_url_dictionary_pairs(source_url)
+        if checkpoint:
+            checkpoint()
         summary["urlStats"] = stats
         summary["urlPairs"] = stats["pairs"]
         if progress:
@@ -1721,6 +1782,8 @@ def build_internet_dictionary(
             insert_pairs(cur, pairs, "internet", INTERNET_DICTIONARY_ENGINE_VERSION, max(1, min(20, priority)))
             summary["observed"] += before
 
+    if checkpoint:
+        checkpoint()
     summary["progressCurrent"] = summary["progressTotal"]
     summary["progressLabel"] = (
         f"累積辞書更新が完了しました（新規 {summary['inserted']:,}件 / 確認 {summary['confirmed']:,}件）"

@@ -32,6 +32,7 @@ class DailyDictionaryCatchupTests(unittest.TestCase):
         env.update(environment or {})
         with (
             patch.dict(os.environ, env, clear=True),
+            patch.object(run_daily_dictionary_update, 'get_dictionary_growth_settings', return_value={'enabled': True}),
             patch.object(
                 run_daily_dictionary_update,
                 "execute_minutes_dictionary_update",
@@ -77,7 +78,7 @@ class DailyDictionaryCatchupTests(unittest.TestCase):
                     include_curated=True,
                     include_mediawiki=True,
                     source_url="",
-                    wikipedia_limit=100_000,
+                    wikipedia_limit=10_000,
                     wiktionary_limit=50_000,
                     wikidata_term_limit=100,
                 )
@@ -94,8 +95,8 @@ class DailyDictionaryCatchupTests(unittest.TestCase):
         self.assertEqual(update.call_count, 1)
         summary = payload["summaries"][1]
         self.assertEqual(summary["collectionMode"], "steady")
-        self.assertEqual(update.call_args.kwargs["wikipedia_limit"], 5_000)
-        self.assertEqual(update.call_args.kwargs["wiktionary_limit"], 2_000)
+        self.assertEqual(update.call_args.kwargs["wikipedia_limit"], 1_000)
+        self.assertEqual(update.call_args.kwargs["wiktionary_limit"], 5_000)
         self.assertEqual(update.call_args.kwargs["wikidata_term_limit"], 25)
 
     def test_catchup_stops_when_compiled_term_count_does_not_grow(self) -> None:
@@ -115,6 +116,7 @@ class DailyDictionaryCatchupTests(unittest.TestCase):
         summary["errors"] = [{"source": "jawikipedia-redirects", "error": "maxlag"}]
         output = io.StringIO()
         with (
+            patch.object(run_daily_dictionary_update, 'get_dictionary_growth_settings', return_value={'enabled': True}),
             patch.dict(
                 os.environ,
                 {"REIKI_DAILY_DICTIONARY_CATCHUP_BATCHES": "4"},

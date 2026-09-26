@@ -20,6 +20,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -28,6 +29,8 @@ from bs4 import BeautifulSoup
 from flask import Flask, Response, g, jsonify, request
 from pymysql.cursors import DictCursor
 from werkzeug.exceptions import HTTPException
+
+from dictionary_growth import DictionaryGrowthPaused, check_growth_settings, read_growth_settings, write_growth_settings
 
 from meeting_minutes.crawler import crawl_minutes_pdfs
 from meeting_minutes.search import (
@@ -42,6 +45,7 @@ from meeting_minutes.table_formatter import ENGINE_VERSION as TABLE_ENGINE_VERSI
 from meeting_minutes.table_formatter import PERSON_TABLE_ENGINE_VERSION, extract_coordinate_tables, refine_person_roster_tables
 from dictionary_engine import (
     MINUTES_DICTIONARY_ENGINE_VERSION,
+    STEADY_DICTIONARY_BUDGET,
     THESAURUS_TARGET_TERM_COUNT,
     THESAURUS_ULTIMATE_TERM_COUNT,
     build_hybrid_dictionary,
@@ -4304,7 +4308,50 @@ def launch_reindex_in_background(batch_size: int = 10) -> None:
         thread.start()
 
 
-def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool = True) -> dict[str, Any]:
+def get_dictionary_growth_settings() -> dict[str, Any]:
+    with db_cursor() as (_, cur):
+        return read_growth_settings(cur)
+
+
+def dictionary_growth_job(function):
+    @wraps(function)
+    def run(*args, **kwargs):
+        settings = get_dictionary_growth_settings()
+        if not settings['enabled']:
+            return {'outcome': 'paused', 'progressLabel': '辞書の増強は中断中です'}
+        # Serialize collection across API workers and the daily timer.
+        with db_cursor() as (lock_conn, _):
+            lock_name = 'mine_city_reiki_dictionary_growth'
+            if not acquire_db_advisory_lock(lock_conn, lock_name, 0):
+                return {'outcome': 'already-running', 'progressLabel': '辞書の増強は実行中です'}
+            try:
+                def checkpoint():
+                    # A fresh transaction observes pauses even during a long import.
+                    check_growth_settings(get_dictionary_growth_settings(), settings['revision'])
+                return function(*args, **kwargs, checkpoint=checkpoint)
+            finally:
+                release_db_advisory_lock(lock_conn, lock_name)
+    return run
+
+
+def finish_paused_dictionary_run(run_id: int, summary: dict[str, Any]) -> dict[str, Any]:
+    summary['outcome'] = 'paused'
+    summary['progressLabel'] = '増強を中断しました。保存済みの辞書と巡回位置は保持されています。'
+    # Only committed sources/batches are published; an unfinished batch rolls back.
+    try:
+        summary['compiledDictionary'] = compile_synonym_dictionary_snapshot()
+    except Exception as exc:
+        with db_cursor(commit=True) as (_, cur):
+            set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
+        raise
+    with db_cursor(commit=True) as (_, cur):
+        bump_cache_generation(cur)
+        set_sync_run_status(cur, run_id, 'success', summary, None)
+    return summary
+
+
+@dictionary_growth_job
+def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool = True, *, checkpoint=None) -> dict[str, Any]:
     with db_cursor(commit=True) as (_, cur):
         cur.execute(
             "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
@@ -4333,6 +4380,7 @@ def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool
                 include_wordnet=include_wordnet,
                 include_domain=include_domain,
                 progress=_progress,
+                checkpoint=checkpoint,
             )
             summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
             update_sync_run_summary(cur, run_id, summary)
@@ -4342,6 +4390,8 @@ def execute_dictionary_update(include_wordnet: bool = True, include_domain: bool
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
         return summary
+    except DictionaryGrowthPaused:
+        return finish_paused_dictionary_run(run_id, summary)
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
             set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
@@ -4364,14 +4414,16 @@ def launch_dictionary_update_in_background(include_wordnet: bool = True, include
         thread.start()
 
 
+@dictionary_growth_job
 def execute_internet_dictionary_update(
     include_wikidata: bool = True,
     include_curated: bool = True,
     include_mediawiki: bool = True,
     source_url: str = "",
-    wikipedia_limit: int = 5000,
-    wiktionary_limit: int = 2000,
+    wikipedia_limit: int = STEADY_DICTIONARY_BUDGET['wikipediaLimit'],
+    wiktionary_limit: int = STEADY_DICTIONARY_BUDGET['wiktionaryLimit'],
     wikidata_term_limit: int = 25,
+    *, checkpoint=None,
 ) -> dict[str, Any]:
     with db_cursor(commit=True) as (_, cur):
         cur.execute(
@@ -4399,7 +4451,7 @@ def execute_internet_dictionary_update(
             update_sync_run_summary(progress_cur, run_id, summary)
 
     try:
-        with db_cursor(commit=True) as (_, cur):
+        with db_cursor(commit=True) as (conn, cur):
             summary = build_internet_dictionary(
                 cur,
                 include_wikidata=include_wikidata,
@@ -4410,6 +4462,8 @@ def execute_internet_dictionary_update(
                 wiktionary_limit=wiktionary_limit,
                 wikidata_term_limit=wikidata_term_limit,
                 progress=_progress,
+                checkpoint=checkpoint,
+                commit_source=conn.commit,
             )
         summary['progressLabel'] = '検索用関連語辞書をコンパイルしています'
         with db_cursor(commit=True) as (_, cur):
@@ -4420,6 +4474,8 @@ def execute_internet_dictionary_update(
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
         return summary
+    except DictionaryGrowthPaused:
+        return finish_paused_dictionary_run(run_id, summary)
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
             set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
@@ -4431,8 +4487,8 @@ def launch_internet_dictionary_update_in_background(
     include_curated: bool = True,
     include_mediawiki: bool = True,
     source_url: str = "",
-    wikipedia_limit: int = 5000,
-    wiktionary_limit: int = 2000,
+    wikipedia_limit: int = STEADY_DICTIONARY_BUDGET['wikipediaLimit'],
+    wiktionary_limit: int = STEADY_DICTIONARY_BUDGET['wiktionaryLimit'],
     wikidata_term_limit: int = 25,
 ) -> None:
     def _runner() -> None:
@@ -4458,7 +4514,8 @@ def launch_internet_dictionary_update_in_background(
         thread.start()
 
 
-def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
+@dictionary_growth_job
+def execute_minutes_dictionary_update(batch_size: int = 1000, *, checkpoint=None) -> dict[str, Any]:
     with db_cursor(commit=True) as (_, cur):
         cur.execute(
             "INSERT INTO sync_runs (run_type, status, started_at, summary_json) VALUES ('manual','running',%s,%s)",
@@ -4483,6 +4540,7 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
     }
 
     try:
+        checkpoint()
         if total == 0:
             summary['progressLabel'] = '未抽出の会議録はありません'
             summary['compiledDictionary'] = compile_synonym_dictionary_snapshot()
@@ -4492,6 +4550,7 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
             return summary
 
         while summary['processed'] < total:
+            checkpoint()
             with db_cursor(commit=True) as (_, cur):
                 rows = fetch_unprocessed_minutes_dictionary_rows(cur, batch_size=batch_size)
                 if not rows:
@@ -4504,6 +4563,7 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
                     MINUTES_DICTIONARY_ENGINE_VERSION,
                     14,
                 )
+                checkpoint()
                 marked = mark_minutes_dictionary_rows_processed(
                     cur,
                     [int(row["id"]) for row in rows],
@@ -4528,6 +4588,8 @@ def execute_minutes_dictionary_update(batch_size: int = 1000) -> dict[str, Any]:
             prune_expired_caches(cur)
             set_sync_run_status(cur, run_id, 'success', summary, None)
         return summary
+    except DictionaryGrowthPaused:
+        return finish_paused_dictionary_run(run_id, summary)
     except Exception as exc:
         with db_cursor(commit=True) as (_, cur):
             set_sync_run_status(cur, run_id, 'failed', summary, str(exc))
@@ -7519,9 +7581,13 @@ def enforce_auth():
         if not err:
             err = 'access denied' if status == 403 else 'login required'
         return jsonify({'ok': False, 'error': err}), status
-    if payload.get('enabled') is False:
-        return None
     g.auth_user = payload.get('user') or {}
+    if request.path.startswith('/api/dictionary/') and request.method not in SAFE_METHODS:
+        if g.auth_user.get('isGuest'):
+            return jsonify({'ok': False, 'error': 'ゲスト権限では辞書設定・更新を変更できません。'}), 403
+        if request.path in {'/api/dictionary/update', '/api/dictionary/internet/update', '/api/dictionary/minutes/update'}:
+            if not get_dictionary_growth_settings()['enabled']:
+                return jsonify({'ok': False, 'error': '辞書の増強は中断中です。設定から再開してください。'}), 409
     return None
 
 
@@ -7643,6 +7709,25 @@ def api_reindex_run():
     batch_size = max(1, min(25, int((request.get_json(silent=True) or {}).get('batchSize') or 10)))
     launch_reindex_in_background(batch_size=batch_size)
     return jsonify({'ok': True, 'started': True, 'summary': {'operation': 'reindex', 'batchSize': batch_size}}), 202
+
+
+@app.get('/api/dictionary/growth/settings')
+def api_dictionary_growth_settings():
+    response = jsonify(get_dictionary_growth_settings())
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.put('/api/dictionary/growth/settings')
+def api_dictionary_growth_settings_update():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or type(payload.get('enabled')) is not bool:
+        raise ValueError('enabled には true または false を指定してください。')
+    with db_cursor(commit=True) as (_, cur):
+        settings = write_growth_settings(cur, payload['enabled'])
+    response = jsonify(settings)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.post('/api/dictionary/update')

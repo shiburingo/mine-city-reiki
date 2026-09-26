@@ -3,6 +3,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState
 import { BarChart2, Bookmark, BookMarked, BookOpen, Check, ChevronLeft, ChevronRight, Clock, Database, Download, ExternalLink, FileSearch, Landmark, Printer, RefreshCw, Search, Settings2, ShieldCheck, Star, Trash2, X } from 'lucide-react';
 import { PortalHeader, ThemeToggle, usePortalUi } from '@mine-troutfarm/ui';
 import { MinutesResultBody } from './MinutesResultBody';
+import { DictionaryGrowthControl } from './DictionaryGrowthControl';
 import {
   askQuestion,
   buildDocumentsCsvUrl,
@@ -1284,6 +1285,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
   const [synonymCompiled, setSynonymCompiled] = useState<SynonymCompiledStatus | null>(initialDictionaryStatus?.compiled ?? null);
   const [synonymGrowth, setSynonymGrowth] = useState<SynonymGrowthStatus | null>(initialDictionaryStatus?.growth ?? null);
   const [dictionarySources, setDictionarySources] = useState<DictionarySourceStatus[]>([]);
+  const [dictionaryGrowthEnabled, setDictionaryGrowthEnabled] = useState<boolean | null>(null);
   const [synonymLoading, setSynonymLoading] = useState(false);
   const [dictionaryStatusLoading, setDictionaryStatusLoading] = useState(false);
   const [newSynonymCanonical, setNewSynonymCanonical] = useState('');
@@ -5268,7 +5270,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium">{syncRunLabel(run)}</span>
-                          <span className={run.status === 'failed' ? 'text-red-600' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status}</span>
+                          <span className={run.status === 'failed' ? 'text-red-600' : run.summary?.outcome === 'paused' ? 'text-muted-foreground' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status === 'failed' ? run.status : run.summary?.outcome === 'paused' ? '中断' : run.status}</span>
                         </div>
                         <p className="mt-2 text-muted-foreground">開始: {formatDateTime(run.startedAt)}</p>
                         <p className="text-muted-foreground">終了: {formatDateTime(run.finishedAt)}</p>
@@ -5955,7 +5957,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
         ) : null}
 
         {tab === 'settings' ? (
-          <section className="grid items-start gap-6 lg:grid-cols-2">
+          <section className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2 [&>div]:min-w-0">
             <div className="h-fit rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">月次同期設定</h2>
               <p className="mt-2 text-sm text-muted-foreground">毎月指定日時を過ぎたタイミングで更新確認を実行します。サーバー側では定期実行 CLI を 1 時間ごとに起動し、DB設定を見て実行可否を判断します。</p>
@@ -6114,32 +6116,33 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                   <h2 className="text-xl font-semibold">関連語辞書更新</h2>
                 </div>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Wikipedia・Wiktionary・Wikidata・既存DBから出典付きで関連語を累積します。毎日カーソルを進め、50万語を第1目標、100万語を最終目標として検索全体で共通利用します。
+                  同義語・表記揺れと自治体業務に必要な用語を優先し、出典付きで辞書を育てます。100万語到達後も、語数だけでなく検索の精度を重視して増強を続けられます。
                 </p>
                 <p className="mt-2 text-xs text-muted-foreground">
                   WordNet・既存DBの再構築は同じ元データから辞書を作り直す処理です。元データに変更がなければ登録語数は増えません。新しい語を追加する場合は、インターネット辞書取り込みまたは会議録からの増分作成を実行します。
                 </p>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  50万語未満では1バッチあたりWikipedia最大10万件・Wiktionary最大5万件を巡回します。日次自動更新は初回構築中のみ最大4バッチを連続実行し、50万語到達後は外部サービスへの負荷を抑えた通常収集1バッチへ自動で戻ります。
+                  管理済みの言い換えとWiktionaryを優先し、Wikipediaは表記揺れ・自治体関連の別名を選別します。記事内の一節への転送は取り込まず、同じ話題という理由だけでは同義語にしません。
                 </p>
+                <DictionaryGrowthControl onEnabledChange={setDictionaryGrowthEnabled} readOnly={Boolean(user?.isGuest)} />
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-4 font-semibold text-primary-foreground disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
+                    disabled={dictionaryGrowthEnabled !== true || busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerDictionaryUpdate()}
                   >
                     WordNet・既存DBを再構築
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
+                    disabled={dictionaryGrowthEnabled !== true || busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerInternetDictionaryUpdate()}
                   >
                     インターネット辞書を取り込む
                   </button>
                   <button
                     className="inline-flex h-11 items-center justify-center rounded-2xl border border-primary/30 bg-background px-4 font-semibold text-primary hover:bg-accent disabled:opacity-60"
-                    disabled={busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
+                    disabled={dictionaryGrowthEnabled !== true || busy || Boolean(runningDictionaryRun) || Boolean(runningInternetDictionaryRun) || Boolean(runningMinutesDictionaryRun) || Boolean(runningDictionaryCompileRun)}
                     onClick={() => void triggerMinutesDictionaryUpdate()}
                   >
                     会議録から増分作成
@@ -6160,7 +6163,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                   </button>
                 </div>
                 <div className="mt-4 rounded-2xl border bg-background p-4">
-                  <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_2fr]">
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_1fr_1fr_2fr]">
                     <label className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <input
                         type="checkbox"
@@ -6186,7 +6189,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                       Wikidata日本語別名
                     </label>
                     <input
-                      className="h-11 rounded-2xl border bg-card px-4 text-sm outline-none focus:ring-2 focus:ring-primary/30"
+                      className="h-11 w-full min-w-0 rounded-2xl border bg-card px-4 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                       value={internetDictionaryUrl}
                       onChange={(event) => setInternetDictionaryUrl(event.target.value)}
                       placeholder="任意: CSV/JSON辞書URL（canonical,synonym,priority）"
@@ -6277,7 +6280,7 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
                       <div key={run.id} className="rounded-2xl border bg-background p-4 text-sm">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium">{syncRunLabel(run)}</span>
-                          <span className={run.status === 'failed' ? 'text-red-600' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status}</span>
+                          <span className={run.status === 'failed' ? 'text-red-600' : run.summary?.outcome === 'paused' ? 'text-muted-foreground' : run.status === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{run.status === 'failed' ? run.status : run.summary?.outcome === 'paused' ? '中断' : run.status}</span>
                         </div>
                         <p className="mt-2 text-muted-foreground">開始: {formatDateTime(run.startedAt)}</p>
                         <p className="text-muted-foreground">終了: {formatDateTime(run.finishedAt)}</p>
@@ -6344,15 +6347,15 @@ function AppShell({ publicMinutesMode = false }: { publicMinutesMode?: boolean }
             <div className="rounded-3xl border bg-card p-6 shadow-sm">
               <h2 className="text-xl font-semibold">同義語管理</h2>
               <p className="mt-2 text-sm text-muted-foreground">検索時に展開される同義語ペアを管理します。追加・削除するとキャッシュがリセットされます。</p>
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                 <input
-                  className="h-9 flex-1 rounded-xl border bg-input-background px-3 text-sm"
+                  className="h-9 min-w-0 rounded-xl border bg-input-background px-3 text-sm sm:flex-1"
                   placeholder="正規語（例: 地方自治法）"
                   value={newSynonymCanonical}
                   onChange={(e) => setNewSynonymCanonical(e.target.value)}
                 />
                 <input
-                  className="h-9 flex-1 rounded-xl border bg-input-background px-3 text-sm"
+                  className="h-9 min-w-0 rounded-xl border bg-input-background px-3 text-sm sm:flex-1"
                   placeholder="同義語（例: 自治法）"
                   value={newSynonymTerm}
                   onChange={(e) => setNewSynonymTerm(e.target.value)}

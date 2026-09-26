@@ -127,7 +127,7 @@ class DictionaryCollectionBudgetTests(unittest.TestCase):
         budget = dictionary_collection_budget(102_821)
 
         self.assertEqual(budget["mode"], "accelerated")
-        self.assertEqual(budget["wikipediaLimit"], 100_000)
+        self.assertEqual(budget["wikipediaLimit"], 10_000)
         self.assertEqual(budget["wiktionaryLimit"], 50_000)
         self.assertEqual(budget["wikidataTermLimit"], 100)
 
@@ -135,8 +135,8 @@ class DictionaryCollectionBudgetTests(unittest.TestCase):
         budget = dictionary_collection_budget(500_000)
 
         self.assertEqual(budget["mode"], "steady")
-        self.assertEqual(budget["wikipediaLimit"], 5_000)
-        self.assertEqual(budget["wiktionaryLimit"], 2_000)
+        self.assertEqual(budget["wikipediaLimit"], 1_000)
+        self.assertEqual(budget["wiktionaryLimit"], 5_000)
         self.assertEqual(budget["wikidataTermLimit"], 25)
 
 

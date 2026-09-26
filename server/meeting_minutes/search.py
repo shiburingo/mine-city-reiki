@@ -12,6 +12,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable
 
+from dictionary_policy import MAX_SEARCH_ALTERNATIVES, search_priority
+
 SEARCH_VERSION = "minutes-fts-bigram-v1"
 TermGroups = list[list[tuple[str, int]]]
 SYNONYM_SOURCES = {"manual", "curated", "wordnet", "wikidata", "wiktionary", "wikipedia", "internet"}
@@ -40,8 +42,11 @@ def query_groups(query: str, related: bool = False, lookup=None) -> TermGroups:
                 # relates organizations/topics; it does not establish synonyms.
                 if not term or original in term or source not in SYNONYM_SOURCES or priority < 8:
                     continue
-                peers[term] = max(peers.get(term, 0), min(900, int(priority) * 10))
-        alternatives = sorted(peers.items(), key=lambda item: (-item[1], len(item[0]), item[0]))[:5]
+                priority = search_priority(original, term, int(priority), source)
+                if priority < 8:
+                    continue
+                peers[term] = max(peers.get(term, 0), min(900, priority * 10))
+        alternatives = sorted(peers.items(), key=lambda item: (-item[1], len(item[0]), item[0]))[:MAX_SEARCH_ALTERNATIVES]
         groups.append([(original, 1000), *alternatives])
     return groups
 

@@ -10,6 +10,7 @@ from app import (
     execute_internet_dictionary_update,
     execute_minutes_dictionary_update,
     get_compiled_dictionary_path,
+    get_dictionary_growth_settings,
 )
 from dictionary_engine import (
     THESAURUS_TARGET_TERM_COUNT,
@@ -34,9 +35,15 @@ def env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def main() -> int:
+    if not get_dictionary_growth_settings()['enabled']:
+        print(json.dumps({'ok': True, 'outcome': 'paused', 'summaries': []}))
+        return 0
     summaries: list[dict[str, Any]] = []
     batch_size = env_int("REIKI_DAILY_DICTIONARY_MINUTES_BATCH", 3000, 100, 10000)
     summaries.append(execute_minutes_dictionary_update(batch_size=batch_size))
+    if summaries[-1].get('outcome') in {'paused', 'already-running'}:
+        print(json.dumps({'ok': True, 'summaries': summaries}, ensure_ascii=False))
+        return 0
 
     if env_bool("REIKI_DAILY_DICTIONARY_INTERNET", True):
         target_term_count = env_int(
@@ -55,6 +62,8 @@ def main() -> int:
         current_term_count = int(compiled_status.get("termCount") or 0)
 
         for batch_number in range(1, catchup_batch_limit + 1):
+            if not get_dictionary_growth_settings()['enabled']:
+                break
             budget = dictionary_collection_budget(
                 current_term_count,
                 accelerated=env_bool("REIKI_DAILY_DICTIONARY_ACCELERATED", True),
@@ -102,6 +111,8 @@ def main() -> int:
             summary["catchupBatchLimit"] = catchup_batch_limit
             summaries.append(summary)
 
+            if summary.get('outcome') in {'paused', 'already-running'}:
+                break
             if budget["mode"] != "accelerated":
                 break
             if ending_term_count >= target_term_count:
